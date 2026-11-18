@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/rtrtarun/taskify/internal/domain"
+	"github.com/rtrtarun/taskify/internal/observability"
 	"github.com/rtrtarun/taskify/internal/repository"
 )
 
@@ -290,6 +291,12 @@ func (s *TaskService) emit(ctx context.Context, events []domain.Event, now time.
 	entries, err := domain.NewOutboxEntries(events, s.cfg.PublicBaseURL, s.cfg.OutboxMaxAttempts, now)
 	if err != nil {
 		return err
+	}
+	// The relay restores this trace when it sends the row, so one trace runs
+	// from the request through the outbox to AgentPulse.
+	trace := observability.InjectTraceContext(ctx)
+	for i := range entries {
+		entries[i].TraceContext = trace
 	}
 	_, err = s.deps.Outbox.Insert(ctx, entries)
 	return err

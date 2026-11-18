@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/rtrtarun/taskify/internal/domain"
+	"github.com/rtrtarun/taskify/internal/observability"
 	"github.com/rtrtarun/taskify/internal/repository"
 )
 
@@ -50,6 +51,8 @@ func (db *DB) WithTx(ctx context.Context, fn func(ctx context.Context) error) (e
 	if _, ok := ctx.Value(txKey{}).(pgx.Tx); ok {
 		return fn(ctx) // join the outer transaction
 	}
+	ctx, span := observability.Tracer().Start(ctx, "db.transaction")
+	defer span.End()
 	tx, err := db.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 func start(t *testing.T) (*Server, string) {
@@ -232,5 +233,23 @@ func TestInAppFeedAndReset(t *testing.T) {
 	s.Reset()
 	if len(s.Requests()) != 0 || len(s.Notifications()) != 0 {
 		t.Error("Reset left state behind")
+	}
+}
+
+func TestSetDelay(t *testing.T) {
+	s, url := start(t)
+	s.SetDelay("POST", "/notify", 150*time.Millisecond)
+	began := time.Now()
+	if status, _ := do(t, "POST", url+"/notify", notifyBody("slow")); status != http.StatusAccepted {
+		t.Fatalf("status = %d", status)
+	}
+	if elapsed := time.Since(began); elapsed < 150*time.Millisecond {
+		t.Errorf("answered after %v, want at least 150ms", elapsed)
+	}
+	s.SetDelay("POST", "/notify", 0)
+	began = time.Now()
+	do(t, "POST", url+"/notify", notifyBody("fast"))
+	if time.Since(began) > 100*time.Millisecond {
+		t.Error("the delay was not removed")
 	}
 }

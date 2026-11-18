@@ -12,8 +12,13 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/rtrtarun/taskify/internal/agentpulse"
 	"github.com/rtrtarun/taskify/internal/domain"
+	"github.com/rtrtarun/taskify/internal/observability"
 	"github.com/rtrtarun/taskify/internal/repository"
 )
 
@@ -36,6 +41,8 @@ type RelayConfig struct {
 	Backoff func(attempts int) time.Duration
 	Now     func() time.Time
 	Logger  *slog.Logger
+	// Metrics may be nil.
+	Metrics *observability.Metrics
 }
 
 func (c *RelayConfig) defaults() {
@@ -154,32 +161,49 @@ func (r *Relay) RunOnce(ctx context.Context) (int, error) {
 }
 
 func (r *Relay) dispatch(ctx context.Context, e domain.OutboxEntry) {
-	if tp := e.TraceContext["traceparent"]; tp != "" {
-		ctx = agentpulse.WithTraceparent(ctx, tp)
-	}
+	// Continue the trace of the request that wrote the row.
+	ctx = observability.ExtractTraceContext(ctx, e.TraceContext)
+	ctx, span := observability.Tracer().Start(ctx, "outbox.dispatch", trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(attribute.String("taskify.event_type", e.EventType), attribute.Int("taskify.attempt", e.Attempts+1)))
+	defer span.End()
+
+	start := time.Now()
 	sendErr := r.notifier.Notify(ctx, e.Payload)
+	elapsed := time.Since(start)
 	now := r.cfg.Now()
-	log := r.cfg.Logger.With("outbox_id", e.ID, "event_type", e.EventType, "tenant_id", e.TenantID)
+	log := r.cfg.Logger.With("outbox_id", e.ID, "event_type", e.EventType, "tenant_id", e.TenantID,
+		"trace_id", observability.TraceID(ctx))
 
 	var err error
+	outcome := observability.OutcomeDispatched
 	switch {
 	case sendErr == nil:
 		err = r.repo.MarkDispatched(ctx, e.ID, *e.ClaimedAt, now)
 	case errors.Is(sendErr, agentpulse.ErrCircuitOpen):
 		// AgentPulse was not contacted: this is not an attempt.
+		outcome = observability.OutcomeCircuitOpen
 		err = r.repo.Release(ctx, e.ID, *e.ClaimedAt, now.Add(r.cfg.OpenCircuitDelay))
 	case !agentpulse.Retryable(sendErr):
+		outcome = observability.OutcomeDeadLetter
 		log.Error("outbox relay: rejected by AgentPulse, moved to dead letter", "error", sendErr)
 		err = r.repo.MarkDeadLetter(ctx, e.ID, *e.ClaimedAt, e.Attempts+1, sendErr.Error())
 	default:
 		attempts := e.Attempts + 1
 		if attempts >= e.MaxAttempts {
+			outcome = observability.OutcomeDeadLetter
 			log.Error("outbox relay: attempts exhausted, moved to dead letter", "attempts", attempts, "error", sendErr)
 			err = r.repo.MarkDeadLetter(ctx, e.ID, *e.ClaimedAt, attempts, sendErr.Error())
 		} else {
+			outcome = observability.OutcomeRetry
 			log.Warn("outbox relay: send failed, will retry", "attempts", attempts, "error", sendErr)
 			err = r.repo.MarkRetry(ctx, e.ID, *e.ClaimedAt, attempts, now.Add(r.cfg.Backoff(attempts)), sendErr.Error())
 		}
+	}
+	r.cfg.Metrics.ObserveDispatch(e.EventType, outcome, elapsed)
+	span.SetAttributes(attribute.String("taskify.outcome", outcome))
+	if sendErr != nil {
+		span.RecordError(sendErr)
+		span.SetStatus(codes.Error, outcome)
 	}
 	if err != nil {
 		// The lease reaper returns the row to pending; AgentPulse

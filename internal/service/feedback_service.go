@@ -11,6 +11,7 @@ import (
 
 	"github.com/rtrtarun/taskify/internal/agentpulse"
 	"github.com/rtrtarun/taskify/internal/domain"
+	"github.com/rtrtarun/taskify/internal/observability"
 	"github.com/rtrtarun/taskify/internal/repository"
 )
 
@@ -33,13 +34,14 @@ type FeedbackSender interface {
 // FeedbackService forwards users' reactions to notifications. It never
 // changes a task.
 type FeedbackService struct {
-	tasks  repository.TaskRepository
-	sender FeedbackSender
+	tasks   repository.TaskRepository
+	sender  FeedbackSender
+	metrics *observability.Metrics
 }
 
-// NewFeedbackService returns a FeedbackService.
-func NewFeedbackService(tasks repository.TaskRepository, sender FeedbackSender) *FeedbackService {
-	return &FeedbackService{tasks: tasks, sender: sender}
+// NewFeedbackService returns a FeedbackService. metrics may be nil.
+func NewFeedbackService(tasks repository.TaskRepository, sender FeedbackSender, metrics *observability.Metrics) *FeedbackService {
+	return &FeedbackService{tasks: tasks, sender: sender, metrics: metrics}
 }
 
 // FeedbackInput is one reaction from a user.
@@ -81,7 +83,11 @@ func (s *FeedbackService) forward(ctx context.Context, in FeedbackInput) error {
 	if in.Signal == SignalSnoozed {
 		fb.SnoozeDuration = in.Duration
 	}
-	return s.sender.RecordFeedback(ctx, fb)
+	if err := s.sender.RecordFeedback(ctx, fb); err != nil {
+		return err
+	}
+	s.metrics.FeedbackForwarded(in.Signal)
+	return nil
 }
 
 // ParseSignal validates a signal and, for snoozed, its duration, which is

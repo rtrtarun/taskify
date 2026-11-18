@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/rtrtarun/taskify/internal/api"
 	"github.com/rtrtarun/taskify/internal/app"
 	"github.com/rtrtarun/taskify/internal/config"
+	"github.com/rtrtarun/taskify/internal/repository/postgres"
 	"github.com/rtrtarun/taskify/internal/repository/repotest"
 	"github.com/rtrtarun/taskify/tests/mockagentpulse"
 )
@@ -36,6 +38,7 @@ type harness struct {
 	t    *testing.T
 	url  string
 	mock *mockagentpulse.Server
+	db   *postgres.DB
 }
 
 func start(t *testing.T) *harness {
@@ -46,13 +49,7 @@ func start(t *testing.T) *harness {
 	apSrv := httptest.NewServer(mock)
 	t.Cleanup(apSrv.Close)
 
-	cfg := config.Config{
-		Env: config.EnvProduction, PublicBaseURL: "https://taskify.e2e",
-		AgentPulseBaseURL: apSrv.URL, AgentPulseAPIKey: "e2e-key", AgentPulseWebhookSecret: webhookSecret,
-		OutboxWorkers: 4, OutboxBatchSize: 50, OutboxPollInterval: 20 * time.Millisecond,
-		OutboxMaxAttempts: 10, OutboxLease: time.Minute, SchedulerInterval: time.Hour,
-		JWTAlgorithm: config.JWTAlgHS256, JWTSecret: jwtSecret, RateLimitRPS: 1000, RateLimitBurst: 1000,
-	}
+	cfg := testConfig(apSrv.URL)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	a, err := app.NewWithDB(db, cfg, logger, "e2e")
 	if err != nil {
@@ -70,7 +67,28 @@ func start(t *testing.T) *harness {
 			t.Errorf("workers: %v", err)
 		}
 	})
-	return &harness{t: t, url: srv.URL, mock: mock}
+	return &harness{t: t, url: srv.URL, mock: mock, db: db}
+}
+
+func testConfig(agentPulseURL string) config.Config {
+	return config.Config{
+		Env: config.EnvProduction, PublicBaseURL: "https://taskify.e2e",
+		AgentPulseBaseURL: agentPulseURL, AgentPulseAPIKey: "e2e-key", AgentPulseWebhookSecret: webhookSecret,
+		OutboxWorkers: 4, OutboxBatchSize: 50, OutboxPollInterval: 20 * time.Millisecond,
+		OutboxMaxAttempts: 10, OutboxLease: time.Minute, SchedulerInterval: time.Hour,
+		JWTAlgorithm: config.JWTAlgHS256, JWTSecret: jwtSecret, RateLimitRPS: 1000, RateLimitBurst: 1000,
+	}
+}
+
+// notifyHeader returns a header of the first /notify request for eventType.
+func (h *harness) notifyHeader(eventType, header string) string {
+	for _, r := range h.mock.RequestsTo("POST", "/notify") {
+		var body map[string]any
+		if r.JSON(&body) == nil && body["eventType"] == eventType {
+			return r.Header.Get(header)
+		}
+	}
+	return ""
 }
 
 func (h *harness) token(user, role string) string {
@@ -145,10 +163,12 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("AgentPulse has %d rules, want 3", n)
 	}
 
-	// A member creates a critical task for someone else.
+	// A member creates a critical task for someone else, inside a trace
+	// their client started.
+	const traceID = "4bf92f3577b34da6a3ce929d0e0e4736"
 	status, task := h.call("POST", "/api/v1/tasks", "usr_bob", "member", map[string]any{
 		"workspace_id": "ws_e2e", "title": "Checkout is down", "priority": "p1_critical", "assignee_id": "usr_carol",
-	}, nil)
+	}, map[string]string{"traceparent": "00-" + traceID + "-00f067aa0ba902b7-01"})
 	if status != 201 {
 		t.Fatalf("create task: %d %v", status, task)
 	}
@@ -166,6 +186,10 @@ func TestEndToEnd(t *testing.T) {
 	}
 	if got := h.mock.RequestsTo("POST", "/notify")[0].Header.Get("Authorization"); got != "Bearer e2e-key" {
 		t.Errorf("AgentPulse auth header = %q", got)
+	}
+	// One trace from the client's request to the AgentPulse call.
+	if tp := h.notifyHeader("task.created", "traceparent"); !strings.HasPrefix(tp, "00-"+traceID+"-") {
+		t.Errorf("AgentPulse traceparent = %q, want trace %s", tp, traceID)
 	}
 
 	// The assignee dismisses it; the signal reaches AgentPulse.

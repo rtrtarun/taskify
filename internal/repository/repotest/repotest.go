@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	neturl "net/url"
 	"os"
 	"testing"
 	"time"
@@ -50,7 +51,7 @@ func Factories(t *testing.T) []Factory {
 	t.Helper()
 	fs := []Factory{{Name: "memory", New: func(*testing.T) Backend { return Memory() }}}
 	if os.Getenv("DATABASE_URL") != "" {
-		fs = append(fs, Factory{Name: "postgres", New: Postgres})
+		fs = append(fs, Factory{Name: "postgres", New: func(t *testing.T) Backend { return Postgres(t) }})
 	} else {
 		t.Log("DATABASE_URL is not set: PostgreSQL tests are skipped")
 	}
@@ -69,7 +70,7 @@ func Memory() Backend {
 
 // Postgres returns a backend on a new, migrated database. It skips the test
 // when DATABASE_URL is not set.
-func Postgres(t *testing.T) Backend {
+func Postgres(t testing.TB) Backend {
 	t.Helper()
 	db := NewDatabase(t)
 	return Backend{
@@ -82,9 +83,17 @@ func Postgres(t *testing.T) Backend {
 
 // NewDatabase creates and migrates a database for one test and returns a
 // pool on it. The database is dropped when the test ends.
-func NewDatabase(t *testing.T) *postgres.DB {
+func NewDatabase(t testing.TB) *postgres.DB {
 	t.Helper()
-	pool := NewEmptyDatabase(t)
+	_, db := NewDatabaseURL(t)
+	return db
+}
+
+// NewDatabaseURL is NewDatabase, also returning the database's connection
+// URL, for tests that start the server as a separate process.
+func NewDatabaseURL(t testing.TB) (string, *postgres.DB) {
+	t.Helper()
+	url, pool := newEmpty(t)
 	err := migrations.Apply(context.Background(), func(ctx context.Context, sql string) error {
 		_, err := pool.Exec(ctx, sql)
 		return err
@@ -92,12 +101,18 @@ func NewDatabase(t *testing.T) *postgres.DB {
 	if err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	return &postgres.DB{Pool: pool}
+	return url, &postgres.DB{Pool: pool}
 }
 
 // NewEmptyDatabase creates a database with no schema and returns a pool on
 // it. The database is dropped when the test ends.
-func NewEmptyDatabase(t *testing.T) *pgxpool.Pool {
+func NewEmptyDatabase(t testing.TB) *pgxpool.Pool {
+	t.Helper()
+	_, pool := newEmpty(t)
+	return pool
+}
+
+func newEmpty(t testing.TB) (string, *pgxpool.Pool) {
 	t.Helper()
 	url := os.Getenv("DATABASE_URL")
 	if url == "" {
@@ -123,6 +138,7 @@ func NewEmptyDatabase(t *testing.T) *pgxpool.Pool {
 	}
 	cfg.ConnConfig.Database = name
 	cfg.MaxConns = 20
+	dbURL := withDatabase(url, name)
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -142,10 +158,20 @@ func NewEmptyDatabase(t *testing.T) *pgxpool.Pool {
 			t.Logf("drop %s: %v", name, err)
 		}
 	})
-	return pool
+	return dbURL, pool
 }
 
-func randomSuffix(t *testing.T) string {
+// withDatabase returns url with its database name replaced.
+func withDatabase(raw, name string) string {
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	u.Path = "/" + name
+	return u.String()
+}
+
+func randomSuffix(t testing.TB) string {
 	b := make([]byte, 6)
 	if _, err := rand.Read(b); err != nil {
 		t.Fatal(err)

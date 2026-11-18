@@ -14,7 +14,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/time/rate"
+
+	"github.com/rtrtarun/taskify/internal/observability"
 )
 
 // HeaderRequestID carries the request ID in both directions.
@@ -37,9 +41,10 @@ func fieldsFrom(ctx context.Context) *logFields {
 
 var safeRequestID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
-// requestContext assigns a request ID (reusing a well-formed incoming one)
-// and writes one access log line per request.
-func requestContext(logger *slog.Logger) func(http.Handler) http.Handler {
+// requestContext assigns a request ID (reusing a well-formed incoming one),
+// names the request's span after its route, records the latency metric, and
+// writes one access log line per request.
+func requestContext(logger *slog.Logger, metrics *observability.Metrics) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			id := r.Header.Get(HeaderRequestID)
@@ -62,9 +67,19 @@ func requestContext(logger *slog.Logger) func(http.Handler) http.Handler {
 			if status == 0 {
 				status = http.StatusOK
 			}
+			elapsed := time.Since(start)
+			metrics.ObserveHTTP(route, r.Method, status, elapsed)
+			if route != "" {
+				span := trace.SpanFromContext(ctx)
+				span.SetName(r.Method + " " + route)
+				span.SetAttributes(attribute.String("http.route", route))
+			}
 			attrs := []any{
 				"request_id", id, "method", r.Method, "route", route, "status", status,
-				"duration_ms", time.Since(start).Milliseconds(),
+				"duration_ms", elapsed.Milliseconds(),
+			}
+			if tid := observability.TraceID(ctx); tid != "" {
+				attrs = append(attrs, "trace_id", tid)
 			}
 			if f.tenantID != "" {
 				attrs = append(attrs, "tenant_id", f.tenantID, "user_id", f.userID)

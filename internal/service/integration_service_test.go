@@ -41,7 +41,7 @@ func eachIntegration(t *testing.T, fn func(t *testing.T, it *integration)) {
 			ts := httptest.NewServer(mock)
 			t.Cleanup(ts.Close)
 			client := agentpulse.New(ts.URL, "k", agentpulse.WithBreaker(nil))
-			fb := NewFeedbackService(b.Tasks, client)
+			fb := NewFeedbackService(b.Tasks, client, nil)
 			it := &integration{
 				fixture:    f,
 				mock:       mock,

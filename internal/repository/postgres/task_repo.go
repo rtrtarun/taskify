@@ -47,7 +47,8 @@ func (r *TaskRepo) Create(ctx context.Context, t *domain.Task) error {
 		if err != nil {
 			return mapErr(err)
 		}
-		return r.replaceWatchers(ctx, t.ID, t.Watchers)
+		// A new task has no watchers to remove: insert only.
+		return r.insertWatchers(ctx, t.ID, t.Watchers)
 	})
 }
 
@@ -267,10 +268,14 @@ func (r *TaskRepo) replaceWatchers(ctx context.Context, taskID uuid.UUID, watche
 		`DELETE FROM task_watchers WHERE task_id = $1 AND NOT (user_id = ANY($2::text[]))`, taskID, watchers); err != nil {
 		return mapErr(err)
 	}
+	return r.insertWatchers(ctx, taskID, watchers)
+}
+
+func (r *TaskRepo) insertWatchers(ctx context.Context, taskID uuid.UUID, watchers []string) error {
 	if len(watchers) == 0 {
 		return nil
 	}
-	_, err := q.Exec(ctx, `
+	_, err := r.db.q(ctx).Exec(ctx, `
 		INSERT INTO task_watchers (task_id, user_id)
 		SELECT $1, w FROM unnest($2::text[]) AS w
 		ON CONFLICT DO NOTHING`, taskID, watchers)
