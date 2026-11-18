@@ -17,7 +17,7 @@ Releases are automatic. Every merge to `main` that passes the tests is versioned
 | Changelog grouped into breaking changes, features, fixes, and other | The GitHub Release notes |
 | Go module version | The tag itself: `go get github.com/RONGALI-TARUN/taskify@vX.Y.Z` |
 
-Releases below 1.0 are marked as pre-releases on GitHub. The running server reports its version in its start-up log line and in `GET /healthz`.
+Versions with a suffix, such as `v0.3.0-rc.1`, are marked as pre-releases on GitHub; the automatic releases never carry one. The running server reports its version in its start-up log line and in `GET /healthz`.
 
 The configuration is in [.goreleaser.yaml](../.goreleaser.yaml), the release job in [.github/workflows/ci.yml](../.github/workflows/ci.yml), and the version rules in [tools/nextversion](../tools/nextversion/main.go).
 

@@ -84,7 +84,7 @@ dockers_v2:
 
 release:
   name_template: "Taskify {{ .Tag }}"
-  # Versions below 1.0 are marked as pre-releases on GitHub.
+  # Only versions with a suffix such as -rc.1 are marked as pre-releases.
   prerelease: auto
   # A re-run after a partial failure replaces what was uploaded.
   replace_existing_artifacts: true
