@@ -43,7 +43,10 @@ jobs:
       - name: Build
         run: go build ./...
       - name: Test
-        run: go test -race ./...
+        shell: bash # with pipefail, so a test failure is not hidden by tee
+        run: go test -race -cover ./... | tee test-output.txt
+      - name: Coverage gate (90% for domain, service, worker, api)
+        run: scripts/coverage-gate.sh test-output.txt 90
 
   # Every merge to main is versioned and released once the tests pass.
   # See docs/releasing.md.

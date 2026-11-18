@@ -145,7 +145,7 @@ Update this table as milestones close.
 | M1 Domain and schema | 7 | Done. Migrations verified up, down, up on PostgreSQL 16 |
 | M2 Outbox and workers | 10 | Done. All exit criteria have tests, passing with `-race` on memory and PostgreSQL |
 | M3 REST API and bridges | 10 | Done. Unit, API, and end-to-end tests pass with `-race` on PostgreSQL |
-| M4 Observability (R1) | 6 | Not started |
+| M4 Observability (R1) | 6 | Done. Benchmarks meet every target on a Linux network; see docs/benchmarks.md. R1 complete apart from M0-07 |
 | M5 Agent runtime | 11 | Not started |
 | M6 HITL bridge | 4 | Not started |
 | M7 Triage | 4 | Not started |
@@ -176,3 +176,5 @@ Recorded as they come up, so the architecture can be corrected or the code chang
 | D10 | M3-08 | A replayed webhook is recognised by its signature; there is no delivery ID. | A byte-identical replay has the same signature, and AgentPulse's payload has no confirmed ID field. |
 | D11 | M3-03 | An update without `If-Match` or `version` is `428 Precondition Required`; `PUT` behaves as `PATCH`. | The architecture requires a version but names no status; 428 is the standard one. Section 5.4 lists `PUT` and `PATCH` as one row. |
 | D12 | M3-05 | Permanent delete returns `204`; `?permanent=` accepts only `true` or `false`. | Nothing remains to return, and an unexpected value must not fall through to an archive. |
+| D13 | M4-02 | Traces are exported only when an OTLP endpoint is configured. Without one, spans are still created, so trace IDs still reach logs, the outbox, and AgentPulse. | Tracing must not need a collector to be useful, and must not fail start-up when none exists. |
+| D14 | M4-01 | `/metrics` and `/readyz` are unauthenticated, like `/healthz`. | Prometheus and orchestrator probes do not carry tokens; access is restricted at the network edge, as the README says. |

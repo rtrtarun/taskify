@@ -67,6 +67,7 @@ type Server struct {
 	rules         []map[string]any
 	suggestions   []*Suggestion
 	feeds         map[string][]FeedItem // key: tenant + "/" + user
+	delays        map[string]time.Duration
 
 	mux *http.ServeMux
 }
@@ -77,6 +78,7 @@ func New() *Server {
 		failures: map[string]*failure{},
 		byKey:    map[string]string{},
 		feeds:    map[string][]FeedItem{},
+		delays:   map[string]time.Duration{},
 		mux:      http.NewServeMux(),
 	}
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -116,8 +118,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.remaining--
 		}
 	}
+	delay := s.delays[r.Method+" "+r.URL.Path]
 	s.mu.Unlock()
 
+	// A slow AgentPulse: the request is recorded, then answered late. A
+	// client that gives up meanwhile still leaves the call accepted, as a
+	// real server would.
+	time.Sleep(delay)
 	if status != 0 {
 		writeJSON(w, status, map[string]any{"error": "scripted failure"})
 		return
@@ -134,6 +141,14 @@ func (s *Server) FailNext(method, path string, status, n int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failures[method+" "+path] = &failure{status: status, remaining: n}
+}
+
+// SetDelay makes every call to method and path wait d before answering.
+// Zero removes the delay.
+func (s *Server) SetDelay(method, path string, d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.delays[method+" "+path] = d
 }
 
 // ClearFailures removes all scripted failures.
@@ -170,6 +185,7 @@ func (s *Server) Reset() {
 	s.rules = nil
 	s.suggestions = nil
 	s.feeds = map[string][]FeedItem{}
+	s.delays = map[string]time.Duration{}
 }
 
 // --- inspection ------------------------------------------------------------

@@ -1,13 +1,16 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
+	"github.com/rtrtarun/taskify/internal/observability"
 	"github.com/rtrtarun/taskify/internal/service"
 )
 
@@ -25,6 +28,11 @@ type Deps struct {
 	Version       string
 	Logger        *slog.Logger
 	Now           func() time.Time
+	// Metrics may be nil; /metrics is then not served.
+	Metrics *observability.Metrics
+	// Ready reports whether the service can do its work (the database
+	// answers). nil means always ready.
+	Ready func(ctx context.Context) error
 }
 
 type handlers struct {
@@ -67,7 +75,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 	}
 
 	r := chi.NewRouter()
-	r.Use(requestContext(d.Logger), recoverer(d.Logger))
+	r.Use(requestContext(d.Logger, d.Metrics), recoverer(d.Logger))
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, newError(http.StatusNotFound, CodeNotFound, "no such route"))
 	})
@@ -75,9 +83,15 @@ func NewRouter(d Deps) (http.Handler, error) {
 		h.fail(w, r, newError(http.StatusMethodNotAllowed, CodeInvalidRequest, "method not allowed on this route"))
 	})
 
+	// Operations endpoints: outside /api/v1 and unauthenticated. Restrict
+	// /metrics at the network edge if it must not be public.
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": h.version})
 	})
+	r.Get("/readyz", readiness(d.Ready, d.Logger))
+	if d.Metrics != nil {
+		r.Method(http.MethodGet, "/metrics", d.Metrics.Handler())
+	}
 
 	authenticated := func(r chi.Router) {
 		r.Use(auth.middleware, limiter.middleware)
@@ -97,7 +111,28 @@ func NewRouter(d Deps) (http.Handler, error) {
 		authenticated(r)
 		r.Route("/tasks", h.taskRoutes)
 	})
-	return r, nil
+
+	// The OpenTelemetry handler is outermost: it continues an incoming W3C
+	// trace or starts one, so every log line and outbox row below can carry
+	// the trace ID.
+	return otelhttp.NewHandler(r, "http.request", otelhttp.WithPropagators(observability.Propagator)), nil
+}
+
+// readiness answers 503 while a dependency the service cannot work without
+// is down. AgentPulse is not one: task writes succeed without it.
+func readiness(ready func(context.Context) error, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if ready != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			defer cancel()
+			if err := ready(ctx); err != nil {
+				logger.WarnContext(r.Context(), "not ready", "error", err)
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready", "reason": "database unreachable"})
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+	}
 }
 
 func (h *handlers) fail(w http.ResponseWriter, r *http.Request, err error) {

@@ -20,6 +20,10 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
+	"github.com/rtrtarun/taskify/internal/observability"
 )
 
 // ErrCircuitOpen is returned without contacting AgentPulse while the circuit
@@ -91,7 +95,12 @@ func New(baseURL, apiKey string, opts ...Option) *Client {
 	c := &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  apiKey,
-		http:    &http.Client{Transport: transport, Timeout: 10 * time.Second},
+		// The OpenTelemetry transport opens a client span for each call and
+		// sends its W3C traceparent, continuing the trace in ctx.
+		http: &http.Client{
+			Transport: otelhttp.NewTransport(transport, otelhttp.WithPropagators(observability.Propagator)),
+			Timeout:   10 * time.Second,
+		},
 		breaker: DefaultBreaker(),
 	}
 	for _, o := range opts {
@@ -106,14 +115,6 @@ func (c *Client) BreakerState() BreakerState {
 		return BreakerClosed
 	}
 	return c.breaker.State()
-}
-
-type traceKey struct{}
-
-// WithTraceparent returns a context whose calls carry the W3C traceparent
-// header. The relay uses it to continue the trace recorded in the outbox.
-func WithTraceparent(ctx context.Context, traceparent string) context.Context {
-	return context.WithValue(ctx, traceKey{}, traceparent)
 }
 
 // Notify sends a complete /notify body, as stored in the outbox.
@@ -240,9 +241,6 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) (err 
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("User-Agent", "taskify")
-	if tp, _ := ctx.Value(traceKey{}).(string); tp != "" {
-		req.Header.Set("traceparent", tp)
-	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {

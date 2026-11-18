@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rtrtarun/taskify/internal/observability"
 	"github.com/rtrtarun/taskify/tests/mockagentpulse"
 )
 
@@ -36,7 +37,9 @@ func TestNotifySendsBodyAndHeaders(t *testing.T) {
 	c := New(url+"/", "secret-key")
 
 	body := json.RawMessage(`{"idempotencyKey":"k1","tenantId":"t","userId":"u","eventType":"task.created","title":"x","body":"y","payload":{"bypassDigest":true}}`)
-	ctx := WithTraceparent(context.Background(), "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01")
+	// A context carrying a trace, as the relay builds from an outbox row.
+	ctx := observability.ExtractTraceContext(context.Background(),
+		map[string]string{"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"})
 	if err := c.Notify(ctx, body); err != nil {
 		t.Fatal(err)
 	}
@@ -51,8 +54,8 @@ func TestNotifySendsBodyAndHeaders(t *testing.T) {
 	if r.Header.Get("Authorization") != "Bearer secret-key" || r.Header.Get("Content-Type") != "application/json" {
 		t.Errorf("headers = %v", r.Header)
 	}
-	if r.Header.Get("traceparent") != "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01" {
-		t.Errorf("traceparent = %q", r.Header.Get("traceparent"))
+	if tp := r.Header.Get("traceparent"); !strings.HasPrefix(tp, "00-0af7651916cd43dd8448eb211c80319c-") {
+		t.Errorf("traceparent = %q, want the same trace ID", tp)
 	}
 	// A duplicate is acknowledged with 200 and is a success.
 	if err := c.Notify(context.Background(), body); err != nil {

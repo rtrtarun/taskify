@@ -24,6 +24,7 @@ import (
 
 	"github.com/rtrtarun/taskify/internal/agentpulse"
 	"github.com/rtrtarun/taskify/internal/domain"
+	"github.com/rtrtarun/taskify/internal/observability"
 	"github.com/rtrtarun/taskify/internal/repository/repotest"
 	"github.com/rtrtarun/taskify/internal/service"
 	"github.com/rtrtarun/taskify/tests/mockagentpulse"
@@ -59,7 +60,7 @@ func newEnv(t *testing.T, opts ...option) *env {
 	clock := func() time.Time { return e.now }
 	tasks := service.NewTaskService(service.Deps{Tx: b.Tx, Tasks: b.Tasks, Workspaces: b.Workspaces, Comments: b.Comments, Outbox: b.Outbox},
 		service.Config{PublicBaseURL: "https://taskify.test"}, service.WithClock(clock))
-	feedback := service.NewFeedbackService(b.Tasks, client)
+	feedback := service.NewFeedbackService(b.Tasks, client, nil)
 	d := Deps{
 		Tasks:         tasks,
 		Workspaces:    service.NewWorkspaceService(b.Tx, b.Workspaces, b.Rules, client, clock),
@@ -859,5 +860,157 @@ func TestUnexpectedErrorsAreNotLeaked(t *testing.T) {
 	writeError(rec, httptest.NewRequest("GET", "/", nil), quiet, agentpulse.ErrCircuitOpen)
 	if rec.Code != 503 {
 		t.Errorf("open circuit: %d", rec.Code)
+	}
+}
+
+// --- operations ------------------------------------------------------------
+
+func TestReadiness(t *testing.T) {
+	var dbErr error
+	e := newEnv(t, func(d *Deps) { d.Ready = func(context.Context) error { return dbErr } })
+	if r := e.do(req{method: "GET", path: "/readyz", as: "none"}); r.status != 200 || r.json["status"] != "ready" {
+		t.Errorf("ready: %d %s", r.status, r.raw)
+	}
+	dbErr = errors.New("connection refused to 10.0.0.5")
+	r := e.do(req{method: "GET", path: "/readyz", as: "none"})
+	if r.status != 503 || r.json["status"] != "not_ready" || strings.Contains(string(r.raw), "10.0.0.5") {
+		t.Errorf("not ready: %d %s", r.status, r.raw)
+	}
+	if r := newEnv(t).do(req{method: "GET", path: "/readyz", as: "none"}); r.status != 200 {
+		t.Errorf("no readiness check: %d", r.status)
+	}
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	m := observability.NewMetrics(nil)
+	e := newEnv(t, func(d *Deps) { d.Metrics = m })
+	task := e.createTask(nil)
+	e.do(req{method: "GET", path: "/api/v1/tasks/" + task["id"].(string)})
+	e.do(req{method: "GET", path: "/api/v1/tasks/" + uuid.NewString()})
+	e.do(req{method: "GET", path: "/no/such/" + uuid.NewString()})
+
+	r := e.do(req{method: "GET", path: "/metrics", as: "none"})
+	if r.status != 200 {
+		t.Fatalf("metrics: %d", r.status)
+	}
+	body := string(r.raw)
+	for _, want := range []string{
+		`method="GET",route="/api/v1/tasks/{id}",status="200"`,
+		`method="GET",route="/api/v1/tasks/{id}",status="404"`,
+		`method="POST",route="/api/v1/tasks",status="201"`,
+		`method="GET",route="unmatched",status="404"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics are missing %s", want)
+		}
+	}
+	if strings.Contains(body, "/no/such") {
+		t.Error("an unmatched path became a label value")
+	}
+	if r := newEnv(t).do(req{method: "GET", path: "/metrics", as: "none"}); r.status != 404 {
+		t.Errorf("metrics without a registry: %d", r.status)
+	}
+}
+
+// TestTraceReachesOutboxAndLogs: the trace of an incoming request is stored
+// with its outbox rows, for the relay to continue, and logged.
+func TestTraceReachesOutboxAndLogs(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	e := newEnv(t, func(d *Deps) { d.Logger = logger })
+
+	const traceID = "4bf92f3577b34da6a3ce929d0e0e4736"
+	r := e.do(req{method: "POST", path: "/api/v1/tasks", headers: map[string]string{
+		"traceparent": "00-" + traceID + "-00f067aa0ba902b7-01",
+	}, body: map[string]any{"workspace_id": "ws_core", "title": "Traced", "assignee_id": "usr_carol"}})
+	if r.status != 201 {
+		t.Fatalf("create: %d %s", r.status, r.raw)
+	}
+	entries, _ := e.b.Outbox.ListForAggregate(context.Background(), uuid.MustParse(r.json["id"].(string)))
+	if len(entries) != 1 || !strings.Contains(entries[0].TraceContext["traceparent"], traceID) {
+		t.Errorf("outbox trace context = %v", entries)
+	}
+	if !strings.Contains(logs.String(), `"trace_id":"`+traceID+`"`) {
+		t.Errorf("access log lacks the trace ID: %s", logs.String())
+	}
+}
+
+func TestEdgeCases(t *testing.T) {
+	e := newEnv(t)
+	task := e.createTask(nil)
+	id := task["id"].(string)
+	path := "/api/v1/tasks/" + id
+	bad := "/api/v1/tasks/not-a-uuid"
+
+	for name, tc := range map[string]struct {
+		r      req
+		status int
+	}{
+		"complete malformed ID":   {req{method: "POST", path: bad + "/complete"}, 404},
+		"complete bad body":       {req{method: "POST", path: path + "/complete", body: `{"x":1}`}, 400},
+		"complete bad If-Match":   {req{method: "POST", path: path + "/complete", headers: map[string]string{"If-Match": "abc"}}, 400},
+		"restore malformed ID":    {req{method: "POST", path: bad + "/restore"}, 404},
+		"comment malformed ID":    {req{method: "POST", path: bad + "/comments", body: map[string]any{"body": "x"}}, 404},
+		"comment bad body":        {req{method: "POST", path: path + "/comments", body: `[]`}, 400},
+		"feedback malformed ID":   {req{method: "POST", path: bad + "/feedback?signal=acted"}, 404},
+		"feedback bad body":       {req{method: "POST", path: path + "/feedback", body: `{"signal":1}`}, 400},
+		"update malformed ID":     {req{method: "PATCH", path: bad, body: map[string]any{"version": 1}}, 404},
+		"update bad body":         {req{method: "PATCH", path: path, body: `nope`}, 400},
+		"delete malformed ID":     {req{method: "DELETE", path: bad + "?permanent=true", as: "admin"}, 404},
+		"rename bad body":         {req{method: "PATCH", path: "/api/v1/workspaces/ws_core/settings", as: "admin", body: `{`}, 400},
+		"rename empty name":       {req{method: "PATCH", path: "/api/v1/workspaces/ws_core/settings", as: "admin", body: map[string]any{"name": " "}}, 422},
+		"rename missing":          {req{method: "PATCH", path: "/api/v1/workspaces/nope/settings", as: "admin", body: map[string]any{"name": "x"}}, 404},
+		"create workspace body":   {req{method: "POST", path: "/api/v1/workspaces", as: "admin", body: `{"id":`}, 400},
+		"decision bad body":       {req{method: "POST", path: "/api/v1/admin/learning/suggestions/x/decision", as: "admin", body: `x`}, 400},
+		"cursor without colon":    {req{method: "GET", path: "/api/v1/tasks?cursor=YWJj"}, 400},
+		"cursor bad number":       {req{method: "GET", path: "/api/v1/tasks?cursor=eDp5"}, 400},
+		"cursor bad uuid":         {req{method: "GET", path: "/api/v1/tasks?cursor=MTp5"}, 400},
+		"oversized optional body": {req{method: "POST", path: path + "/complete", body: strings.Repeat(" ", maxBody+1)}, 413},
+	} {
+		if r := e.do(tc.r); r.status != tc.status {
+			t.Errorf("%s: %d %s", name, r.status, r.raw)
+		}
+	}
+
+	// A blocked task shows why; a reminder can be set and cleared.
+	r := e.do(req{method: "PATCH", path: path, body: map[string]any{
+		"version": 1, "status": "blocked", "remind_at": e.now.Add(time.Hour).Format(time.RFC3339),
+	}})
+	if r.status != 200 || r.json["blocked_reason"] != "manual" || r.json["remind_at"] == nil {
+		t.Errorf("blocked with reminder: %d %s", r.status, r.raw)
+	}
+
+	// Completing from a notification still succeeds when feedback cannot be sent.
+	e.do(req{method: "PATCH", path: path, body: map[string]any{"version": 2, "status": "todo"}})
+	e.mock.FailNext("POST", "/feedback", http.StatusServiceUnavailable, 1)
+	if r := e.do(req{method: "POST", path: path + "/complete", as: "admin", body: map[string]any{"notification_id": "n"}}); r.status != 200 {
+		t.Errorf("complete with feedback down: %d %s", r.status, r.raw)
+	}
+
+	if (&httpError{message: "m"}).Error() != "m" {
+		t.Error("httpError.Error")
+	}
+	rec := httptest.NewRecorder()
+	writeRaw(rec, json.RawMessage(`not json`))
+	if rec.Body.String() != "{}" {
+		t.Errorf("writeRaw with invalid JSON = %q", rec.Body.String())
+	}
+}
+
+func TestRateLimiterDefaultsAndSweep(t *testing.T) {
+	rl := newRateLimiter(RateLimitConfig{})
+	if rl.limit != 20 || rl.burst != 40 {
+		t.Errorf("defaults = %v/%d", rl.limit, rl.burst)
+	}
+	rl.allow("a")
+	rl.allow("b")
+	// Pretend both buckets have been idle, and a sweep is due.
+	for _, b := range rl.buckets {
+		b.seen = time.Now().Add(-2 * idleBucket)
+	}
+	rl.lastSweep = time.Now().Add(-2 * time.Minute)
+	rl.allow("c")
+	if _, ok := rl.buckets["a"]; ok || len(rl.buckets) != 1 {
+		t.Errorf("idle buckets were not swept: %d left", len(rl.buckets))
 	}
 }

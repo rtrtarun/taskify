@@ -17,6 +17,8 @@ import (
 	"github.com/rtrtarun/taskify/internal/agentpulse"
 	"github.com/rtrtarun/taskify/internal/api"
 	"github.com/rtrtarun/taskify/internal/config"
+	"github.com/rtrtarun/taskify/internal/domain"
+	"github.com/rtrtarun/taskify/internal/observability"
 	"github.com/rtrtarun/taskify/internal/repository/postgres"
 	"github.com/rtrtarun/taskify/internal/service"
 	"github.com/rtrtarun/taskify/internal/worker"
@@ -69,6 +71,9 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 	outbox := postgres.NewOutboxRepo(db)
 	deliveries := postgres.NewDeliveryRepo(db)
 	client := agentpulse.New(cfg.AgentPulseBaseURL, cfg.AgentPulseAPIKey)
+	metrics := observability.NewMetrics(func(ctx context.Context) (int, error) {
+		return outbox.CountByStatus(ctx, domain.OutboxPending)
+	})
 
 	relay := worker.NewRelay(outbox, client, worker.RelayConfig{
 		Workers:      cfg.OutboxWorkers,
@@ -76,6 +81,7 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 		PollInterval: cfg.OutboxPollInterval,
 		Lease:        cfg.OutboxLease,
 		Logger:       logger,
+		Metrics:      metrics,
 	})
 	taskSvc := service.NewTaskService(service.Deps{
 		Tx: db, Tasks: tasks, Workspaces: postgres.NewWorkspaceRepo(db),
@@ -84,7 +90,7 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 		PublicBaseURL:     cfg.PublicBaseURL,
 		OutboxMaxAttempts: cfg.OutboxMaxAttempts,
 	}, service.WithWake(relay.Wake))
-	feedback := service.NewFeedbackService(tasks, client)
+	feedback := service.NewFeedbackService(tasks, client, metrics)
 
 	handler, err := api.NewRouter(api.Deps{
 		Tasks:      taskSvc,
@@ -103,6 +109,8 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 		RateLimit:     api.RateLimitConfig{RPS: cfg.RateLimitRPS, Burst: cfg.RateLimitBurst},
 		Version:       version,
 		Logger:        logger,
+		Metrics:       metrics,
+		Ready:         db.Ping,
 	})
 	if err != nil {
 		return nil, err
