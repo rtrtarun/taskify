@@ -1,0 +1,173 @@
+// Package app assembles Taskify from its configuration: repositories,
+// services, the HTTP router, and the background workers. cmd/taskify and the
+// end-to-end tests both build the service through New, so they run the same
+// wiring.
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"golang.org/x/sync/errgroup"
+
+	"github.com/rtrtarun/taskify/internal/agentpulse"
+	"github.com/rtrtarun/taskify/internal/api"
+	"github.com/rtrtarun/taskify/internal/config"
+	"github.com/rtrtarun/taskify/internal/repository/postgres"
+	"github.com/rtrtarun/taskify/internal/service"
+	"github.com/rtrtarun/taskify/internal/worker"
+)
+
+const shutdownTimeout = 15 * time.Second
+
+// App is a configured Taskify instance.
+type App struct {
+	// Handler serves the HTTP API.
+	Handler http.Handler
+
+	cfg        config.Config
+	logger     *slog.Logger
+	db         *postgres.DB
+	borrowedDB bool
+	relay      *worker.Relay
+	scheduler  *worker.Scheduler
+	cleanup    *worker.Cleanup
+}
+
+// New builds the service. It connects lazily, so it does not fail when
+// PostgreSQL is briefly unavailable.
+func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version string) (*App, error) {
+	db, err := postgres.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("database pool: %w", err)
+	}
+	a, err := assemble(db, cfg, logger, version)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	return a, nil
+}
+
+// NewWithDB builds the service on an existing pool. Close does not close it.
+// Tests use it to run the service against a throwaway database.
+func NewWithDB(db *postgres.DB, cfg config.Config, logger *slog.Logger, version string) (*App, error) {
+	a, err := assemble(db, cfg, logger, version)
+	if err != nil {
+		return nil, err
+	}
+	a.borrowedDB = true
+	return a, nil
+}
+
+func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version string) (*App, error) {
+	tasks := postgres.NewTaskRepo(db)
+	outbox := postgres.NewOutboxRepo(db)
+	deliveries := postgres.NewDeliveryRepo(db)
+	client := agentpulse.New(cfg.AgentPulseBaseURL, cfg.AgentPulseAPIKey)
+
+	relay := worker.NewRelay(outbox, client, worker.RelayConfig{
+		Workers:      cfg.OutboxWorkers,
+		BatchSize:    cfg.OutboxBatchSize,
+		PollInterval: cfg.OutboxPollInterval,
+		Lease:        cfg.OutboxLease,
+		Logger:       logger,
+	})
+	taskSvc := service.NewTaskService(service.Deps{
+		Tx: db, Tasks: tasks, Workspaces: postgres.NewWorkspaceRepo(db),
+		Comments: postgres.NewCommentRepo(db), Outbox: outbox,
+	}, service.Config{
+		PublicBaseURL:     cfg.PublicBaseURL,
+		OutboxMaxAttempts: cfg.OutboxMaxAttempts,
+	}, service.WithWake(relay.Wake))
+	feedback := service.NewFeedbackService(tasks, client)
+
+	handler, err := api.NewRouter(api.Deps{
+		Tasks:      taskSvc,
+		Workspaces: service.NewWorkspaceService(db, postgres.NewWorkspaceRepo(db), postgres.NewRuleRepo(db), client, nil),
+		Feedback:   feedback,
+		Webhooks:   service.NewWebhookService(db, deliveries, taskSvc, feedback, logger, nil),
+		Learning:   client,
+		Auth: api.AuthConfig{
+			Development:         cfg.IsDevelopment(),
+			Algorithm:           cfg.JWTAlgorithm,
+			Secret:              cfg.JWTSecret,
+			PublicKey:           cfg.JWTPublicKey,
+			TrustedGatewayCIDRs: cfg.TrustedGatewayCIDRs,
+		},
+		WebhookSecret: cfg.AgentPulseWebhookSecret,
+		RateLimit:     api.RateLimitConfig{RPS: cfg.RateLimitRPS, Burst: cfg.RateLimitBurst},
+		Version:       version,
+		Logger:        logger,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &App{
+		Handler: handler,
+		cfg:     cfg,
+		logger:  logger,
+		db:      db,
+		relay:   relay,
+		scheduler: worker.NewScheduler(db, tasks, outbox, worker.SchedulerConfig{
+			Interval:          cfg.SchedulerInterval,
+			PublicBaseURL:     cfg.PublicBaseURL,
+			OutboxMaxAttempts: cfg.OutboxMaxAttempts,
+			Logger:            logger,
+			Wake:              relay.Wake,
+		}),
+		cleanup: worker.NewCleanup(outbox, worker.CleanupConfig{Deliveries: deliveries, Logger: logger}),
+	}, nil
+}
+
+// RunWorkers runs the relay, scheduler, and cleanup until ctx is cancelled.
+func (a *App) RunWorkers(ctx context.Context) error {
+	g, ctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return a.relay.Run(ctx) })
+	g.Go(func() error { return a.scheduler.Run(ctx) })
+	g.Go(func() error { return a.cleanup.Run(ctx) })
+	return g.Wait()
+}
+
+// Run serves HTTP on the configured port and runs the workers until ctx is
+// cancelled, then shuts down: it stops accepting requests and lets in-flight
+// requests and sends finish.
+func (a *App) Run(ctx context.Context, version string) error {
+	srv := &http.Server{
+		Addr:              fmt.Sprintf(":%d", a.cfg.Port),
+		Handler:           a.Handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return a.RunWorkers(gctx) })
+	g.Go(func() error {
+		a.logger.Info("taskify listening", "addr", srv.Addr, "version", version, "config", a.cfg.String())
+		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("http server: %w", err)
+		}
+		return nil
+	})
+	g.Go(func() error {
+		<-gctx.Done()
+		a.logger.Info("shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		return srv.Shutdown(shutdownCtx)
+	})
+	return g.Wait()
+}
+
+// Close releases the database pool, unless it was passed to NewWithDB.
+func (a *App) Close() {
+	if !a.borrowedDB {
+		a.db.Close()
+	}
+}

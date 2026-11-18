@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNewOutboxEntries(t *testing.T) {
@@ -92,5 +93,17 @@ func TestWatchersAreASortedSet(t *testing.T) {
 	events, err := task.Apply(Patch{Watchers: ptr([]string{"zed", "amy"})}, alice, t0)
 	if err != nil || len(events) != 0 || task.Version != 1 {
 		t.Errorf("reordered watchers counted as a change: events %v version %d err %v", events, task.Version, err)
+	}
+}
+
+func TestWorkspaceRename(t *testing.T) {
+	w, _ := NewWorkspace("t", "ws", "Old", t0)
+	if err := w.Rename("  New  ", t0.Add(time.Hour)); err != nil || w.Name != "New" || !w.UpdatedAt.Equal(t0.Add(time.Hour)) {
+		t.Errorf("Rename = %+v, %v", w, err)
+	}
+	for _, bad := range []string{" ", strings.Repeat("n", 256)} {
+		if err := w.Rename(bad, t0); !errors.Is(err, ErrValidation) || w.Name != "New" {
+			t.Errorf("Rename(%d chars): error = %v, name %q", len(bad), err, w.Name)
+		}
 	}
 }

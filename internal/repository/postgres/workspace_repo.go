@@ -6,8 +6,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/RONGALI-TARUN/taskify/internal/domain"
-	"github.com/RONGALI-TARUN/taskify/internal/repository"
+	"github.com/rtrtarun/taskify/internal/domain"
+	"github.com/rtrtarun/taskify/internal/repository"
 )
 
 // WorkspaceRepo implements repository.WorkspaceRepository.
@@ -26,9 +26,33 @@ func (r *WorkspaceRepo) Create(ctx context.Context, w domain.Workspace) error {
 }
 
 func (r *WorkspaceRepo) Get(ctx context.Context, tenantID, id string) (domain.Workspace, error) {
+	return r.get(ctx, tenantID, id, "")
+}
+
+func (r *WorkspaceRepo) GetForUpdate(ctx context.Context, tenantID, id string) (domain.Workspace, error) {
+	if _, err := r.db.tx(ctx); err != nil {
+		return domain.Workspace{}, err
+	}
+	return r.get(ctx, tenantID, id, " FOR UPDATE")
+}
+
+func (r *WorkspaceRepo) Update(ctx context.Context, w domain.Workspace) error {
+	tag, err := r.db.q(ctx).Exec(ctx,
+		`UPDATE workspaces SET name = $3, updated_at = $4 WHERE tenant_id = $1 AND id = $2`,
+		w.TenantID, w.ID, w.Name, w.UpdatedAt)
+	if err != nil {
+		return mapErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (r *WorkspaceRepo) get(ctx context.Context, tenantID, id, lock string) (domain.Workspace, error) {
 	var w domain.Workspace
 	err := r.db.q(ctx).QueryRow(ctx,
-		`SELECT tenant_id, id, name, created_at, updated_at FROM workspaces WHERE tenant_id = $1 AND id = $2`,
+		`SELECT tenant_id, id, name, created_at, updated_at FROM workspaces WHERE tenant_id = $1 AND id = $2`+lock,
 		tenantID, id).Scan(&w.TenantID, &w.ID, &w.Name, &w.CreatedAt, &w.UpdatedAt)
 	if err != nil {
 		return domain.Workspace{}, mapErr(err)

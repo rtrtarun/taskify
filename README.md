@@ -29,7 +29,7 @@ To get started with Taskify, follow these simple steps:
 2. Clone this repository to your local machine:
 
     ```bash
-    git clone https://github.com/RONGALI-TARUN/taskify.git
+    git clone https://github.com/rtrtarun/taskify.git
     ```
 
 3. Navigate to the project directory:

@@ -18,10 +18,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/RONGALI-TARUN/taskify/internal/repository"
-	"github.com/RONGALI-TARUN/taskify/internal/repository/memory"
-	"github.com/RONGALI-TARUN/taskify/internal/repository/postgres"
-	"github.com/RONGALI-TARUN/taskify/migrations"
+	"github.com/rtrtarun/taskify/internal/repository"
+	"github.com/rtrtarun/taskify/internal/repository/memory"
+	"github.com/rtrtarun/taskify/internal/repository/postgres"
+	"github.com/rtrtarun/taskify/migrations"
 )
 
 // Backend is one complete set of repositories sharing a store.
@@ -32,6 +32,8 @@ type Backend struct {
 	Workspaces repository.WorkspaceRepository
 	Comments   repository.CommentRepository
 	Outbox     repository.OutboxRepository
+	Rules      repository.WorkspaceRuleRepository
+	Deliveries repository.WebhookDeliveryRepository
 	// DB is set for the PostgreSQL backend only.
 	DB *postgres.DB
 }
@@ -61,6 +63,7 @@ func Memory() Backend {
 	return Backend{
 		Name: "memory", Tx: st,
 		Tasks: st.Tasks(), Workspaces: st.Workspaces(), Comments: st.Comments(), Outbox: st.Outbox(),
+		Rules: st.Rules(), Deliveries: st.Deliveries(),
 	}
 }
 
@@ -73,6 +76,7 @@ func Postgres(t *testing.T) Backend {
 		Name: "postgres", Tx: db, DB: db,
 		Tasks: postgres.NewTaskRepo(db), Workspaces: postgres.NewWorkspaceRepo(db),
 		Comments: postgres.NewCommentRepo(db), Outbox: postgres.NewOutboxRepo(db),
+		Rules: postgres.NewRuleRepo(db), Deliveries: postgres.NewDeliveryRepo(db),
 	}
 }
 

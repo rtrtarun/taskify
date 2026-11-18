@@ -8,8 +8,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/RONGALI-TARUN/taskify/internal/domain"
-	"github.com/RONGALI-TARUN/taskify/internal/repository"
+	"github.com/rtrtarun/taskify/internal/domain"
+	"github.com/rtrtarun/taskify/internal/repository"
 )
 
 // OutboxRepo implements repository.OutboxRepository.
@@ -142,6 +142,15 @@ func (r *OutboxRepo) Get(ctx context.Context, id uuid.UUID) (domain.OutboxEntry,
 		return domain.OutboxEntry{}, domain.ErrNotFound
 	}
 	return entries[0], nil
+}
+
+func (r *OutboxRepo) DeleteForAggregate(ctx context.Context, tenantID string, aggregateID uuid.UUID) (int, error) {
+	tag, err := r.db.q(ctx).Exec(ctx,
+		`DELETE FROM notification_outbox WHERE tenant_id = $1 AND aggregate_id = $2`, tenantID, aggregateID)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	return int(tag.RowsAffected()), nil
 }
 
 func (r *OutboxRepo) ListForAggregate(ctx context.Context, aggregateID uuid.UUID) ([]domain.OutboxEntry, error) {

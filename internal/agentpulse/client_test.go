@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RONGALI-TARUN/taskify/tests/mockagentpulse"
+	"github.com/rtrtarun/taskify/tests/mockagentpulse"
 )
 
 func newMock(t *testing.T) (*mockagentpulse.Server, string) {
@@ -92,12 +92,13 @@ func TestOtherCalls(t *testing.T) {
 		t.Error("an invalid signal was accepted")
 	}
 
-	id, err := c.CreateRule(ctx, Rule{TenantID: "t", Name: "low", PayloadMatch: map[string]any{"priority": "p4_low"}, Channels: []string{"digest"}})
+	id, err := c.CreateRule(ctx, Rule{TenantID: "t", Name: "low", MatchAny: []RuleMatch{{PayloadMatch: map[string]any{"priority": "p4_low"}}}, Channels: []string{"digest"}})
 	if err != nil || id == "" {
 		t.Fatalf("CreateRule = %q, %v", id, err)
 	}
 	rule := decode(t, mock.RequestsTo("POST", "/rules")[0])
-	if rule["tenantId"] != "t" || rule["payloadMatch"].(map[string]any)["priority"] != "p4_low" {
+	match := rule["matchAny"].([]any)[0].(map[string]any)
+	if rule["tenantId"] != "t" || match["payloadMatch"].(map[string]any)["priority"] != "p4_low" || match["eventTypes"] != nil {
 		t.Errorf("rule body = %v", rule)
 	}
 
@@ -148,6 +149,9 @@ func TestErrorClassification(t *testing.T) {
 		}
 	}
 
+	if !IsUpstream(ErrCircuitOpen) || IsUpstream(errors.New("local bug")) || IsUpstream(nil) {
+		t.Error("IsUpstream misclassifies")
+	}
 	if Retryable(nil) {
 		t.Error("nil error is retryable")
 	}
@@ -159,6 +163,9 @@ func TestErrorClassification(t *testing.T) {
 	err := unreachable.Notify(context.Background(), body)
 	if err == nil || !Retryable(err) {
 		t.Errorf("connection refused: error = %v, retryable %v", err, Retryable(err))
+	}
+	if !IsUpstream(err) {
+		t.Errorf("connection refused is not upstream: %v", err)
 	}
 
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -104,7 +104,7 @@ Expose admin and user endpoints in Taskify that proxy or sync with AgentPulse's 
 
 ### A. Target Repository Structure (`taskify`)
 
-Note: The existing README mixes `taskify` and `Taskify`. Standardize module naming to `[github.com/RONGALI-TARUN/taskify](https://github.com/RONGALI-TARUN/taskify)` and binary output to `bin/taskify`.
+Note: The existing README mixes `taskify` and `Taskify`. Standardize module naming to `[github.com/rtrtarun/taskify](https://github.com/rtrtarun/taskify)` and binary output to `bin/taskify`.
 
 ```text
 taskify/

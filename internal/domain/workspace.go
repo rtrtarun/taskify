@@ -21,6 +21,29 @@ type Workspace struct {
 	UpdatedAt time.Time
 }
 
+// WorkspaceRule records a default AgentPulse rule registered for a workspace.
+type WorkspaceRule struct {
+	TenantID         string
+	WorkspaceID      string
+	Key              string
+	AgentPulseRuleID string
+	CreatedAt        time.Time
+}
+
+// Rename changes the workspace name.
+func (w *Workspace) Rename(name string, now time.Time) error {
+	name = strings.TrimSpace(name)
+	switch {
+	case name == "":
+		return invalid("workspace name is required")
+	case utf8.RuneCountInString(name) > maxWorkspaceNameLen:
+		return invalid("workspace name must be at most %d characters", maxWorkspaceNameLen)
+	}
+	w.Name = name
+	w.UpdatedAt = now.UTC()
+	return nil
+}
+
 // NewWorkspace validates and returns a workspace.
 func NewWorkspace(tenantID, id, name string, now time.Time) (Workspace, error) {
 	w := Workspace{

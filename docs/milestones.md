@@ -71,7 +71,7 @@ M7, M8, and M9 are independent of each other and can run in parallel if more tha
 
 Deliverables:
 
-- Module path changed to `github.com/RONGALI-TARUN/taskify`; binary output `bin/taskify`; README naming made consistent.
+- Module path changed to `github.com/rtrtarun/taskify`; binary output `bin/taskify`; README naming made consistent.
 - Entrypoint moved to `cmd/taskify/main.go`; package layout from [architecture.md](architecture.md) section 5.1 created.
 - `internal/config` loading environment variables with validation.
 - `Makefile` targets: `build`, `test`, `lint`, `migrate-up`, `migrate-down`, `run`.
@@ -213,7 +213,7 @@ Exit criteria:
 
 Deliverables:
 
-- Migration `000003_agent_schema`: `parent_id`, `estimated_minutes`, `agent_metadata` on `tasks`; `task_dependencies`; the `agent_settings` column on `workspaces`; `agent_jobs`; `agent_run_history`.
+- Migration `000004_agent_schema`: `parent_id`, `estimated_minutes`, `agent_metadata` on `tasks`; `task_dependencies`; the `agent_settings` column on `workspaces`; `agent_jobs`; `agent_run_history`.
 - Workspace agent controls: `agents_enabled`, `disabled_agents`, `require_hitl_for_all`, `max_subtasks_per_decomposition`, checked at enqueue and again at claim, exposed through `GET` and `PATCH /workspaces/{id}/settings`. Defaults: agents off, approval required for everything, 5 subtasks.
 - Dependency resolution: a dependency counts as resolved when its target is `completed` or `archived`; completing or archiving a task re-checks its dependents.
 - Block reasons: the system gives a dependency block only to `todo` tasks (decomposer children, a dependency added, a blocker restored). When the last dependency resolves, a dependency-blocked task returns to `status_before_blocked` with `task.unblocked`; a manually blocked task stays blocked and gets a system comment and `task.dependency_resolved`.
@@ -420,7 +420,7 @@ Suggested split, each part usable on its own:
 Deliverables:
 
 - `web/`: React and TypeScript application, with API types generated from `openapi.yaml`.
-- Notification feed proxy: `GET /api/v1/notifications/in-app` and `POST /api/v1/notifications/{id}/ack`, the `notification_acks` table (migration `000004`), and enrichment with task data.
+- Notification feed proxy: `GET /api/v1/notifications/in-app` and `POST /api/v1/notifications/{id}/ack`, the `notification_acks` table (migration `000005`), and enrichment with task data.
 - Live updates Phase 1: polling with `ETag` and `If-None-Match` on list endpoints, and `updated_since` on the task list. Server-Sent Events are a later phase and not part of this milestone.
 - Deployment: a static build for a CDN or static host with `CORS_ALLOWED_ORIGINS`, and an optional embedded build (`go:embed` behind a build tag, enabled with `SERVE_EMBEDDED_SPA=true`).
 - Optimistic UI for task edits, with a clear conflict message when the server returns `409`.

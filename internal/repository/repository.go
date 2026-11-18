@@ -15,7 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/RONGALI-TARUN/taskify/internal/domain"
+	"github.com/rtrtarun/taskify/internal/domain"
 )
 
 // ErrTxRequired is returned by calls that lock rows outside a transaction.
@@ -64,6 +64,9 @@ type TaskRepository interface {
 	// ErrVersionConflict otherwise. Watchers are replaced.
 	Update(ctx context.Context, t *domain.Task, expectedVersion int) error
 	List(ctx context.Context, f TaskFilter) (TaskPage, error)
+	// Delete removes the task permanently, with its watchers and comments.
+	// It returns ErrNotFound when no row was deleted.
+	Delete(ctx context.Context, tenantID string, id uuid.UUID) error
 
 	// ClaimDueSoon locks open tasks that need a due-soon reminder at now,
 	// skipping rows another transaction holds.
@@ -82,6 +85,25 @@ type WorkspaceRepository interface {
 	// Create returns ErrAlreadyExists for a duplicate (tenant, id).
 	Create(ctx context.Context, w domain.Workspace) error
 	Get(ctx context.Context, tenantID, id string) (domain.Workspace, error)
+	// GetForUpdate locks the row until the transaction ends.
+	GetForUpdate(ctx context.Context, tenantID, id string) (domain.Workspace, error)
+	// Update writes the name and updated_at.
+	Update(ctx context.Context, w domain.Workspace) error
+}
+
+// WorkspaceRuleRepository records the AgentPulse rules each workspace has.
+type WorkspaceRuleRepository interface {
+	List(ctx context.Context, tenantID, workspaceID string) ([]domain.WorkspaceRule, error)
+	// Create returns ErrAlreadyExists for a duplicate key.
+	Create(ctx context.Context, r domain.WorkspaceRule) error
+}
+
+// WebhookDeliveryRepository remembers accepted webhook callbacks.
+type WebhookDeliveryRepository interface {
+	// Record stores key and reports whether it was new. A false result means
+	// the callback was already processed.
+	Record(ctx context.Context, key string, at time.Time) (bool, error)
+	DeleteBefore(ctx context.Context, cutoff time.Time) (int, error)
 }
 
 // CommentRepository stores comments. Callers check the task's tenant first.
@@ -117,6 +139,8 @@ type OutboxRepository interface {
 	DeleteDispatchedBefore(ctx context.Context, cutoff time.Time, limit int) (int, error)
 	// Get returns one row by ID. Used by tests and, from M12, admin tools.
 	Get(ctx context.Context, id uuid.UUID) (domain.OutboxEntry, error)
+	// DeleteForAggregate removes every row for one task, in any status.
+	DeleteForAggregate(ctx context.Context, tenantID string, aggregateID uuid.UUID) (int, error)
 	// ListForAggregate returns every row for one task, oldest first.
 	ListForAggregate(ctx context.Context, aggregateID uuid.UUID) ([]domain.OutboxEntry, error)
 	CountByStatus(ctx context.Context, status domain.OutboxStatus) (int, error)
