@@ -56,6 +56,15 @@ func Retryable(err error) bool {
 	return true
 }
 
+// IsUpstream reports whether err is a failure to get a good answer from
+// AgentPulse: an error response, an open circuit, or a network failure or
+// timeout. Callers report these as 502 or 503 rather than as their own fault.
+func IsUpstream(err error) bool {
+	var se *StatusError
+	var ue *url.Error
+	return errors.As(err, &se) || errors.Is(err, ErrCircuitOpen) || errors.As(err, &ue)
+}
+
 // Client calls AgentPulse.
 type Client struct {
 	baseURL string
@@ -152,14 +161,24 @@ func (c *Client) RecordFeedback(ctx context.Context, fb Feedback) error {
 	return c.do(ctx, http.MethodPost, "/feedback", fb, nil)
 }
 
-// Rule is an AgentPulse routing rule.
+// Rule is an AgentPulse routing rule. It applies when any entry of MatchAny
+// matches: an entry matches when the event type is one of EventTypes (if
+// set) and every PayloadMatch key equals the payload's value.
+//
+// MatchAny is how Taskify expresses the "A or B" conditions of its default
+// rules. AgentPulse's real rule shape is unverified (task M0-07).
 type Rule struct {
-	TenantID     string         `json:"tenantId"`
-	Name         string         `json:"name"`
+	TenantID     string      `json:"tenantId"`
+	Name         string      `json:"name"`
+	MatchAny     []RuleMatch `json:"matchAny"`
+	Channels     []string    `json:"channels"`
+	BypassDigest bool        `json:"bypassDigest,omitempty"`
+}
+
+// RuleMatch is one condition of a Rule.
+type RuleMatch struct {
 	EventTypes   []string       `json:"eventTypes,omitempty"`
 	PayloadMatch map[string]any `json:"payloadMatch,omitempty"`
-	Channels     []string       `json:"channels"`
-	BypassDigest bool           `json:"bypassDigest,omitempty"`
 }
 
 // CreateRule registers a rule and returns its ID.

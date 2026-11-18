@@ -144,6 +144,15 @@ func (r *OutboxRepo) Get(ctx context.Context, id uuid.UUID) (domain.OutboxEntry,
 	return entries[0], nil
 }
 
+func (r *OutboxRepo) DeleteForAggregate(ctx context.Context, tenantID string, aggregateID uuid.UUID) (int, error) {
+	tag, err := r.db.q(ctx).Exec(ctx,
+		`DELETE FROM notification_outbox WHERE tenant_id = $1 AND aggregate_id = $2`, tenantID, aggregateID)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 func (r *OutboxRepo) ListForAggregate(ctx context.Context, aggregateID uuid.UUID) ([]domain.OutboxEntry, error) {
 	return r.query(ctx, `SELECT `+outboxColumns+` FROM notification_outbox
 		WHERE aggregate_id = $1 ORDER BY created_at, id`, aggregateID)

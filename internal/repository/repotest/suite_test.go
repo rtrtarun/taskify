@@ -781,8 +781,8 @@ func TestMigrationsRoundTrip(t *testing.T) {
 			t.Fatalf("step %d (%s): %v", i, d, err)
 		}
 	}
-	if n := tables(); n != 5 {
-		t.Errorf("tables after up/down/up = %d, want 5", n)
+	if n := tables(); n != 7 {
+		t.Errorf("tables after up/down/up = %d, want 7", n)
 	}
 	if err := migrations.Apply(ctx, exec, migrations.Down); err != nil {
 		t.Fatal(err)
@@ -813,4 +813,122 @@ func TestSchemaConstraints(t *testing.T) {
 	if err := exec(`DELETE FROM workspaces WHERE id = 'ws_core'`); err == nil {
 		t.Error("a workspace with tasks was deleted")
 	}
+}
+
+func TestTaskDelete(t *testing.T) {
+	each(t, func(t *testing.T, b Backend) {
+		seedWorkspace(t, b, tenant)
+		task := newTask(t, tenant, func(in *domain.NewTaskInput) { in.Watchers = []string{"usr_carol"} })
+		create(t, b, task)
+		c, _, _ := domain.NewComment(task, "hello", alice, t0)
+		if err := b.Comments.Create(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.Outbox.Insert(ctx, outboxEntries(t, task, 2)); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := b.Tasks.Delete(ctx, "tenant_other", task.ID); !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("cross-tenant delete: error = %v", err)
+		}
+		if n, err := b.Outbox.DeleteForAggregate(ctx, "tenant_other", task.ID); err != nil || n != 0 {
+			t.Errorf("cross-tenant outbox delete removed %d rows, %v", n, err)
+		}
+		if n, err := b.Outbox.DeleteForAggregate(ctx, tenant, task.ID); err != nil || n != 2 {
+			t.Errorf("DeleteForAggregate = %d, %v", n, err)
+		}
+		if err := b.Tasks.Delete(ctx, tenant, task.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.Tasks.Get(ctx, tenant, task.ID); !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("task still readable: %v", err)
+		}
+		if comments, _ := b.Comments.ListRecent(ctx, task.ID, 10); len(comments) != 0 {
+			t.Errorf("comments survived the delete")
+		}
+		if err := b.Tasks.Delete(ctx, tenant, task.ID); !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("second delete: error = %v", err)
+		}
+		if b.DB != nil {
+			var watchers int
+			if err := b.DB.Pool.QueryRow(ctx, `SELECT count(*) FROM task_watchers`).Scan(&watchers); err != nil || watchers != 0 {
+				t.Errorf("watchers left = %d, %v", watchers, err)
+			}
+		}
+	})
+}
+
+func TestWorkspaceUpdateAndRules(t *testing.T) {
+	each(t, func(t *testing.T, b Backend) {
+		seedWorkspace(t, b, tenant)
+		w, _ := b.Workspaces.Get(ctx, tenant, ws)
+		if err := w.Rename("Core Platform", t0.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Workspaces.Update(ctx, w); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := b.Workspaces.Get(ctx, tenant, ws)
+		if got.Name != "Core Platform" || !got.UpdatedAt.Equal(t0.Add(time.Hour)) || !got.CreatedAt.Equal(t0) {
+			t.Errorf("after update: %+v", got)
+		}
+		missing := w
+		missing.ID = "nope"
+		if err := b.Workspaces.Update(ctx, missing); !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("update missing: error = %v", err)
+		}
+		if _, err := b.Workspaces.GetForUpdate(ctx, tenant, ws); !errors.Is(err, repository.ErrTxRequired) {
+			t.Errorf("GetForUpdate outside a transaction: error = %v", err)
+		}
+		err := b.Tx.WithTx(ctx, func(ctx context.Context) error {
+			_, err := b.Workspaces.GetForUpdate(ctx, tenant, ws)
+			return err
+		})
+		if err != nil {
+			t.Errorf("GetForUpdate in a transaction: %v", err)
+		}
+
+		for _, key := range []string{"low-priority-digest", "critical-or-blocked"} {
+			r := domain.WorkspaceRule{TenantID: tenant, WorkspaceID: ws, Key: key, AgentPulseRuleID: "ap_" + key, CreatedAt: t0}
+			if err := b.Rules.Create(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dup := domain.WorkspaceRule{TenantID: tenant, WorkspaceID: ws, Key: "critical-or-blocked", AgentPulseRuleID: "x", CreatedAt: t0}
+		if err := b.Rules.Create(ctx, dup); !errors.Is(err, domain.ErrAlreadyExists) {
+			t.Errorf("duplicate rule: error = %v", err)
+		}
+		orphan := domain.WorkspaceRule{TenantID: tenant, WorkspaceID: "nope", Key: "k", AgentPulseRuleID: "x", CreatedAt: t0}
+		if err := b.Rules.Create(ctx, orphan); !errors.Is(err, domain.ErrValidation) {
+			t.Errorf("rule for a missing workspace: error = %v", err)
+		}
+		rules, err := b.Rules.List(ctx, tenant, ws)
+		if err != nil || len(rules) != 2 || rules[0].Key != "critical-or-blocked" || rules[0].AgentPulseRuleID != "ap_critical-or-blocked" {
+			t.Errorf("List = %+v, %v", rules, err)
+		}
+		if other, _ := b.Rules.List(ctx, "tenant_other", ws); len(other) != 0 {
+			t.Errorf("another tenant sees %d rules", len(other))
+		}
+	})
+}
+
+func TestWebhookDeliveries(t *testing.T) {
+	each(t, func(t *testing.T, b Backend) {
+		fresh, err := b.Deliveries.Record(ctx, "sig-1", t0)
+		if err != nil || !fresh {
+			t.Fatalf("first record = %v, %v", fresh, err)
+		}
+		if fresh, _ := b.Deliveries.Record(ctx, "sig-1", t0.Add(time.Second)); fresh {
+			t.Error("a repeated key was reported as new")
+		}
+		if _, err := b.Deliveries.Record(ctx, "sig-2", t0.Add(2*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if n, err := b.Deliveries.DeleteBefore(ctx, t0.Add(time.Hour)); err != nil || n != 1 {
+			t.Errorf("DeleteBefore = %d, %v", n, err)
+		}
+		if fresh, _ := b.Deliveries.Record(ctx, "sig-1", t0.Add(3*time.Hour)); !fresh {
+			t.Error("a key past retention was not accepted again")
+		}
+	})
 }

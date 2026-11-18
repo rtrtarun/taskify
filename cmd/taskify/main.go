@@ -3,25 +3,14 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
-	"golang.org/x/sync/errgroup"
-
-	"github.com/RONGALI-TARUN/taskify/internal/agentpulse"
+	"github.com/RONGALI-TARUN/taskify/internal/app"
 	"github.com/RONGALI-TARUN/taskify/internal/config"
-	"github.com/RONGALI-TARUN/taskify/internal/repository/postgres"
-	"github.com/RONGALI-TARUN/taskify/internal/worker"
 )
-
-const shutdownTimeout = 15 * time.Second
 
 // version and commit are set at release build time with -ldflags -X; see
 // .goreleaser.yaml.
@@ -45,78 +34,13 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// The pool connects lazily, so start-up does not fail when PostgreSQL is
-	// briefly unavailable. Readiness reporting arrives with /readyz in M4.
-	db, err := postgres.Open(ctx, cfg.DatabaseURL)
+	a, err := app.New(ctx, cfg, logger.With("commit", commit), version)
 	if err != nil {
-		return fmt.Errorf("database pool: %w", err)
+		return err
 	}
-	defer db.Close()
-
-	tasks := postgres.NewTaskRepo(db)
-	outbox := postgres.NewOutboxRepo(db)
-	notifier := agentpulse.New(cfg.AgentPulseBaseURL, cfg.AgentPulseAPIKey)
-
-	relay := worker.NewRelay(outbox, notifier, worker.RelayConfig{
-		Workers:      cfg.OutboxWorkers,
-		BatchSize:    cfg.OutboxBatchSize,
-		PollInterval: cfg.OutboxPollInterval,
-		Lease:        cfg.OutboxLease,
-		Logger:       logger,
-	})
-	scheduler := worker.NewScheduler(db, tasks, outbox, worker.SchedulerConfig{
-		Interval:          cfg.SchedulerInterval,
-		PublicBaseURL:     cfg.PublicBaseURL,
-		OutboxMaxAttempts: cfg.OutboxMaxAttempts,
-		Logger:            logger,
-		Wake:              relay.Wake,
-	})
-	cleanup := worker.NewCleanup(outbox, worker.CleanupConfig{Logger: logger})
-
-	srv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           newHandler(),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-
-	g, gctx := errgroup.WithContext(ctx)
-
-	// Workers stop when gctx is cancelled: on a signal, or if any of them or
-	// the HTTP server fails.
-	g.Go(func() error { return relay.Run(gctx) })
-	g.Go(func() error { return scheduler.Run(gctx) })
-	g.Go(func() error { return cleanup.Run(gctx) })
-
-	g.Go(func() error {
-		logger.Info("taskify listening", "addr", srv.Addr, "version", version, "commit", commit, "config", cfg.String())
-		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-			return fmt.Errorf("http server: %w", err)
-		}
-		return nil
-	})
-
-	g.Go(func() error {
-		<-gctx.Done()
-		logger.Info("shutting down")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
-		return srv.Shutdown(shutdownCtx)
-	})
-
-	return g.Wait()
-}
-
-// newHandler returns the HTTP routes. It holds only the liveness probe for
-// now; the API router in internal/api replaces it in M3.
-func newHandler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": version})
-	})
-	return mux
+	defer a.Close()
+	return a.Run(ctx, version)
 }

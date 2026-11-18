@@ -38,11 +38,26 @@ func (st *Store) Comments() *CommentRepo { return &CommentRepo{st} }
 // Outbox returns the outbox repository.
 func (st *Store) Outbox() *OutboxRepo { return &OutboxRepo{st} }
 
+// Rules returns the workspace rule repository.
+func (st *Store) Rules() *RuleRepo { return &RuleRepo{st} }
+
+// Deliveries returns the webhook delivery repository.
+func (st *Store) Deliveries() *DeliveryRepo { return &DeliveryRepo{st} }
+
+// RuleRepo implements repository.WorkspaceRuleRepository.
+type RuleRepo struct{ st *Store }
+
+// DeliveryRepo implements repository.WebhookDeliveryRepository.
+type DeliveryRepo struct{ st *Store }
+
 var (
 	_ repository.TaskRepository      = (*TaskRepo)(nil)
 	_ repository.WorkspaceRepository = (*WorkspaceRepo)(nil)
 	_ repository.CommentRepository   = (*CommentRepo)(nil)
 	_ repository.OutboxRepository    = (*OutboxRepo)(nil)
+
+	_ repository.WorkspaceRuleRepository   = (*RuleRepo)(nil)
+	_ repository.WebhookDeliveryRepository = (*DeliveryRepo)(nil)
 )
 
 // micro matches PostgreSQL's timestamp precision, so both stores return the
@@ -88,6 +103,81 @@ func (r *WorkspaceRepo) Get(ctx context.Context, tenantID, id string) (w domain.
 		return nil
 	})
 	return w, err
+}
+
+func (r *WorkspaceRepo) GetForUpdate(ctx context.Context, tenantID, id string) (domain.Workspace, error) {
+	if !inTx(ctx) {
+		return domain.Workspace{}, repository.ErrTxRequired
+	}
+	return r.Get(ctx, tenantID, id)
+}
+
+func (r *WorkspaceRepo) Update(ctx context.Context, w domain.Workspace) error {
+	return r.st.do(ctx, func(s *state) error {
+		k := wsKey{w.TenantID, w.ID}
+		stored, ok := s.workspaces[k]
+		if !ok {
+			return domain.ErrNotFound
+		}
+		stored.Name, stored.UpdatedAt = w.Name, micro(w.UpdatedAt)
+		s.workspaces[k] = stored
+		return nil
+	})
+}
+
+// --- workspace rules and webhook deliveries --------------------------------
+
+func (r *RuleRepo) List(ctx context.Context, tenantID, workspaceID string) (out []domain.WorkspaceRule, err error) {
+	err = r.st.do(ctx, func(s *state) error {
+		for k, v := range s.rules {
+			if k.tenant == tenantID && k.workspace == workspaceID {
+				out = append(out, v)
+			}
+		}
+		slices.SortFunc(out, func(a, b domain.WorkspaceRule) int { return strings.Compare(a.Key, b.Key) })
+		return nil
+	})
+	return out, err
+}
+
+func (r *RuleRepo) Create(ctx context.Context, w domain.WorkspaceRule) error {
+	return r.st.do(ctx, func(s *state) error {
+		if _, ok := s.workspaces[wsKey{w.TenantID, w.WorkspaceID}]; !ok {
+			return fmt.Errorf("%w: workspace does not exist", domain.ErrValidation)
+		}
+		k := ruleKey{w.TenantID, w.WorkspaceID, w.Key}
+		if _, ok := s.rules[k]; ok {
+			return fmt.Errorf("%w: workspace rule", domain.ErrAlreadyExists)
+		}
+		w.CreatedAt = micro(w.CreatedAt)
+		s.rules[k] = w
+		return nil
+	})
+}
+
+func (r *DeliveryRepo) Record(ctx context.Context, key string, at time.Time) (fresh bool, err error) {
+	err = r.st.do(ctx, func(s *state) error {
+		if _, seen := s.deliveries[key]; seen {
+			return nil
+		}
+		s.deliveries[key] = micro(at)
+		fresh = true
+		return nil
+	})
+	return fresh, err
+}
+
+func (r *DeliveryRepo) DeleteBefore(ctx context.Context, cutoff time.Time) (n int, err error) {
+	err = r.st.do(ctx, func(s *state) error {
+		for k, at := range s.deliveries {
+			if at.Before(cutoff) {
+				delete(s.deliveries, k)
+				n++
+			}
+		}
+		return nil
+	})
+	return n, err
 }
 
 // --- tasks -----------------------------------------------------------------
@@ -195,6 +285,19 @@ func before(t *domain.Task, c repository.Cursor) bool {
 		return cmp < 0
 	}
 	return strings.Compare(t.ID.String(), c.ID.String()) < 0
+}
+
+func (r *TaskRepo) Delete(ctx context.Context, tenantID string, id uuid.UUID) error {
+	return r.st.do(ctx, func(s *state) error {
+		t, ok := s.tasks[id]
+		if !ok || t.TenantID != tenantID {
+			return domain.ErrNotFound
+		}
+		delete(s.tasks, id)
+		// Comments go with the task, as with ON DELETE CASCADE.
+		s.comments = slices.DeleteFunc(s.comments, func(c domain.Comment) bool { return c.TaskID == id })
+		return nil
+	})
 }
 
 func (r *TaskRepo) ClaimDueSoon(ctx context.Context, now time.Time, limit int) ([]*domain.Task, error) {
@@ -427,6 +530,20 @@ func (r *OutboxRepo) Get(ctx context.Context, id uuid.UUID) (e domain.OutboxEntr
 		return nil
 	})
 	return e, err
+}
+
+func (r *OutboxRepo) DeleteForAggregate(ctx context.Context, tenantID string, aggregateID uuid.UUID) (n int, err error) {
+	err = r.st.do(ctx, func(s *state) error {
+		for id, e := range s.outbox {
+			if e.TenantID == tenantID && e.AggregateID == aggregateID {
+				delete(s.outbox, id)
+				delete(s.outboxKeys, e.IdempotencyKey)
+				n++
+			}
+		}
+		return nil
+	})
+	return n, err
 }
 
 func (r *OutboxRepo) ListForAggregate(ctx context.Context, aggregateID uuid.UUID) (out []domain.OutboxEntry, err error) {

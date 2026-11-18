@@ -13,6 +13,7 @@ import (
 	"maps"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -34,7 +35,11 @@ type state struct {
 	comments   []domain.Comment
 	outbox     map[uuid.UUID]*domain.OutboxEntry
 	outboxKeys map[string]uuid.UUID
+	rules      map[ruleKey]domain.WorkspaceRule
+	deliveries map[string]time.Time
 }
+
+type ruleKey struct{ tenant, workspace, key string }
 
 // New returns an empty store.
 func New() *Store {
@@ -43,6 +48,8 @@ func New() *Store {
 		tasks:      map[uuid.UUID]*domain.Task{},
 		outbox:     map[uuid.UUID]*domain.OutboxEntry{},
 		outboxKeys: map[string]uuid.UUID{},
+		rules:      map[ruleKey]domain.WorkspaceRule{},
+		deliveries: map[string]time.Time{},
 	}}
 }
 
@@ -90,6 +97,8 @@ func (s state) clone() state {
 		comments:   slices.Clone(s.comments),
 		outbox:     make(map[uuid.UUID]*domain.OutboxEntry, len(s.outbox)),
 		outboxKeys: maps.Clone(s.outboxKeys),
+		rules:      maps.Clone(s.rules),
+		deliveries: maps.Clone(s.deliveries),
 	}
 	for id, t := range s.tasks {
 		c.tasks[id] = copyTask(t)

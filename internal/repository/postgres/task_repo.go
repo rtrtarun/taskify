@@ -150,6 +150,18 @@ func (r *TaskRepo) List(ctx context.Context, f repository.TaskFilter) (repositor
 	return page, nil
 }
 
+func (r *TaskRepo) Delete(ctx context.Context, tenantID string, id uuid.UUID) error {
+	// Watchers and comments go with the task through ON DELETE CASCADE.
+	tag, err := r.db.q(ctx).Exec(ctx, `DELETE FROM tasks WHERE id = $1 AND tenant_id = $2`, id, tenantID)
+	if err != nil {
+		return mapErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
 func (r *TaskRepo) ClaimDueSoon(ctx context.Context, now time.Time, limit int) ([]*domain.Task, error) {
 	if _, err := r.db.tx(ctx); err != nil {
 		return nil, err

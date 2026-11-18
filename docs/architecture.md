@@ -528,15 +528,17 @@ erDiagram
 
 | Table | Migration | Notes |
 | --- | --- | --- |
-| `tasks` | `000001`, extended by `000003` | Full DDL for the base columns is in [initial.md](initial.md) section 4.B. IDs are UUIDv7 generated in Go so they sort by creation time. |
+| `tasks` | `000001`, extended by `000004` | Full DDL for the base columns is in [initial.md](initial.md) section 4.B. IDs are UUIDv7 generated in Go so they sort by creation time. |
 | `task_watchers` | `000001` | Composite primary key `(task_id, user_id)`. |
 | `task_comments` | `000001` | `mentions` is extracted from `@username` tokens at insert time. |
 | `notification_outbox` | `000002` | One row per event per recipient. `idempotency_key` is unique. `aggregate_id` has no foreign key so outbox rows survive task deletion. |
-| `task_dependencies` | `000003` | Replaces the `blocked_by UUID[]` column (decision 4). One row means `task_id` cannot start until `depends_on_task_id` is complete. Both foreign keys cascade on delete, which only fires on a permanent delete. A `CHECK (task_id <> depends_on_task_id)` blocks self-dependency. The foreign keys do not prove both tasks share a tenant, so the service checks that before insert. |
-| `workspaces` | `000001`; `agent_settings` added in `000003` | Primary key `(tenant_id, id)`, with `name`. `tasks (tenant_id, workspace_id)` has a foreign key to it (decision 19). The table is created in `000001`, not `000003`, so the foreign key exists from the first task: adding it later would need a backfill of every workspace ID already used, and task creation would start failing for unknown workspaces. `agent_settings` defaults to agents off, approval required for everything, and a cap of 5 subtasks. The foreign key is `ON DELETE RESTRICT` (decision 24): a workspace cannot be deleted while any task references it, so an accidental delete cannot bypass soft archive, outbox scrubbing, or agent job cleanup. There is deliberately no workspace purge endpoint. If a workspace ever has to be decommissioned, it is done with an administrative script that verifies soft archives, drains the outbox, and cleans dependencies before touching the workspace row. |
-| `agent_jobs` | `000003` | Base DDL in [agentic.md](agentic.md) section 4.A, with the changes listed in section 7 below. |
-| `notification_acks` | `000004` (R3) | `(tenant_id, user_id, notification_id)` primary key, `signal`, `acked_at`. Local read state for the in-app feed (section 9.6). Not shown in the diagram above; it references AgentPulse notification IDs, not Taskify rows. |
-| `agent_run_history` | `000003` | One row per model turn. Named in the AG-102 backlog item but not defined in the source; this definition is proposed here. |
+| `task_dependencies` | `000004` | Replaces the `blocked_by UUID[]` column (decision 4). One row means `task_id` cannot start until `depends_on_task_id` is complete. Both foreign keys cascade on delete, which only fires on a permanent delete. A `CHECK (task_id <> depends_on_task_id)` blocks self-dependency. The foreign keys do not prove both tasks share a tenant, so the service checks that before insert. |
+| `workspaces` | `000001`; `agent_settings` added in `000004` | Primary key `(tenant_id, id)`, with `name`. `tasks (tenant_id, workspace_id)` has a foreign key to it (decision 19). The table is created in `000001`, not `000004`, so the foreign key exists from the first task: adding it later would need a backfill of every workspace ID already used, and task creation would start failing for unknown workspaces. `agent_settings` defaults to agents off, approval required for everything, and a cap of 5 subtasks. The foreign key is `ON DELETE RESTRICT` (decision 24): a workspace cannot be deleted while any task references it, so an accidental delete cannot bypass soft archive, outbox scrubbing, or agent job cleanup. There is deliberately no workspace purge endpoint. If a workspace ever has to be decommissioned, it is done with an administrative script that verifies soft archives, drains the outbox, and cleans dependencies before touching the workspace row. |
+| `agent_jobs` | `000004` | Base DDL in [agentic.md](agentic.md) section 4.A, with the changes listed in section 7 below. |
+| `notification_acks` | `000005` (R3) | `(tenant_id, user_id, notification_id)` primary key, `signal`, `acked_at`. Local read state for the in-app feed (section 9.6). Not shown in the diagram above; it references AgentPulse notification IDs, not Taskify rows. |
+| `workspace_rules` | `000003` | `(tenant_id, workspace_id, rule_key)` primary key, `agentpulse_rule_id`. Records which default AgentPulse rules a workspace has, so `bootstrap-rules` can be repeated without creating duplicates. |
+| `webhook_deliveries` | `000003` | Signature of each accepted AgentPulse callback, kept for an hour, so a replayed callback changes nothing. |
+| `agent_run_history` | `000004` | One row per model turn. Named in the AG-102 backlog item but not defined in the source; this definition is proposed here. |
 
 Indexes:
 
@@ -757,7 +759,8 @@ taskify/
 ├── migrations/
 │   ├── 000001_init_tasks.{up,down}.sql
 │   ├── 000002_outbox.{up,down}.sql
-│   └── 000003_agent_schema.{up,down}.sql
+│   ├── 000003_integrations.{up,down}.sql
+│   └── 000004_agent_schema.{up,down}.sql
 ├── docker-compose.yml
 └── Makefile
 ```
@@ -1747,7 +1750,7 @@ sequenceDiagram
 
 - The AgentPulse feed endpoint was given as `GET /internal/v1/tenants/{tenantId}/users/{userId}/in-app-feed`, with service-to-service authentication (mTLS or a shared secret). Both are to be verified in M0.
 - Tenant and user in that call come from the verified token, never from the request, so one user cannot read another's feed.
-- Ack state is stored in a small table, `notification_acks (tenant_id, user_id, notification_id, signal, acked_at)`, added in migration `000004`. The ack is saved locally first; if forwarding the feedback to AgentPulse fails, it is retried through the outbox instead of failing the click.
+- Ack state is stored in a small table, `notification_acks (tenant_id, user_id, notification_id, signal, acked_at)`, added in migration `000005`. The ack is saved locally first; if forwarding the feedback to AgentPulse fails, it is retried through the outbox instead of failing the click.
 - This is a synchronous call to AgentPulse on a read path. It has a short timeout and uses the circuit breaker. Task reads and writes do not depend on it.
 
 **Live updates (decision 14).**

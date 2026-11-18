@@ -144,7 +144,7 @@ Update this table as milestones close.
 | M0 Foundation | 7 | Done except M0-07, which waits on AgentPulse access (O1) |
 | M1 Domain and schema | 7 | Done. Migrations verified up, down, up on PostgreSQL 16 |
 | M2 Outbox and workers | 10 | Done. All exit criteria have tests, passing with `-race` on memory and PostgreSQL |
-| M3 REST API and bridges | 10 | Not started |
+| M3 REST API and bridges | 10 | Done. Unit, API, and end-to-end tests pass with `-race` on PostgreSQL |
 | M4 Observability (R1) | 6 | Not started |
 | M5 Agent runtime | 11 | Not started |
 | M6 HITL bridge | 4 | Not started |
@@ -171,3 +171,8 @@ Recorded as they come up, so the architecture can be corrected or the code chang
 | D5 | M2-08 | Outbox rows carry `claimed_at`, and every result update is fenced on it. | A worker whose lease expired must not overwrite the result of the worker that reclaimed the row. |
 | D6 | M2-09 | Deadline reminders do not change a task's `version` or `updated_at`. | A reminder is not an edit; bumping the version would make a client's next save fail with `409`. |
 | D7 | M2-02 | `GET /tasks?status=archived` lists archived tasks; any other list excludes them. | Otherwise there is no way to find an archived task in order to restore it. |
+| D8 | M3-06 | New migration `000003_integrations` (`workspace_rules`, `webhook_deliveries`). The planned agent schema becomes `000004` and notification acks `000005`. | Bootstrapping rules must be repeatable without duplicates, including after a partial failure, and a replayed webhook must change nothing; both need a record. |
+| D9 | M3-06 | Default rules use a `matchAny` list of conditions, and the immediate-escalation rule matches manual blocks only. | The source rules need "A or B" conditions, and decision 23 makes dependency blocks quiet. The rule shape is unverified (M0-07). |
+| D10 | M3-08 | A replayed webhook is recognised by its signature; there is no delivery ID. | A byte-identical replay has the same signature, and AgentPulse's payload has no confirmed ID field. |
+| D11 | M3-03 | An update without `If-Match` or `version` is `428 Precondition Required`; `PUT` behaves as `PATCH`. | The architecture requires a version but names no status; 428 is the standard one. Section 5.4 lists `PUT` and `PATCH` as one row. |
+| D12 | M3-05 | Permanent delete returns `204`; `?permanent=` accepts only `true` or `false`. | Nothing remains to return, and an unexpected value must not fall through to an archive. |

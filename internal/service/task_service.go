@@ -150,6 +150,33 @@ func (s *TaskService) RestoreTask(ctx context.Context, actor domain.Actor, tenan
 	})
 }
 
+// SnoozeTask moves the task's reminder to now plus d, as when a user clicks
+// "Snooze 2h" in a notification. It raises no event.
+func (s *TaskService) SnoozeTask(ctx context.Context, actor domain.Actor, tenantID string, id uuid.UUID, d time.Duration) (*domain.Task, error) {
+	return s.mutate(ctx, tenantID, id, nil, func(t *domain.Task, now time.Time) ([]domain.Event, error) {
+		return t.Apply(domain.Patch{RemindAt: domain.SetTime(now.Add(d))}, actor, now)
+	})
+}
+
+// DeleteTask removes a task permanently, for data-scrubbing requests. In one
+// transaction it deletes every outbox row for the task, in any status, so no
+// notification about it is sent afterwards, and then the task with its
+// watchers and comments. Callers must restrict it to admins.
+//
+// A relay worker that claimed one of the rows just before may still send it
+// once; recording its result then matches no row and is not an error.
+func (s *TaskService) DeleteTask(ctx context.Context, tenantID string, id uuid.UUID) error {
+	return s.deps.Tx.WithTx(ctx, func(ctx context.Context) error {
+		if _, err := s.deps.Tasks.GetForUpdate(ctx, tenantID, id); err != nil {
+			return err
+		}
+		if _, err := s.deps.Outbox.DeleteForAggregate(ctx, tenantID, id); err != nil {
+			return err
+		}
+		return s.deps.Tasks.Delete(ctx, tenantID, id)
+	})
+}
+
 // mutate loads and locks a task, checks its version, applies change, and
 // writes the task and its outbox rows.
 func (s *TaskService) mutate(ctx context.Context, tenantID string, id uuid.UUID, expectedVersion *int,

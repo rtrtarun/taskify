@@ -497,10 +497,19 @@ func TestCleanup(t *testing.T) {
 		}
 		_ = rows
 
-		c := NewCleanup(b.Outbox, CleanupConfig{BatchSize: 2, Now: func() time.Time { return now }, Logger: quiet})
+		if _, err := b.Deliveries.Record(ctx, "old-sig", now.Add(-2*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.Deliveries.Record(ctx, "new-sig", now.Add(-time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		c := NewCleanup(b.Outbox, CleanupConfig{BatchSize: 2, Deliveries: b.Deliveries, Now: func() time.Time { return now }, Logger: quiet})
 		n, err := c.RunOnce(ctx)
-		if err != nil || n != 3 {
-			t.Fatalf("RunOnce = %d, %v; want 3 deleted", n, err)
+		if err != nil || n != 4 {
+			t.Fatalf("RunOnce = %d, %v; want 3 outbox rows and 1 delivery deleted", n, err)
+		}
+		if fresh, _ := b.Deliveries.Record(ctx, "new-sig", now); fresh {
+			t.Error("a delivery inside the replay window was deleted")
 		}
 		if got := count(t, b, domain.OutboxDispatched); got != 1 {
 			t.Errorf("dispatched rows left = %d, want the 6-day-old one", got)
