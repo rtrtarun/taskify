@@ -1,0 +1,10 @@
+# Release image, built by GoReleaser from binaries it has already compiled.
+# GoReleaser places each one at <os>/<arch>/taskify in the build context.
+# For local development use Dockerfile, which compiles from source.
+FROM gcr.io/distroless/static-debian12:nonroot
+ARG TARGETPLATFORM
+COPY $TARGETPLATFORM/taskify /usr/local/bin/taskify
+COPY migrations/*.sql /migrations/
+USER nonroot:nonroot
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/taskify"]

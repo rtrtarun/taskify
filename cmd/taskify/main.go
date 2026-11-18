@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -21,6 +22,13 @@ import (
 )
 
 const shutdownTimeout = 15 * time.Second
+
+// version and commit are set at release build time with -ldflags -X; see
+// .goreleaser.yaml.
+var (
+	version = "dev"
+	commit  = "none"
+)
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -84,7 +92,7 @@ func run(logger *slog.Logger) error {
 	g.Go(func() error { return cleanup.Run(gctx) })
 
 	g.Go(func() error {
-		logger.Info("taskify listening", "addr", srv.Addr, "config", cfg.String())
+		logger.Info("taskify listening", "addr", srv.Addr, "version", version, "commit", commit, "config", cfg.String())
 		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			return fmt.Errorf("http server: %w", err)
 		}
@@ -108,7 +116,7 @@ func newHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": version})
 	})
 	return mux
 }
