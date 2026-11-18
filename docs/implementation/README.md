@@ -146,7 +146,7 @@ Update this table as milestones close.
 | M2 Outbox and workers | 10 | Done. All exit criteria have tests, passing with `-race` on memory and PostgreSQL |
 | M3 REST API and bridges | 10 | Done. Unit, API, and end-to-end tests pass with `-race` on PostgreSQL |
 | M4 Observability (R1) | 6 | Done. Benchmarks meet every target on a Linux network; see docs/benchmarks.md. R1 complete apart from M0-07 |
-| M5 Agent runtime | 11 | In progress. M5-01 to M5-05 done |
+| M5 Agent runtime | 11 | In progress. M5-01 to M5-06 done |
 | M6 HITL bridge | 4 | Not started |
 | M7 Triage | 4 | Not started |
 | M8 Decomposer | 4 | Not started |
@@ -183,3 +183,4 @@ Recorded as they come up, so the architecture can be corrected or the code chang
 | D17 | M5-04 | Keys for `task.dependency_added`, `task.dependency_resolved`, and `task.dependency_reopened` are `...:{event_type}:{blocker_id}:v{blocker_version}`. | These notices leave the dependent's version unchanged, so the section 4.4 format would give two notices about different blockers the same key. |
 | D18 | M5-04 | On permanent delete, dependents are re-checked after the task row is deleted, in the same transaction, not before. Their events name the blocker with status `deleted`. No `task.dependency_resolved` goes to a completed or archived dependent. | Before the delete the task still counts as an open blocker, so the check would find nothing to release. A finished dependent cannot act on the news. |
 | G23 | M5-03 | A person adding a dependency is mentioned in section 4.3, but section 5.4 has no endpoint for it. Only the service operation exists until an endpoint is specified. | Rule 12: not built ad hoc. |
+| D19 | M5-06 | Skipped agent jobs are counted in `taskify_agent_jobs_skipped_total` (labels `agent_type`, `reason`: `agents_disabled`, `agent_disabled`, `duplicate`), a metric not listed in section 6.3. Only triage (task created, or edited by a person) and the blocker investigator (manual block) queue jobs from task changes. | The M5-06 row asks for a counter and section 6.3 names none. The other section 5.6 triggers have their own homes: the digest gatekeeper is a deterministic check (G14), dependency release is the synchronous re-check from M5-04, and `/decompose` is M8-02. |

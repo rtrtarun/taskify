@@ -52,7 +52,7 @@ func newFixture(t *testing.T, b repotest.Backend, outbox repository.OutboxReposi
 		outbox = b.Outbox
 	}
 	f.svc = NewTaskService(
-		Deps{Tx: b.Tx, Tasks: b.Tasks, Workspaces: b.Workspaces, Comments: b.Comments, Outbox: outbox, Dependencies: b.Deps},
+		Deps{Tx: b.Tx, Tasks: b.Tasks, Workspaces: b.Workspaces, Comments: b.Comments, Outbox: outbox, Dependencies: b.Deps, AgentJobs: b.AgentJobs},
 		Config{PublicBaseURL: "https://taskify.test", OutboxMaxAttempts: 7},
 		WithClock(func() time.Time { return f.now }),
 		WithWake(func() { f.wakes.Add(1) }),

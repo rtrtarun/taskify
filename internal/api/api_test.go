@@ -58,7 +58,7 @@ func newEnv(t *testing.T, opts ...option) *env {
 	client := agentpulse.New(ts.URL, "k", agentpulse.WithBreaker(nil))
 
 	clock := func() time.Time { return e.now }
-	tasks := service.NewTaskService(service.Deps{Tx: b.Tx, Tasks: b.Tasks, Workspaces: b.Workspaces, Comments: b.Comments, Outbox: b.Outbox, Dependencies: b.Deps},
+	tasks := service.NewTaskService(service.Deps{Tx: b.Tx, Tasks: b.Tasks, Workspaces: b.Workspaces, Comments: b.Comments, Outbox: b.Outbox, Dependencies: b.Deps, AgentJobs: b.AgentJobs},
 		service.Config{PublicBaseURL: "https://taskify.test"}, service.WithClock(clock))
 	feedback := service.NewFeedbackService(b.Tasks, client, nil)
 	d := Deps{

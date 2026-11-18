@@ -161,6 +161,75 @@ func StaleJobDedupKey(agentType string, taskID uuid.UUID, day time.Time) string 
 	return fmt.Sprintf("%s:%s:stale:%s", agentType, taskID, day.UTC().Format("2006-01-02"))
 }
 
+// AgentRun is one model turn of a job, kept for audit (section 6.4).
+type AgentRun struct {
+	ID               uuid.UUID
+	JobID            uuid.UUID
+	Turn             int
+	Model            string
+	ToolName         string
+	ToolArgs         json.RawMessage
+	ToolResult       json.RawMessage
+	Outcome          string
+	PromptTokens     int
+	CompletionTokens int
+	LatencyMS        int
+	CreatedAt        time.Time
+}
+
+// AgentTrigger is an agent job that a task change asks for.
+type AgentTrigger struct {
+	AgentType string
+	// Event names the change, for the job's input context.
+	Event string
+}
+
+// Only a person's change queues agent work (section 5.6). Agent and system
+// changes never do, so an agent cannot trigger itself or another agent (loop
+// prevention).
+//
+// The other triggers in section 5.6 are handled elsewhere: the digest
+// gatekeeper on task.assigned is a deterministic check with no job (G14),
+// "dependency release" on task.completed is the synchronous re-check of
+// dependents, and /decompose comes from its own operation (M8-02).
+
+// CreateTriggers returns the jobs creating a task queues. Triage runs on
+// every task a person creates, even one assigned to its creator, for which no
+// task.created event is raised.
+func CreateTriggers(actor Actor) []AgentTrigger {
+	if actor.Kind != ActorUser {
+		return nil
+	}
+	return []AgentTrigger{{AgentType: AgentTriage, Event: EventTaskCreated}}
+}
+
+// ChangeTriggers returns the jobs a change to an existing task queues, from
+// the events it raised: triage on a person's edit, and the blocker
+// investigator on a manual block.
+func ChangeTriggers(events []Event) []AgentTrigger {
+	var out []AgentTrigger
+	add := func(agent, event string) {
+		for _, t := range out {
+			if t.AgentType == agent {
+				return // one job per agent per change; the dedup key agrees
+			}
+		}
+		out = append(out, AgentTrigger{AgentType: agent, Event: event})
+	}
+	for _, e := range events {
+		if e.Actor.Kind != ActorUser {
+			continue
+		}
+		switch {
+		case e.Type == EventTaskUpdated:
+			add(AgentTriage, e.Type)
+		case e.Type == EventTaskBlocked && e.blockedReason() == BlockedManual:
+			add(AgentBlocker, e.Type)
+		}
+	}
+	return out
+}
+
 // AgentSettings are a workspace's agent controls (section 5.7, decision 10).
 type AgentSettings struct {
 	AgentsEnabled               bool     `json:"agents_enabled"`

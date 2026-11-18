@@ -153,3 +153,51 @@ func TestAgentSettingsPatch(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentTriggers(t *testing.T) {
+	agent := Actor{ID: "agent_triage", Kind: ActorAgent}
+	task := newTaskT(t, "T", "usr_bob", "")
+	blockedBy := func(r BlockedReason) Event {
+		e := task.event(EventTaskBlocked, alice, t0)
+		e.Task.BlockedReason = &r
+		return e
+	}
+	manual, dependency := blockedBy(BlockedManual), blockedBy(BlockedDependency)
+
+	names := func(ts []AgentTrigger) []string {
+		out := []string{}
+		for _, tr := range ts {
+			out = append(out, tr.AgentType+"@"+tr.Event)
+		}
+		return out
+	}
+	if got := names(CreateTriggers(alice)); !slices.Equal(got, []string{"triage@task.created"}) {
+		t.Errorf("created by a person: %v", got)
+	}
+	for _, a := range []Actor{agent, System} {
+		if got := CreateTriggers(a); got != nil {
+			t.Errorf("created by %s: %v", a.Kind, got)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		events []Event
+		want   []string
+	}{
+		{"no events", nil, []string{}},
+		{"edited by a person", []Event{task.event(EventTaskUpdated, alice, t0)}, []string{"triage@task.updated"}},
+		{"edited by an agent", []Event{task.event(EventTaskUpdated, agent, t0)}, []string{}},
+		{"edited by the system", []Event{task.event(EventTaskUpdated, System, t0)}, []string{}},
+		{"manual block", []Event{manual}, []string{"blocker_investigator@task.blocked"}},
+		{"dependency block", []Event{dependency}, []string{}},
+		{"several events, one job per agent",
+			[]Event{task.event(EventTaskAssigned, alice, t0), manual, task.event(EventTaskUpdated, alice, t0), task.event(EventTaskUpdated, alice, t0)},
+			[]string{"blocker_investigator@task.blocked", "triage@task.updated"}},
+		{"assignment and completion queue nothing",
+			[]Event{task.event(EventTaskAssigned, alice, t0), task.event(EventTaskCompleted, alice, t0)}, []string{}},
+	} {
+		if got := names(ChangeTriggers(tc.events)); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: triggers = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

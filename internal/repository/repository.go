@@ -107,6 +107,33 @@ type WebhookDeliveryRepository interface {
 	DeleteBefore(ctx context.Context, cutoff time.Time) (int, error)
 }
 
+// ErrJobMoved is returned by AgentJobRepository.Update when the job is no
+// longer in the status the caller read, because another worker or a recovery
+// sweep changed it.
+var ErrJobMoved = errors.New("repository: agent job is no longer in the expected status")
+
+// AgentJobRepository stores agent_jobs and agent_run_history rows.
+type AgentJobRepository interface {
+	// Insert queues a job. A job whose dedup key is already stored is not an
+	// error: Insert reports false and leaves the stored job alone.
+	Insert(ctx context.Context, j domain.AgentJob) (bool, error)
+	Get(ctx context.Context, tenantID string, id uuid.UUID) (*domain.AgentJob, error)
+	// GetForUpdate requires a transaction.
+	GetForUpdate(ctx context.Context, tenantID string, id uuid.UUID) (*domain.AgentJob, error)
+	// Claim marks up to limit pending jobs running, oldest first, skipping
+	// jobs another claimer holds. It spans tenants: the runtime serves all.
+	Claim(ctx context.Context, now time.Time, limit int) ([]*domain.AgentJob, error)
+	// Update saves the job's status, results, error, attempts, decision, and
+	// updated_at, provided its stored status is still from. Otherwise it
+	// returns ErrJobMoved, or domain.ErrNotFound when the job is gone.
+	Update(ctx context.Context, j *domain.AgentJob, from domain.JobStatus) error
+	// ListForTask returns the task's jobs, oldest first.
+	ListForTask(ctx context.Context, tenantID string, taskID uuid.UUID) ([]*domain.AgentJob, error)
+	InsertRun(ctx context.Context, r domain.AgentRun) error
+	// ListRuns returns a job's turns in order.
+	ListRuns(ctx context.Context, jobID uuid.UUID) ([]domain.AgentRun, error)
+}
+
 // DependencyRepository stores task_dependencies rows. Every call is scoped to
 // a tenant.
 type DependencyRepository interface {

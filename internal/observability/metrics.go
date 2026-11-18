@@ -23,6 +23,14 @@ const (
 	OutcomeCircuitOpen = "circuit_open"
 )
 
+// Reasons an agent job a change asked for was not queued, the reason label
+// of the skipped-jobs counter.
+const (
+	SkipAgentsOff = "agents_disabled" // the workspace has agents off
+	SkipAgentOff  = "agent_disabled"  // this agent is in disabled_agents
+	SkipDuplicate = "duplicate"       // a job with the same dedup key exists
+)
+
 // Metrics are the service's Prometheus metrics, on their own registry.
 type Metrics struct {
 	registry         *prometheus.Registry
@@ -30,6 +38,7 @@ type Metrics struct {
 	dispatchDuration *prometheus.HistogramVec
 	deadLetters      *prometheus.CounterVec
 	feedback         *prometheus.CounterVec
+	jobsSkipped      *prometheus.CounterVec
 }
 
 // PendingCounter reports how many outbox rows are pending.
@@ -60,8 +69,12 @@ func NewMetrics(pending PendingCounter) *Metrics {
 			Name: "taskify_feedback_forwarded_total",
 			Help: "Feedback signals forwarded to AgentPulse, by signal.",
 		}, []string{"signal"}),
+		jobsSkipped: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "taskify_agent_jobs_skipped_total",
+			Help: "Agent jobs a task change asked for but that were not queued, by agent type and reason.",
+		}, []string{"agent_type", "reason"}),
 	}
-	reg.MustRegister(m.httpDuration, m.dispatchDuration, m.deadLetters, m.feedback,
+	reg.MustRegister(m.httpDuration, m.dispatchDuration, m.deadLetters, m.feedback, m.jobsSkipped,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	if pending != nil {
 		reg.MustRegister(&pendingCollector{count: pending})
@@ -105,6 +118,14 @@ func (m *Metrics) FeedbackForwarded(signal string) {
 		return
 	}
 	m.feedback.WithLabelValues(signal).Inc()
+}
+
+// AgentJobSkipped counts one agent job that was not queued.
+func (m *Metrics) AgentJobSkipped(agentType, reason string) {
+	if m == nil {
+		return
+	}
+	m.jobsSkipped.WithLabelValues(agentType, reason).Inc()
 }
 
 func statusLabel(code int) string {

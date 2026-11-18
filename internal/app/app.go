@@ -86,10 +86,11 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 	taskSvc := service.NewTaskService(service.Deps{
 		Tx: db, Tasks: tasks, Workspaces: postgres.NewWorkspaceRepo(db),
 		Comments: postgres.NewCommentRepo(db), Outbox: outbox, Dependencies: postgres.NewDependencyRepo(db),
+		AgentJobs: postgres.NewAgentJobRepo(db),
 	}, service.Config{
 		PublicBaseURL:     cfg.PublicBaseURL,
 		OutboxMaxAttempts: cfg.OutboxMaxAttempts,
-	}, service.WithWake(relay.Wake))
+	}, service.WithWake(relay.Wake), service.WithMetrics(metrics))
 	feedback := service.NewFeedbackService(tasks, client, metrics)
 
 	handler, err := api.NewRouter(api.Deps{
