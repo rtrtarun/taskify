@@ -14,8 +14,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/RONGALI-TARUN/taskify/internal/domain"
-	"github.com/RONGALI-TARUN/taskify/internal/service"
+	"github.com/rtrtarun/taskify/internal/domain"
+	"github.com/rtrtarun/taskify/internal/service"
 )
 
 // Webhook headers (default G7; checked against AgentPulse in M0-07).

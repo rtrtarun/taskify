@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/RONGALI-TARUN/taskify/internal/agentpulse"
-	"github.com/RONGALI-TARUN/taskify/internal/domain"
-	"github.com/RONGALI-TARUN/taskify/internal/repository"
+	"github.com/rtrtarun/taskify/internal/agentpulse"
+	"github.com/rtrtarun/taskify/internal/domain"
+	"github.com/rtrtarun/taskify/internal/repository"
 )
 
 // RuleCreator registers a routing rule with AgentPulse.

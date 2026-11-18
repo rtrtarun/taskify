@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RONGALI-TARUN/taskify/tests/mockagentpulse"
+	"github.com/rtrtarun/taskify/tests/mockagentpulse"
 )
 
 func newMock(t *testing.T) (*mockagentpulse.Server, string) {

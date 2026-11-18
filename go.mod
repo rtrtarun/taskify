@@ -1,4 +1,4 @@
-module github.com/RONGALI-TARUN/taskify
+module github.com/rtrtarun/taskify
 
 go 1.26.0
 

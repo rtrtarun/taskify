@@ -14,12 +14,12 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/RONGALI-TARUN/taskify/internal/agentpulse"
-	"github.com/RONGALI-TARUN/taskify/internal/api"
-	"github.com/RONGALI-TARUN/taskify/internal/config"
-	"github.com/RONGALI-TARUN/taskify/internal/repository/postgres"
-	"github.com/RONGALI-TARUN/taskify/internal/service"
-	"github.com/RONGALI-TARUN/taskify/internal/worker"
+	"github.com/rtrtarun/taskify/internal/agentpulse"
+	"github.com/rtrtarun/taskify/internal/api"
+	"github.com/rtrtarun/taskify/internal/config"
+	"github.com/rtrtarun/taskify/internal/repository/postgres"
+	"github.com/rtrtarun/taskify/internal/service"
+	"github.com/rtrtarun/taskify/internal/worker"
 )
 
 const shutdownTimeout = 15 * time.Second

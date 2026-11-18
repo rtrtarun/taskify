@@ -91,6 +91,6 @@ release:
   footer: |
     **Container image:** `docker pull ghcr.io/{{ .Env.IMAGE_REPO }}:{{ .Version }}`
 
-    **Go module:** `go get github.com/RONGALI-TARUN/taskify@{{ .Tag }}`
+    **Go module:** `go get github.com/rtrtarun/taskify@{{ .Tag }}`
 
     Apply the SQL files in `migrations/` (included in every archive and at `/migrations` in the image) before starting a new version.

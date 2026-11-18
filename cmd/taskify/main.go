@@ -8,8 +8,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/RONGALI-TARUN/taskify/internal/app"
-	"github.com/RONGALI-TARUN/taskify/internal/config"
+	"github.com/rtrtarun/taskify/internal/app"
+	"github.com/rtrtarun/taskify/internal/config"
 )
 
 // version and commit are set at release build time with -ldflags -X; see

@@ -8,7 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/RONGALI-TARUN/taskify/internal/service"
+	"github.com/rtrtarun/taskify/internal/service"
 )
 
 // Deps is everything the HTTP layer needs.

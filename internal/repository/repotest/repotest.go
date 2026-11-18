@@ -18,10 +18,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/RONGALI-TARUN/taskify/internal/repository"
-	"github.com/RONGALI-TARUN/taskify/internal/repository/memory"
-	"github.com/RONGALI-TARUN/taskify/internal/repository/postgres"
-	"github.com/RONGALI-TARUN/taskify/migrations"
+	"github.com/rtrtarun/taskify/internal/repository"
+	"github.com/rtrtarun/taskify/internal/repository/memory"
+	"github.com/rtrtarun/taskify/internal/repository/postgres"
+	"github.com/rtrtarun/taskify/migrations"
 )
 
 // Backend is one complete set of repositories sharing a store.

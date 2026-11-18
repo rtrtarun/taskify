@@ -71,7 +71,7 @@ M7, M8, and M9 are independent of each other and can run in parallel if more tha
 
 Deliverables:
 
-- Module path changed to `github.com/RONGALI-TARUN/taskify`; binary output `bin/taskify`; README naming made consistent.
+- Module path changed to `github.com/rtrtarun/taskify`; binary output `bin/taskify`; README naming made consistent.
 - Entrypoint moved to `cmd/taskify/main.go`; package layout from [architecture.md](architecture.md) section 5.1 created.
 - `internal/config` loading environment variables with validation.
 - `Makefile` targets: `build`, `test`, `lint`, `migrate-up`, `migrate-down`, `run`.

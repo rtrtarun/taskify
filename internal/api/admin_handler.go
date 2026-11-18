@@ -8,7 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/RONGALI-TARUN/taskify/internal/domain"
+	"github.com/rtrtarun/taskify/internal/domain"
 )
 
 // LearningClient is the part of the AgentPulse client the admin proxy uses.

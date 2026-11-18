@@ -10,8 +10,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/RONGALI-TARUN/taskify/internal/domain"
-	"github.com/RONGALI-TARUN/taskify/internal/repository"
+	"github.com/rtrtarun/taskify/internal/domain"
+	"github.com/rtrtarun/taskify/internal/repository"
 )
 
 // Field names are snake_case; timestamps are RFC 3339 in UTC (section 9.2).

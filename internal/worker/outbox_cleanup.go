@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/RONGALI-TARUN/taskify/internal/repository"
+	"github.com/rtrtarun/taskify/internal/repository"
 )
 
 // CleanupConfig tunes outbox cleanup.

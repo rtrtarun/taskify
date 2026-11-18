@@ -12,9 +12,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/RONGALI-TARUN/taskify/internal/domain"
-	"github.com/RONGALI-TARUN/taskify/internal/repository"
-	"github.com/RONGALI-TARUN/taskify/migrations"
+	"github.com/rtrtarun/taskify/internal/domain"
+	"github.com/rtrtarun/taskify/internal/repository"
+	"github.com/rtrtarun/taskify/migrations"
 )
 
 var (

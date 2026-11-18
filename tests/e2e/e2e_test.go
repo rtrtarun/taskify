@@ -19,11 +19,11 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/RONGALI-TARUN/taskify/internal/api"
-	"github.com/RONGALI-TARUN/taskify/internal/app"
-	"github.com/RONGALI-TARUN/taskify/internal/config"
-	"github.com/RONGALI-TARUN/taskify/internal/repository/repotest"
-	"github.com/RONGALI-TARUN/taskify/tests/mockagentpulse"
+	"github.com/rtrtarun/taskify/internal/api"
+	"github.com/rtrtarun/taskify/internal/app"
+	"github.com/rtrtarun/taskify/internal/config"
+	"github.com/rtrtarun/taskify/internal/repository/repotest"
+	"github.com/rtrtarun/taskify/tests/mockagentpulse"
 )
 
 const (

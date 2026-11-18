@@ -13,10 +13,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/RONGALI-TARUN/taskify/internal/agentpulse"
-	"github.com/RONGALI-TARUN/taskify/internal/domain"
-	"github.com/RONGALI-TARUN/taskify/internal/repository/repotest"
-	"github.com/RONGALI-TARUN/taskify/tests/mockagentpulse"
+	"github.com/rtrtarun/taskify/internal/agentpulse"
+	"github.com/rtrtarun/taskify/internal/domain"
+	"github.com/rtrtarun/taskify/internal/repository/repotest"
+	"github.com/rtrtarun/taskify/tests/mockagentpulse"
 )
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))

@@ -15,7 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/RONGALI-TARUN/taskify/internal/domain"
+	"github.com/rtrtarun/taskify/internal/domain"
 )
 
 // ErrTxRequired is returned by calls that lock rows outside a transaction.

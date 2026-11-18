@@ -1496,7 +1496,7 @@ sdk/python/
 Install during M15:
 
 ```bash
-pip install "git+https://github.com/RONGALI-TARUN/taskify.git@v0.1.0#subdirectory=sdk/python"
+pip install "git+https://github.com/rtrtarun/taskify.git@v0.1.0#subdirectory=sdk/python"
 ```
 
 The SDK shares the repository's tags with the Go module, so an SDK release and a server release carry the same version number.

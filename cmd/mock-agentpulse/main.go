@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/RONGALI-TARUN/taskify/tests/mockagentpulse"
+	"github.com/rtrtarun/taskify/tests/mockagentpulse"
 )
 
 func main() {
