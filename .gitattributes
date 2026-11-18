@@ -1,0 +1,3 @@
+# Keep LF everywhere, including Windows working trees: gofmt and the Go
+# toolchain expect it, and it keeps diffs free of line-ending noise.
+* text=auto eol=lf
