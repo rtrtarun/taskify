@@ -58,14 +58,38 @@ func (s *WorkspaceService) Get(ctx context.Context, tenantID, id string) (domain
 
 // Rename changes a workspace's name.
 func (s *WorkspaceService) Rename(ctx context.Context, tenantID, id, name string) (domain.Workspace, error) {
+	return s.UpdateSettings(ctx, tenantID, id, WorkspaceSettingsPatch{Name: &name})
+}
+
+// WorkspaceSettingsPatch changes some workspace settings; nil fields are
+// left alone.
+type WorkspaceSettingsPatch struct {
+	Name          *string
+	AgentSettings *domain.AgentSettingsPatch
+}
+
+// UpdateSettings applies the patch under a lock on the workspace row. Either
+// every field changes or, on a validation error, none does.
+func (s *WorkspaceService) UpdateSettings(ctx context.Context, tenantID, id string, p WorkspaceSettingsPatch) (domain.Workspace, error) {
 	var w domain.Workspace
 	err := s.tx.WithTx(ctx, func(ctx context.Context) error {
 		var err error
 		if w, err = s.workspaces.GetForUpdate(ctx, tenantID, id); err != nil {
 			return err
 		}
-		if err := w.Rename(name, s.clock()); err != nil {
-			return err
+		if p.Name == nil && p.AgentSettings == nil {
+			return nil
+		}
+		now := s.clock()
+		if p.Name != nil {
+			if err := w.Rename(*p.Name, now); err != nil {
+				return err
+			}
+		}
+		if p.AgentSettings != nil {
+			if err := w.UpdateAgentSettings(*p.AgentSettings, now); err != nil {
+				return err
+			}
 		}
 		return s.workspaces.Update(ctx, w)
 	})

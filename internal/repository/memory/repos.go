@@ -89,9 +89,17 @@ func (r *WorkspaceRepo) Create(ctx context.Context, w domain.Workspace) error {
 			return fmt.Errorf("%w: workspace", domain.ErrAlreadyExists)
 		}
 		w.CreatedAt, w.UpdatedAt = micro(w.CreatedAt), micro(w.UpdatedAt)
+		w.AgentSettings = cloneSettings(w.AgentSettings)
 		s.workspaces[k] = w
 		return nil
 	})
+}
+
+// cloneSettings copies settings so stored state never shares a slice with a
+// caller.
+func cloneSettings(a domain.AgentSettings) domain.AgentSettings {
+	a.DisabledAgents = append([]string{}, a.DisabledAgents...)
+	return a
 }
 
 func (r *WorkspaceRepo) Get(ctx context.Context, tenantID, id string) (w domain.Workspace, err error) {
@@ -100,6 +108,7 @@ func (r *WorkspaceRepo) Get(ctx context.Context, tenantID, id string) (w domain.
 		if w, ok = s.workspaces[wsKey{tenantID, id}]; !ok {
 			return domain.ErrNotFound
 		}
+		w.AgentSettings = cloneSettings(w.AgentSettings)
 		return nil
 	})
 	return w, err
@@ -120,6 +129,7 @@ func (r *WorkspaceRepo) Update(ctx context.Context, w domain.Workspace) error {
 			return domain.ErrNotFound
 		}
 		stored.Name, stored.UpdatedAt = w.Name, micro(w.UpdatedAt)
+		stored.AgentSettings = cloneSettings(w.AgentSettings)
 		s.workspaces[k] = stored
 		return nil
 	})

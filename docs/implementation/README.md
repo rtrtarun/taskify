@@ -146,7 +146,7 @@ Update this table as milestones close.
 | M2 Outbox and workers | 10 | Done. All exit criteria have tests, passing with `-race` on memory and PostgreSQL |
 | M3 REST API and bridges | 10 | Done. Unit, API, and end-to-end tests pass with `-race` on PostgreSQL |
 | M4 Observability (R1) | 6 | Done. Benchmarks meet every target on a Linux network; see docs/benchmarks.md. R1 complete apart from M0-07 |
-| M5 Agent runtime | 11 | Not started |
+| M5 Agent runtime | 11 | In progress. M5-01, M5-02, M5-05 done |
 | M6 HITL bridge | 4 | Not started |
 | M7 Triage | 4 | Not started |
 | M8 Decomposer | 4 | Not started |
@@ -178,3 +178,4 @@ Recorded as they come up, so the architecture can be corrected or the code chang
 | D12 | M3-05 | Permanent delete returns `204`; `?permanent=` accepts only `true` or `false`. | Nothing remains to return, and an unexpected value must not fall through to an archive. |
 | D13 | M4-02 | Traces are exported only when an OTLP endpoint is configured. Without one, spans are still created, so trace IDs still reach logs, the outbox, and AgentPulse. | Tracing must not need a collector to be useful, and must not fail start-up when none exists. |
 | D14 | M4-01 | `/metrics` and `/readyz` are unauthenticated, like `/healthz`. | Prometheus and orchestrator probes do not carry tokens; access is restricted at the network edge, as the README says. |
+| D15 | M5-01 | `tasks.parent_id` is `ON DELETE SET NULL`, not `CASCADE` as in [agentic.md](../agentic.md) section 4.A. | A cascade would delete children inside a parent's permanent delete without their outbox scrubbing, agent job cleanup, or dependency resolution. |

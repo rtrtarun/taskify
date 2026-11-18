@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/rtrtarun/taskify/internal/domain"
+	"github.com/rtrtarun/taskify/internal/service"
 )
 
 // LearningClient is the part of the AgentPulse client the admin proxy uses.
@@ -24,7 +25,7 @@ func (h *handlers) adminRoutes(r chi.Router) {
 	r.Use(adminOnly(h))
 	r.Post("/workspaces", h.createWorkspace)
 	r.Get("/workspaces/{id}/settings", h.getWorkspace)
-	r.Patch("/workspaces/{id}/settings", h.renameWorkspace)
+	r.Patch("/workspaces/{id}/settings", h.updateWorkspace)
 	r.Post("/workspaces/{id}/bootstrap-rules", h.bootstrapRules)
 	r.Get("/admin/learning/suggestions", h.listSuggestions)
 	r.Post("/admin/learning/suggestions/{id}/decision", h.decideSuggestion)
@@ -43,10 +44,25 @@ func adminOnly(h *handlers) func(http.Handler) http.Handler {
 }
 
 type workspaceJSON struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	AgentSettings agentSettingsJSON `json:"agent_settings"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+}
+
+type agentSettingsJSON struct {
+	AgentsEnabled               bool     `json:"agents_enabled"`
+	DisabledAgents              []string `json:"disabled_agents"`
+	RequireHITLForAll           bool     `json:"require_hitl_for_all"`
+	MaxSubtasksPerDecomposition int      `json:"max_subtasks_per_decomposition"`
+}
+
+type agentSettingsPatchJSON struct {
+	AgentsEnabled               *bool     `json:"agents_enabled"`
+	DisabledAgents              *[]string `json:"disabled_agents"`
+	RequireHITLForAll           *bool     `json:"require_hitl_for_all"`
+	MaxSubtasksPerDecomposition *int      `json:"max_subtasks_per_decomposition"`
 }
 
 type ruleJSON struct {
@@ -56,7 +72,20 @@ type ruleJSON struct {
 }
 
 func toWorkspaceJSON(w domain.Workspace) workspaceJSON {
-	return workspaceJSON{ID: w.ID, Name: w.Name, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt}
+	s := w.AgentSettings
+	disabled := s.DisabledAgents
+	if disabled == nil {
+		disabled = []string{}
+	}
+	return workspaceJSON{
+		ID: w.ID, Name: w.Name, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt,
+		AgentSettings: agentSettingsJSON{
+			AgentsEnabled:               s.AgentsEnabled,
+			DisabledAgents:              disabled,
+			RequireHITLForAll:           s.RequireHITLForAll,
+			MaxSubtasksPerDecomposition: s.MaxSubtasksPerDecomposition,
+		},
+	}
 }
 
 func toRulesJSON(rules []domain.WorkspaceRule) []ruleJSON {
@@ -111,22 +140,27 @@ func (h *handlers) getWorkspace(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toWorkspaceJSON(ws))
 }
 
-type renameWorkspaceRequest struct {
-	Name *string `json:"name"`
+type updateWorkspaceRequest struct {
+	Name          *string                 `json:"name"`
+	AgentSettings *agentSettingsPatchJSON `json:"agent_settings"`
 }
 
-func (h *handlers) renameWorkspace(w http.ResponseWriter, r *http.Request) {
-	var req renameWorkspaceRequest
+func (h *handlers) updateWorkspace(w http.ResponseWriter, r *http.Request) {
+	var req updateWorkspaceRequest
 	if err := decodeJSON(w, r, &req); err != nil {
 		h.fail(w, r, err)
 		return
 	}
-	id := chi.URLParam(r, "id")
-	if req.Name == nil {
-		h.getWorkspace(w, r) // nothing to change in R1; agent settings arrive in M5
-		return
+	p := service.WorkspaceSettingsPatch{Name: req.Name}
+	if a := req.AgentSettings; a != nil {
+		p.AgentSettings = &domain.AgentSettingsPatch{
+			AgentsEnabled:               a.AgentsEnabled,
+			DisabledAgents:              a.DisabledAgents,
+			RequireHITLForAll:           a.RequireHITLForAll,
+			MaxSubtasksPerDecomposition: a.MaxSubtasksPerDecomposition,
+		}
 	}
-	ws, err := h.workspaces.Rename(r.Context(), identity(r).TenantID, id, *req.Name)
+	ws, err := h.workspaces.UpdateSettings(r.Context(), identity(r).TenantID, chi.URLParam(r, "id"), p)
 	if err != nil {
 		h.fail(w, r, err)
 		return

@@ -14,11 +14,24 @@ var workspaceIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 // Workspace groups tasks within a tenant. A task can only be created in an
 // existing workspace.
 type Workspace struct {
-	TenantID  string
-	ID        string
-	Name      string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	TenantID      string
+	ID            string
+	Name          string
+	AgentSettings AgentSettings
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+// UpdateAgentSettings applies a patch to the workspace's agent controls. A
+// refused patch leaves the workspace unchanged.
+func (w *Workspace) UpdateAgentSettings(p AgentSettingsPatch, now time.Time) error {
+	s, err := w.AgentSettings.Apply(p)
+	if err != nil {
+		return err
+	}
+	w.AgentSettings = s
+	w.UpdatedAt = now.UTC()
+	return nil
 }
 
 // WorkspaceRule records a default AgentPulse rule registered for a workspace.
@@ -47,11 +60,12 @@ func (w *Workspace) Rename(name string, now time.Time) error {
 // NewWorkspace validates and returns a workspace.
 func NewWorkspace(tenantID, id, name string, now time.Time) (Workspace, error) {
 	w := Workspace{
-		TenantID:  strings.TrimSpace(tenantID),
-		ID:        strings.TrimSpace(id),
-		Name:      strings.TrimSpace(name),
-		CreatedAt: now.UTC(),
-		UpdatedAt: now.UTC(),
+		TenantID:      strings.TrimSpace(tenantID),
+		ID:            strings.TrimSpace(id),
+		Name:          strings.TrimSpace(name),
+		AgentSettings: DefaultAgentSettings(),
+		CreatedAt:     now.UTC(),
+		UpdatedAt:     now.UTC(),
 	}
 	switch {
 	case w.TenantID == "":

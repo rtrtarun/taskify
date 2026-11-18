@@ -755,6 +755,42 @@ func TestWorkspaces(t *testing.T) {
 	if r := e.do(req{method: "GET", path: "/api/v1/workspaces/ws_new/settings", as: "other-tenant"}); r.status != 404 {
 		t.Errorf("another tenant's workspace: %d", r.status)
 	}
+
+	// Agent settings (M5-05): a new workspace has agents off and approval for
+	// everything on.
+	r = e.do(req{method: "GET", path: "/api/v1/workspaces/ws_new/settings", as: "admin"})
+	agents, _ := r.json["agent_settings"].(map[string]any)
+	if r.status != 200 || agents["agents_enabled"] != false || agents["require_hitl_for_all"] != true ||
+		agents["max_subtasks_per_decomposition"] != float64(5) || len(agents["disabled_agents"].([]any)) != 0 {
+		t.Errorf("default agent settings: %d %s", r.status, r.raw)
+	}
+	r = e.do(req{method: "PATCH", path: "/api/v1/workspaces/ws_new/settings", as: "admin", body: map[string]any{
+		"agent_settings": map[string]any{"agents_enabled": true, "disabled_agents": []string{"decomposer"}},
+	}})
+	agents, _ = r.json["agent_settings"].(map[string]any)
+	if r.status != 200 || agents["agents_enabled"] != true || agents["require_hitl_for_all"] != true || r.json["name"] != "Renamed" {
+		t.Errorf("enable agents: %d %s", r.status, r.raw)
+	}
+	for name, body := range map[string]map[string]any{
+		"unknown agent":           {"agent_settings": map[string]any{"disabled_agents": []string{"oracle"}}},
+		"zero cap":                {"agent_settings": map[string]any{"max_subtasks_per_decomposition": 0}},
+		"bad name, good settings": {"name": " ", "agent_settings": map[string]any{"require_hitl_for_all": false}},
+	} {
+		if r := e.do(req{method: "PATCH", path: "/api/v1/workspaces/ws_new/settings", as: "admin", body: body}); r.status != 422 {
+			t.Errorf("%s: %d %s", name, r.status, r.raw)
+		}
+	}
+	// A refused patch changed nothing, including its valid half.
+	r = e.do(req{method: "GET", path: "/api/v1/workspaces/ws_new/settings", as: "admin"})
+	agents, _ = r.json["agent_settings"].(map[string]any)
+	if agents["require_hitl_for_all"] != true || agents["max_subtasks_per_decomposition"] != float64(5) || r.json["name"] != "Renamed" {
+		t.Errorf("after refused patches: %s", r.raw)
+	}
+	if r := e.do(req{method: "PATCH", path: "/api/v1/workspaces/ws_new/settings", body: map[string]any{
+		"agent_settings": map[string]any{"agents_enabled": false},
+	}}); r.status != 403 {
+		t.Errorf("non-admin changed agent settings: %d", r.status)
+	}
 	if r := e.do(req{method: "POST", path: "/api/v1/workspaces/ws_missing/bootstrap-rules", as: "admin"}); r.status != 404 {
 		t.Errorf("bootstrap missing: %d", r.status)
 	}
