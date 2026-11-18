@@ -146,7 +146,7 @@ Update this table as milestones close.
 | M2 Outbox and workers | 10 | Done. All exit criteria have tests, passing with `-race` on memory and PostgreSQL |
 | M3 REST API and bridges | 10 | Done. Unit, API, and end-to-end tests pass with `-race` on PostgreSQL |
 | M4 Observability (R1) | 6 | Done. Benchmarks meet every target on a Linux network; see docs/benchmarks.md. R1 complete apart from M0-07 |
-| M5 Agent runtime | 11 | In progress. M5-01, M5-02, M5-05 done |
+| M5 Agent runtime | 11 | In progress. M5-01 to M5-05 done |
 | M6 HITL bridge | 4 | Not started |
 | M7 Triage | 4 | Not started |
 | M8 Decomposer | 4 | Not started |
@@ -179,3 +179,7 @@ Recorded as they come up, so the architecture can be corrected or the code chang
 | D13 | M4-02 | Traces are exported only when an OTLP endpoint is configured. Without one, spans are still created, so trace IDs still reach logs, the outbox, and AgentPulse. | Tracing must not need a collector to be useful, and must not fail start-up when none exists. |
 | D14 | M4-01 | `/metrics` and `/readyz` are unauthenticated, like `/healthz`. | Prometheus and orchestrator probes do not carry tokens; access is restricted at the network edge, as the README says. |
 | D15 | M5-01 | `tasks.parent_id` is `ON DELETE SET NULL`, not `CASCADE` as in [agentic.md](../agentic.md) section 4.A. | A cascade would delete children inside a parent's permanent delete without their outbox scrubbing, agent job cleanup, or dependency resolution. |
+| D16 | M5-03 | Dependency inserts take a per-tenant advisory lock (`pg_advisory_xact_lock`), then lock the blocker row before the dependent row, instead of locking the two tasks in ID order. | Locking only the two linked tasks lets inserts on disjoint pairs each pass the cycle check and together close a cycle through existing links (with Y→U and V→X present, X→Y and U→V lock different rows). Blocker-before-dependent is the order in which completing a blocker locks its dependents, so the two paths cannot deadlock. |
+| D17 | M5-04 | Keys for `task.dependency_added`, `task.dependency_resolved`, and `task.dependency_reopened` are `...:{event_type}:{blocker_id}:v{blocker_version}`. | These notices leave the dependent's version unchanged, so the section 4.4 format would give two notices about different blockers the same key. |
+| D18 | M5-04 | On permanent delete, dependents are re-checked after the task row is deleted, in the same transaction, not before. Their events name the blocker with status `deleted`. No `task.dependency_resolved` goes to a completed or archived dependent. | Before the delete the task still counts as an open blocker, so the check would find nothing to release. A finished dependent cannot act on the news. |
+| G23 | M5-03 | A person adding a dependency is mentioned in section 4.3, but section 5.4 has no endpoint for it. Only the service operation exists until an endpoint is specified. | Rule 12: not built ad hoc. |

@@ -304,8 +304,14 @@ func (r *TaskRepo) Delete(ctx context.Context, tenantID string, id uuid.UUID) er
 			return domain.ErrNotFound
 		}
 		delete(s.tasks, id)
-		// Comments go with the task, as with ON DELETE CASCADE.
+		// Comments and dependency links go with the task, as with ON DELETE
+		// CASCADE.
 		s.comments = slices.DeleteFunc(s.comments, func(c domain.Comment) bool { return c.TaskID == id })
+		for k := range s.deps {
+			if k.task == id || k.dependsOn == id {
+				delete(s.deps, k)
+			}
+		}
 		return nil
 	})
 }

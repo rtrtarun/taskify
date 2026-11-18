@@ -64,7 +64,8 @@ type TaskRepository interface {
 	// ErrVersionConflict otherwise. Watchers are replaced.
 	Update(ctx context.Context, t *domain.Task, expectedVersion int) error
 	List(ctx context.Context, f TaskFilter) (TaskPage, error)
-	// Delete removes the task permanently, with its watchers and comments.
+	// Delete removes the task permanently, with its watchers, comments, and
+	// dependency links in both directions.
 	// It returns ErrNotFound when no row was deleted.
 	Delete(ctx context.Context, tenantID string, id uuid.UUID) error
 
@@ -87,7 +88,7 @@ type WorkspaceRepository interface {
 	Get(ctx context.Context, tenantID, id string) (domain.Workspace, error)
 	// GetForUpdate locks the row until the transaction ends.
 	GetForUpdate(ctx context.Context, tenantID, id string) (domain.Workspace, error)
-	// Update writes the name and updated_at.
+	// Update writes the name, agent settings, and updated_at.
 	Update(ctx context.Context, w domain.Workspace) error
 }
 
@@ -104,6 +105,29 @@ type WebhookDeliveryRepository interface {
 	// the callback was already processed.
 	Record(ctx context.Context, key string, at time.Time) (bool, error)
 	DeleteBefore(ctx context.Context, cutoff time.Time) (int, error)
+}
+
+// DependencyRepository stores task_dependencies rows. Every call is scoped to
+// a tenant.
+type DependencyRepository interface {
+	// LockTenant serialises dependency inserts within a tenant until the
+	// transaction ends. Locking only the two tasks being linked is not enough:
+	// two inserts on disjoint pairs can each pass the cycle check and together
+	// close a cycle through existing links.
+	LockTenant(ctx context.Context, tenantID string) error
+	// Create inserts the link and reports whether it was new. An existing
+	// link is left alone and is not an error.
+	Create(ctx context.Context, d domain.Dependency) (bool, error)
+	// Reaches reports whether to can be reached from from by following
+	// dependencies (from depends on ... depends on to).
+	Reaches(ctx context.Context, tenantID string, from, to uuid.UUID) (bool, error)
+	// ListBlockers returns the tasks taskID depends on.
+	ListBlockers(ctx context.Context, tenantID string, taskID uuid.UUID) ([]uuid.UUID, error)
+	// ListDependents returns the tasks that depend on blockerID.
+	ListDependents(ctx context.Context, tenantID string, blockerID uuid.UUID) ([]uuid.UUID, error)
+	// HasOpenBlocker reports whether taskID depends on any task that is not
+	// completed or archived.
+	HasOpenBlocker(ctx context.Context, tenantID string, taskID uuid.UUID) (bool, error)
 }
 
 // CommentRepository stores comments. Callers check the task's tenant first.

@@ -37,9 +37,12 @@ type state struct {
 	outboxKeys map[string]uuid.UUID
 	rules      map[ruleKey]domain.WorkspaceRule
 	deliveries map[string]time.Time
+	deps       map[depKey]domain.Dependency
 }
 
 type ruleKey struct{ tenant, workspace, key string }
+
+type depKey struct{ task, dependsOn uuid.UUID }
 
 // New returns an empty store.
 func New() *Store {
@@ -50,6 +53,7 @@ func New() *Store {
 		outboxKeys: map[string]uuid.UUID{},
 		rules:      map[ruleKey]domain.WorkspaceRule{},
 		deliveries: map[string]time.Time{},
+		deps:       map[depKey]domain.Dependency{},
 	}}
 }
 
@@ -99,6 +103,7 @@ func (s state) clone() state {
 		outboxKeys: maps.Clone(s.outboxKeys),
 		rules:      maps.Clone(s.rules),
 		deliveries: maps.Clone(s.deliveries),
+		deps:       maps.Clone(s.deps),
 	}
 	for id, t := range s.tasks {
 		c.tasks[id] = copyTask(t)

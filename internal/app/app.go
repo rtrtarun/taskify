@@ -85,7 +85,7 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 	})
 	taskSvc := service.NewTaskService(service.Deps{
 		Tx: db, Tasks: tasks, Workspaces: postgres.NewWorkspaceRepo(db),
-		Comments: postgres.NewCommentRepo(db), Outbox: outbox,
+		Comments: postgres.NewCommentRepo(db), Outbox: outbox, Dependencies: postgres.NewDependencyRepo(db),
 	}, service.Config{
 		PublicBaseURL:     cfg.PublicBaseURL,
 		OutboxMaxAttempts: cfg.OutboxMaxAttempts,

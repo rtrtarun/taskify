@@ -32,6 +32,9 @@ type Deps struct {
 	Workspaces repository.WorkspaceRepository
 	Comments   repository.CommentRepository
 	Outbox     repository.OutboxRepository
+	// Dependencies is required from R2: task status changes re-check
+	// dependents.
+	Dependencies repository.DependencyRepository
 }
 
 // Config holds the settings that shape outbox rows.
@@ -166,16 +169,40 @@ func (s *TaskService) SnoozeTask(ctx context.Context, actor domain.Actor, tenant
 //
 // A relay worker that claimed one of the rows just before may still send it
 // once; recording its result then matches no row and is not an error.
+//
+// The task's dependents lose their link to it through the cascade, and are
+// then re-checked as if it had been resolved: a dependent whose only open
+// blocker was this task is unblocked. The check runs after the delete, in the
+// same transaction, so the deleted task no longer counts as an open blocker.
+// Agent jobs for the task go with it through ON DELETE CASCADE.
 func (s *TaskService) DeleteTask(ctx context.Context, tenantID string, id uuid.UUID) error {
-	return s.deps.Tx.WithTx(ctx, func(ctx context.Context) error {
-		if _, err := s.deps.Tasks.GetForUpdate(ctx, tenantID, id); err != nil {
+	now := s.clock()
+	var events []domain.Event
+	err := s.deps.Tx.WithTx(ctx, func(ctx context.Context) error {
+		task, err := s.deps.Tasks.GetForUpdate(ctx, tenantID, id)
+		if err != nil {
+			return err
+		}
+		dependents, err := s.deps.Dependencies.ListDependents(ctx, tenantID, id)
+		if err != nil {
 			return err
 		}
 		if _, err := s.deps.Outbox.DeleteForAggregate(ctx, tenantID, id); err != nil {
 			return err
 		}
-		return s.deps.Tasks.Delete(ctx, tenantID, id)
+		if err := s.deps.Tasks.Delete(ctx, tenantID, id); err != nil {
+			return err
+		}
+		gone := *task
+		gone.Status = domain.BlockerDeleted
+		events, err = s.resolveEach(ctx, &gone, dependents, now)
+		return err
 	})
+	if err != nil {
+		return err
+	}
+	s.signal(events)
+	return nil
 }
 
 // mutate loads and locks a task, checks its version, applies change, and
@@ -196,7 +223,7 @@ func (s *TaskService) mutate(ctx context.Context, tenantID string, id uuid.UUID,
 		if expectedVersion != nil && *expectedVersion != task.Version {
 			return &VersionConflictError{Current: task.Version}
 		}
-		before := task.Version
+		before, from := task.Version, task.Status
 		if events, err = change(task, now); err != nil {
 			return err
 		}
@@ -206,7 +233,15 @@ func (s *TaskService) mutate(ctx context.Context, tenantID string, id uuid.UUID,
 		if err := s.deps.Tasks.Update(ctx, task, before); err != nil {
 			return err
 		}
-		return s.emit(ctx, events, now)
+		if err := s.emit(ctx, events, now); err != nil {
+			return err
+		}
+		if task.Status == from {
+			return nil
+		}
+		depEvents, err := s.onBlockerStatusChange(ctx, task, from, now)
+		events = append(events, depEvents...)
+		return err
 	})
 	if err != nil {
 		return nil, err
