@@ -230,7 +230,7 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) (err 
 		// The URL holds no secrets; the API key travels in a header.
 		return fmt.Errorf("agentpulse: %s %s: %w", method, pathOnly(path), err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))

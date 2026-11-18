@@ -106,7 +106,7 @@ func NewEmptyDatabase(t *testing.T) *pgxpool.Pool {
 	if err != nil {
 		t.Fatalf("connect to DATABASE_URL: %v", err)
 	}
-	defer admin.Close(ctx)
+	defer func() { _ = admin.Close(ctx) }()
 
 	name := "taskify_test_" + randomSuffix(t)
 	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
@@ -133,7 +133,7 @@ func NewEmptyDatabase(t *testing.T) *pgxpool.Pool {
 			t.Logf("drop %s: %v", name, err)
 			return
 		}
-		defer conn.Close(ctx)
+		defer func() { _ = conn.Close(ctx) }()
 		if _, err := conn.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)"); err != nil {
 			t.Logf("drop %s: %v", name, err)
 		}

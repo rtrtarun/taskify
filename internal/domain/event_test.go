@@ -130,9 +130,10 @@ func TestIdempotencyKeys(t *testing.T) {
 
 	t.Run("keys are deterministic", func(t *testing.T) {
 		e := task.event(EventTaskBlocked, alice, t0)
+		first := e.IdempotencyKey("usr_bob")
 		for i := 0; i < 5; i++ {
-			if e.IdempotencyKey("usr_bob") != e.IdempotencyKey("usr_bob") {
-				t.Fatal("same input produced different keys")
+			if got := task.event(EventTaskBlocked, alice, t0).IdempotencyKey("usr_bob"); got != first {
+				t.Fatalf("same input produced %q, then %q", first, got)
 			}
 		}
 		again := task.event(EventTaskBlocked, alice, t0.Add(time.Hour))
