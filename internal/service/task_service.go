@@ -1,0 +1,289 @@
+// Package service holds Taskify's use cases. Each mutation runs in one
+// transaction that writes the task and the outbox rows for its events, so a
+// change and its notifications commit together or not at all. No method here
+// makes a network call.
+package service
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/RONGALI-TARUN/taskify/internal/domain"
+	"github.com/RONGALI-TARUN/taskify/internal/repository"
+)
+
+const (
+	// DefaultListLimit and MaxListLimit bound a page of tasks.
+	DefaultListLimit = 50
+	MaxListLimit     = 200
+	// recentComments is how many comments GetTask returns.
+	recentComments = 20
+)
+
+// Deps are the repositories a TaskService uses.
+type Deps struct {
+	Tx         repository.TxManager
+	Tasks      repository.TaskRepository
+	Workspaces repository.WorkspaceRepository
+	Comments   repository.CommentRepository
+	Outbox     repository.OutboxRepository
+}
+
+// Config holds the settings that shape outbox rows.
+type Config struct {
+	PublicBaseURL     string
+	OutboxMaxAttempts int
+}
+
+// TaskService implements the task use cases.
+type TaskService struct {
+	deps Deps
+	cfg  Config
+	now  func() time.Time
+	wake func()
+}
+
+// Option configures a TaskService.
+type Option func(*TaskService)
+
+// WithClock replaces the time source.
+func WithClock(now func() time.Time) Option { return func(s *TaskService) { s.now = now } }
+
+// WithWake sets the function called after a commit that wrote outbox rows,
+// so the relay can send them without waiting for its next tick. It must not
+// block.
+func WithWake(wake func()) Option { return func(s *TaskService) { s.wake = wake } }
+
+// NewTaskService returns a TaskService.
+func NewTaskService(d Deps, cfg Config, opts ...Option) *TaskService {
+	if cfg.OutboxMaxAttempts <= 0 {
+		cfg.OutboxMaxAttempts = 10
+	}
+	s := &TaskService{deps: d, cfg: cfg, now: time.Now, wake: func() {}}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
+}
+
+func (s *TaskService) clock() time.Time {
+	// PostgreSQL stores microseconds; truncating here keeps what callers see
+	// equal to what a later read returns.
+	return s.now().UTC().Truncate(time.Microsecond)
+}
+
+// CreateWorkspace creates a workspace in a tenant.
+func (s *TaskService) CreateWorkspace(ctx context.Context, tenantID, id, name string) (domain.Workspace, error) {
+	w, err := domain.NewWorkspace(tenantID, id, name, s.clock())
+	if err != nil {
+		return domain.Workspace{}, err
+	}
+	if err := s.deps.Workspaces.Create(ctx, w); err != nil {
+		return domain.Workspace{}, err
+	}
+	return w, nil
+}
+
+// CreateTask creates a task in an existing workspace. The actor becomes its
+// creator.
+func (s *TaskService) CreateTask(ctx context.Context, actor domain.Actor, in domain.NewTaskInput) (*domain.Task, error) {
+	now := s.clock()
+	task, events, err := domain.NewTask(in, actor, now)
+	if err != nil {
+		return nil, err
+	}
+	err = s.deps.Tx.WithTx(ctx, func(ctx context.Context) error {
+		if _, err := s.deps.Workspaces.Get(ctx, task.TenantID, task.WorkspaceID); err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				return fmt.Errorf("%w: workspace %q does not exist", domain.ErrValidation, task.WorkspaceID)
+			}
+			return err
+		}
+		if err := s.deps.Tasks.Create(ctx, task); err != nil {
+			return err
+		}
+		return s.emit(ctx, events, now)
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.signal(events)
+	return task, nil
+}
+
+// UpdateTask applies a patch if the task is still at expectedVersion. A patch
+// that changes nothing returns the task unchanged.
+func (s *TaskService) UpdateTask(ctx context.Context, actor domain.Actor, tenantID string, id uuid.UUID, expectedVersion int, p domain.Patch) (*domain.Task, error) {
+	return s.mutate(ctx, tenantID, id, &expectedVersion, func(t *domain.Task, now time.Time) ([]domain.Event, error) {
+		return t.Apply(p, actor, now)
+	})
+}
+
+// CompleteTask marks a task completed. expectedVersion may be nil, as for a
+// "Mark done" click in a notification. Completing a completed task is a
+// no-op, so a repeated click is harmless.
+func (s *TaskService) CompleteTask(ctx context.Context, actor domain.Actor, tenantID string, id uuid.UUID, expectedVersion *int) (*domain.Task, error) {
+	return s.mutate(ctx, tenantID, id, expectedVersion, func(t *domain.Task, now time.Time) ([]domain.Event, error) {
+		return t.TransitionTo(domain.StatusCompleted, actor, now)
+	})
+}
+
+// ArchiveTask soft-deletes a task. Archiving an archived task is a no-op.
+func (s *TaskService) ArchiveTask(ctx context.Context, actor domain.Actor, tenantID string, id uuid.UUID, expectedVersion *int) (*domain.Task, error) {
+	return s.mutate(ctx, tenantID, id, expectedVersion, func(t *domain.Task, now time.Time) ([]domain.Event, error) {
+		return t.TransitionTo(domain.StatusArchived, actor, now)
+	})
+}
+
+// RestoreTask returns an archived task to todo. It fails for a task that is
+// not archived, rather than moving it to todo by another route.
+func (s *TaskService) RestoreTask(ctx context.Context, actor domain.Actor, tenantID string, id uuid.UUID, expectedVersion *int) (*domain.Task, error) {
+	return s.mutate(ctx, tenantID, id, expectedVersion, func(t *domain.Task, now time.Time) ([]domain.Event, error) {
+		if t.Status != domain.StatusArchived {
+			return nil, &domain.TransitionError{From: t.Status, To: domain.StatusTodo}
+		}
+		return t.TransitionTo(domain.StatusTodo, actor, now)
+	})
+}
+
+// mutate loads and locks a task, checks its version, applies change, and
+// writes the task and its outbox rows.
+func (s *TaskService) mutate(ctx context.Context, tenantID string, id uuid.UUID, expectedVersion *int,
+	change func(t *domain.Task, now time.Time) ([]domain.Event, error)) (*domain.Task, error) {
+	now := s.clock()
+	var (
+		task   *domain.Task
+		events []domain.Event
+	)
+	err := s.deps.Tx.WithTx(ctx, func(ctx context.Context) error {
+		var err error
+		task, err = s.deps.Tasks.GetForUpdate(ctx, tenantID, id)
+		if err != nil {
+			return err
+		}
+		if expectedVersion != nil && *expectedVersion != task.Version {
+			return &VersionConflictError{Current: task.Version}
+		}
+		before := task.Version
+		if events, err = change(task, now); err != nil {
+			return err
+		}
+		if task.Version == before {
+			return nil // nothing changed
+		}
+		if err := s.deps.Tasks.Update(ctx, task, before); err != nil {
+			return err
+		}
+		return s.emit(ctx, events, now)
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.signal(events)
+	return task, nil
+}
+
+// AddComment adds a comment to a task. It does not change the task's version.
+func (s *TaskService) AddComment(ctx context.Context, actor domain.Actor, tenantID string, taskID uuid.UUID, body string) (domain.Comment, error) {
+	now := s.clock()
+	var (
+		comment domain.Comment
+		events  []domain.Event
+	)
+	err := s.deps.Tx.WithTx(ctx, func(ctx context.Context) error {
+		task, err := s.deps.Tasks.Get(ctx, tenantID, taskID)
+		if err != nil {
+			return err
+		}
+		if comment, events, err = domain.NewComment(task, body, actor, now); err != nil {
+			return err
+		}
+		if err := s.deps.Comments.Create(ctx, comment); err != nil {
+			return err
+		}
+		return s.emit(ctx, events, now)
+	})
+	if err != nil {
+		return domain.Comment{}, err
+	}
+	s.signal(events)
+	return comment, nil
+}
+
+// TaskDetail is a task with its most recent comments, newest first.
+type TaskDetail struct {
+	Task     *domain.Task
+	Comments []domain.Comment
+}
+
+// GetTask returns a task, including an archived one, with recent comments.
+func (s *TaskService) GetTask(ctx context.Context, tenantID string, id uuid.UUID) (TaskDetail, error) {
+	task, err := s.deps.Tasks.Get(ctx, tenantID, id)
+	if err != nil {
+		return TaskDetail{}, err
+	}
+	comments, err := s.deps.Comments.ListRecent(ctx, id, recentComments)
+	if err != nil {
+		return TaskDetail{}, err
+	}
+	if comments == nil {
+		comments = []domain.Comment{}
+	}
+	return TaskDetail{Task: task, Comments: comments}, nil
+}
+
+// ListTasks returns a page of tasks. A zero limit means DefaultListLimit;
+// larger limits are capped at MaxListLimit.
+func (s *TaskService) ListTasks(ctx context.Context, f repository.TaskFilter) (repository.TaskPage, error) {
+	switch {
+	case f.Limit <= 0:
+		f.Limit = DefaultListLimit
+	case f.Limit > MaxListLimit:
+		f.Limit = MaxListLimit
+	}
+	if f.Status != "" && !f.Status.Valid() {
+		return repository.TaskPage{}, fmt.Errorf("%w: unknown status %q", domain.ErrValidation, f.Status)
+	}
+	if f.Priority != "" && !f.Priority.Valid() {
+		return repository.TaskPage{}, fmt.Errorf("%w: unknown priority %q", domain.ErrValidation, f.Priority)
+	}
+	page, err := s.deps.Tasks.List(ctx, f)
+	if page.Tasks == nil {
+		page.Tasks = []*domain.Task{}
+	}
+	return page, err
+}
+
+// emit writes the outbox rows for events.
+func (s *TaskService) emit(ctx context.Context, events []domain.Event, now time.Time) error {
+	entries, err := domain.NewOutboxEntries(events, s.cfg.PublicBaseURL, s.cfg.OutboxMaxAttempts, now)
+	if err != nil {
+		return err
+	}
+	_, err = s.deps.Outbox.Insert(ctx, entries)
+	return err
+}
+
+// signal wakes the relay after a commit that may have written outbox rows.
+func (s *TaskService) signal(events []domain.Event) {
+	if len(events) > 0 {
+		s.wake()
+	}
+}
+
+// VersionConflictError is returned when the caller's version is stale. It
+// carries the current version so a client can report it, and matches
+// domain.ErrVersionConflict with errors.Is.
+type VersionConflictError struct {
+	Current int
+}
+
+func (e *VersionConflictError) Error() string {
+	return fmt.Sprintf("version conflict: the task is at version %d", e.Current)
+}
+
+func (e *VersionConflictError) Is(target error) bool { return target == domain.ErrVersionConflict }

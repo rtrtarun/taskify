@@ -1,6 +1,6 @@
 # Taskify Architecture
 
-Companion documents: [features.md](features.md) (what and why) and [milestones.md](milestones.md) (delivery order). Source material: [initial.md](initial.md) and [agentic.md](agentic.md).
+Companion documents: [features.md](features.md) (what and why), [milestones.md](milestones.md) (delivery order), and [implementation/README.md](implementation/README.md) (task-level plan). Source material: [initial.md](initial.md) and [agentic.md](agentic.md).
 
 Diagrams are written in Mermaid. They render on GitHub and in VS Code with a Mermaid preview extension.
 
@@ -1347,7 +1347,7 @@ None at present. What remains unverified is the AgentPulse contract, which miles
 
 ## 9. Clients and portability
 
-This section covers release R3: the contract, the Python client SDK, the CLI, and the web frontend. It follows decisions 11 to 16 in section 8.1; the open questions are items 20 to 22 in section 8.2.
+This section covers release R3: the contract, the Python client SDK, the CLI, and the web frontend. It follows decisions 11 to 16 and 20 to 22 in section 8.1.
 
 ### 9.1 Overview
 

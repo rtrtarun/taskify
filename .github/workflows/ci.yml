@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: taskify
+          POSTGRES_PASSWORD: taskify
+          POSTGRES_DB: taskify
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U taskify -d taskify"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://taskify:taskify@localhost:5432/taskify?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./...
+      - name: Lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.1
+      - name: Build
+        run: go build ./...
+      - name: Test
+        run: go test -race ./...

@@ -1,0 +1,236 @@
+// Package config loads and validates Taskify's configuration from the
+// environment. See docs/architecture.md section 5.8.
+package config
+
+import (
+	"errors"
+	"fmt"
+	"net/netip"
+	"net/url"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/joho/godotenv"
+)
+
+const (
+	EnvDevelopment = "development"
+	EnvProduction  = "production"
+
+	JWTAlgHS256 = "HS256"
+	JWTAlgRS256 = "RS256"
+)
+
+// Config is the validated process configuration.
+type Config struct {
+	Env  string
+	Port int
+
+	DatabaseURL   string
+	PublicBaseURL string
+
+	AgentPulseBaseURL       string
+	AgentPulseAPIKey        string
+	AgentPulseWebhookSecret string
+
+	OutboxWorkers      int
+	OutboxBatchSize    int
+	OutboxPollInterval time.Duration
+	OutboxMaxAttempts  int
+	OutboxLease        time.Duration
+	SchedulerInterval  time.Duration
+
+	JWTAlgorithm string
+	JWTSecret    string
+	JWTPublicKey string
+
+	TrustedGatewayCIDRs []netip.Prefix
+
+	RateLimitRPS   float64
+	RateLimitBurst int
+}
+
+// IsDevelopment reports whether the header identity fallback and other
+// development conveniences are enabled.
+func (c Config) IsDevelopment() bool { return c.Env == EnvDevelopment }
+
+// String never includes secrets, so a Config is safe to log.
+func (c Config) String() string {
+	return fmt.Sprintf("env=%s port=%d agentpulse=%s jwt_alg=%s outbox_workers=%d",
+		c.Env, c.Port, c.AgentPulseBaseURL, c.JWTAlgorithm, c.OutboxWorkers)
+}
+
+// Load reads configuration from the process environment. When ENV is
+// "development" it first loads a .env file if one exists, without overriding
+// variables that are already set.
+func Load() (Config, error) {
+	if os.Getenv("ENV") == EnvDevelopment {
+		_ = godotenv.Load() // a missing .env file is not an error
+	}
+	return FromLookup(os.LookupEnv)
+}
+
+// FromLookup builds a Config from the given lookup function. All problems are
+// reported together, each naming the variable at fault.
+func FromLookup(lookup func(string) (string, bool)) (Config, error) {
+	r := &reader{lookup: lookup}
+
+	c := Config{
+		Env:  r.oneOf("ENV", EnvProduction, EnvDevelopment, EnvProduction),
+		Port: r.intRange("PORT", 8080, 1, 65535),
+
+		DatabaseURL:   r.required("DATABASE_URL"),
+		PublicBaseURL: strings.TrimRight(r.requiredURL("PUBLIC_BASE_URL"), "/"),
+
+		AgentPulseBaseURL:       strings.TrimRight(r.requiredURL("AGENTPULSE_BASE_URL"), "/"),
+		AgentPulseAPIKey:        r.required("AGENTPULSE_API_KEY"),
+		AgentPulseWebhookSecret: r.required("AGENTPULSE_WEBHOOK_SECRET"),
+
+		OutboxWorkers:      r.intRange("OUTBOX_WORKERS", 8, 1, 1024),
+		OutboxBatchSize:    r.intRange("OUTBOX_BATCH_SIZE", 100, 1, 10000),
+		OutboxPollInterval: r.duration("OUTBOX_POLL_INTERVAL", 200*time.Millisecond),
+		OutboxMaxAttempts:  r.intRange("OUTBOX_MAX_ATTEMPTS", 10, 1, 1000),
+		OutboxLease:        r.duration("OUTBOX_LEASE", 60*time.Second),
+		SchedulerInterval:  r.duration("SCHEDULER_INTERVAL", time.Minute),
+
+		JWTAlgorithm: r.oneOf("JWT_ALGORITHM", JWTAlgHS256, JWTAlgHS256, JWTAlgRS256),
+		JWTSecret:    r.optional("JWT_SECRET"),
+		JWTPublicKey: r.optional("JWT_PUBLIC_KEY"),
+
+		TrustedGatewayCIDRs: r.cidrs("TRUSTED_GATEWAY_CIDRS"),
+
+		RateLimitRPS:   r.positiveFloat("RATE_LIMIT_RPS", 20),
+		RateLimitBurst: r.intRange("RATE_LIMIT_BURST", 40, 1, 1_000_000),
+	}
+
+	// A verification key is mandatory in production. In development the header
+	// fallback can stand in for tokens, so the key is optional.
+	if c.Env == EnvProduction {
+		switch c.JWTAlgorithm {
+		case JWTAlgHS256:
+			if c.JWTSecret == "" {
+				r.fail("JWT_SECRET", "is required when ENV=production and JWT_ALGORITHM=HS256")
+			}
+		case JWTAlgRS256:
+			if c.JWTPublicKey == "" {
+				r.fail("JWT_PUBLIC_KEY", "is required when ENV=production and JWT_ALGORITHM=RS256")
+			}
+		}
+	}
+
+	if len(r.errs) > 0 {
+		return Config{}, errors.Join(r.errs...)
+	}
+	return c, nil
+}
+
+type reader struct {
+	lookup func(string) (string, bool)
+	errs   []error
+}
+
+func (r *reader) fail(name, msg string) {
+	// The offending value is deliberately left out: it may be a secret.
+	r.errs = append(r.errs, fmt.Errorf("config: %s %s", name, msg))
+}
+
+func (r *reader) optional(name string) string {
+	v, _ := r.lookup(name)
+	return strings.TrimSpace(v)
+}
+
+func (r *reader) required(name string) string {
+	v := r.optional(name)
+	if v == "" {
+		r.fail(name, "is required")
+	}
+	return v
+}
+
+func (r *reader) requiredURL(name string) string {
+	v := r.required(name)
+	if v == "" {
+		return ""
+	}
+	u, err := url.Parse(v)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		r.fail(name, "must be an absolute http or https URL")
+	}
+	return v
+}
+
+func (r *reader) oneOf(name, def string, allowed ...string) string {
+	v := r.optional(name)
+	if v == "" {
+		return def
+	}
+	for _, a := range allowed {
+		if v == a {
+			return v
+		}
+	}
+	r.fail(name, "must be one of "+strings.Join(allowed, ", "))
+	return def
+}
+
+func (r *reader) intRange(name string, def, lo, hi int) int {
+	v := r.optional(name)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < lo || n > hi {
+		r.fail(name, fmt.Sprintf("must be an integer between %d and %d", lo, hi))
+		return def
+	}
+	return n
+}
+
+func (r *reader) positiveFloat(name string, def float64) float64 {
+	v := r.optional(name)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f <= 0 {
+		r.fail(name, "must be a positive number")
+		return def
+	}
+	return f
+}
+
+func (r *reader) duration(name string, def time.Duration) time.Duration {
+	v := r.optional(name)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		r.fail(name, "must be a positive duration such as 200ms or 1m")
+		return def
+	}
+	return d
+}
+
+func (r *reader) cidrs(name string) []netip.Prefix {
+	v := r.optional(name)
+	if v == "" {
+		return nil
+	}
+	var out []netip.Prefix
+	for _, part := range strings.Split(v, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(part)
+		if err != nil {
+			r.fail(name, "must be a comma-separated list of CIDR ranges such as 10.0.0.0/8")
+			return nil
+		}
+		out = append(out, p.Masked())
+	}
+	return out
+}

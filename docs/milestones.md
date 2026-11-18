@@ -2,6 +2,8 @@
 
 Companion documents: [features.md](features.md) (what and why) and [architecture.md](architecture.md) (how). Feature IDs (F1 to F8, A1 to A5) refer to [features.md](features.md). `AG-` IDs refer to the backlog in [agentic.md](agentic.md). `T` IDs refer to the phases in [initial.md](initial.md).
 
+Each milestone is broken into individual tasks, with a delegation level and acceptance tests, in [implementation/README.md](implementation/README.md).
+
 ## Starting point
 
 The repository contains a `main.go` that prints a greeting, an uncompilable router stub in `internal/router/routes.go`, and a `go.mod` with module path `taskify`. There is no database, no handlers, and no tests. Every milestone below is new work.
