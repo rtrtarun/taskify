@@ -1,0 +1,268 @@
+// Package agentpulse is Taskify's client for the AgentPulse
+// notification-service.
+//
+// Request shapes follow docs/architecture.md section 5.5. They have not yet
+// been checked against the AgentPulse source (task M0-07), so every field name
+// lives in this package and a correction touches nothing else.
+//
+// The client never retries: the outbox relay owns retry, and the synchronous
+// callers (feedback, admin proxies) surface the error to their own caller.
+package agentpulse
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+)
+
+// ErrCircuitOpen is returned without contacting AgentPulse while the circuit
+// breaker is open.
+var ErrCircuitOpen = errors.New("agentpulse: circuit breaker open")
+
+// StatusError is a non-2xx response.
+type StatusError struct {
+	Method string
+	Path   string
+	Code   int
+	Body   string // a short prefix of the response body
+}
+
+func (e *StatusError) Error() string {
+	msg := fmt.Sprintf("agentpulse: %s %s returned %d", e.Method, e.Path, e.Code)
+	if e.Body != "" {
+		msg += ": " + e.Body
+	}
+	return msg
+}
+
+// Retryable reports whether a failed call may succeed later: transport
+// errors, timeouts, 429, and 5xx. Other 4xx responses are permanent, and so
+// is a nil error. ErrCircuitOpen is retryable.
+func Retryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var se *StatusError
+	if errors.As(err, &se) {
+		return se.Code == http.StatusTooManyRequests || se.Code >= 500
+	}
+	return true
+}
+
+// Client calls AgentPulse.
+type Client struct {
+	baseURL string
+	apiKey  string
+	http    *http.Client
+	breaker *Breaker
+}
+
+// Option configures a Client.
+type Option func(*Client)
+
+// WithHTTPClient replaces the HTTP client.
+func WithHTTPClient(hc *http.Client) Option { return func(c *Client) { c.http = hc } }
+
+// WithBreaker replaces the circuit breaker. nil disables it.
+func WithBreaker(b *Breaker) Option { return func(c *Client) { c.breaker = b } }
+
+// New returns a client with the transport settings from
+// docs/architecture.md section 6.2 and the default circuit breaker.
+func New(baseURL, apiKey string, opts ...Option) *Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = 64
+	transport.IdleConnTimeout = 90 * time.Second
+	c := &Client{
+		baseURL: strings.TrimRight(baseURL, "/"),
+		apiKey:  apiKey,
+		http:    &http.Client{Transport: transport, Timeout: 10 * time.Second},
+		breaker: DefaultBreaker(),
+	}
+	for _, o := range opts {
+		o(c)
+	}
+	return c
+}
+
+// BreakerState reports the circuit breaker state, or closed if there is none.
+func (c *Client) BreakerState() BreakerState {
+	if c.breaker == nil {
+		return BreakerClosed
+	}
+	return c.breaker.State()
+}
+
+type traceKey struct{}
+
+// WithTraceparent returns a context whose calls carry the W3C traceparent
+// header. The relay uses it to continue the trace recorded in the outbox.
+func WithTraceparent(ctx context.Context, traceparent string) context.Context {
+	return context.WithValue(ctx, traceKey{}, traceparent)
+}
+
+// Notify sends a complete /notify body, as stored in the outbox.
+func (c *Client) Notify(ctx context.Context, body json.RawMessage) error {
+	body, err := normalizeNotify(body)
+	if err != nil {
+		return err
+	}
+	return c.do(ctx, http.MethodPost, "/notify", body, nil)
+}
+
+// normalizeNotify rewrites the legacy payload key bypass_digest to
+// bypassDigest. Bodies without it are sent byte for byte.
+func normalizeNotify(body json.RawMessage) (json.RawMessage, error) {
+	if !bytes.Contains(body, []byte(`"bypass_digest"`)) {
+		return body, nil
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return nil, fmt.Errorf("agentpulse: notify body: %w", err)
+	}
+	if payload, ok := doc["payload"].(map[string]any); ok {
+		if v, legacy := payload["bypass_digest"]; legacy {
+			if _, current := payload["bypassDigest"]; !current {
+				payload["bypassDigest"] = v
+			}
+			delete(payload, "bypass_digest")
+		}
+	}
+	return json.Marshal(doc)
+}
+
+// Feedback is a user's reaction to a notification.
+type Feedback struct {
+	NotificationID string `json:"notificationId"`
+	TenantID       string `json:"tenantId"`
+	UserID         string `json:"userId"`
+	Signal         string `json:"signal"` // acted, dismissed, snoozed, muted
+	SnoozeDuration string `json:"snoozeDuration,omitempty"`
+	TaskID         string `json:"taskId,omitempty"`
+}
+
+// RecordFeedback forwards a feedback signal.
+func (c *Client) RecordFeedback(ctx context.Context, fb Feedback) error {
+	return c.do(ctx, http.MethodPost, "/feedback", fb, nil)
+}
+
+// Rule is an AgentPulse routing rule.
+type Rule struct {
+	TenantID     string         `json:"tenantId"`
+	Name         string         `json:"name"`
+	EventTypes   []string       `json:"eventTypes,omitempty"`
+	PayloadMatch map[string]any `json:"payloadMatch,omitempty"`
+	Channels     []string       `json:"channels"`
+	BypassDigest bool           `json:"bypassDigest,omitempty"`
+}
+
+// CreateRule registers a rule and returns its ID.
+func (c *Client) CreateRule(ctx context.Context, r Rule) (string, error) {
+	var out struct {
+		ID string `json:"id"`
+	}
+	err := c.do(ctx, http.MethodPost, "/rules", r, &out)
+	return out.ID, err
+}
+
+// ListLearningSuggestions returns AgentPulse's response unchanged, for the
+// admin proxy to relay.
+func (c *Client) ListLearningSuggestions(ctx context.Context, tenantID string) (json.RawMessage, error) {
+	var out json.RawMessage
+	err := c.do(ctx, http.MethodGet, "/learning/suggestions?tenantId="+url.QueryEscape(tenantID), nil, &out)
+	return out, err
+}
+
+// ReviewLearningSuggestion approves or rejects a suggestion and returns
+// AgentPulse's response unchanged.
+func (c *Client) ReviewLearningSuggestion(ctx context.Context, id, decision, decidedBy string) (json.RawMessage, error) {
+	var out json.RawMessage
+	body := map[string]string{"decision": decision, "decidedBy": decidedBy}
+	err := c.do(ctx, http.MethodPost, "/learning/suggestions/"+url.PathEscape(id)+"/decision", body, &out)
+	return out, err
+}
+
+const maxErrorBody = 200
+
+func (c *Client) do(ctx context.Context, method, path string, in, out any) (err error) {
+	if c.breaker != nil {
+		if !c.breaker.Allow() {
+			return ErrCircuitOpen
+		}
+		defer func() { c.breaker.Record(countsAsFailure(ctx, err)) }()
+	}
+
+	var body io.Reader
+	switch v := in.(type) {
+	case nil:
+	case json.RawMessage:
+		body = bytes.NewReader(v)
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Errorf("agentpulse: encode %s: %w", path, err)
+		}
+		body = bytes.NewReader(b)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
+	if err != nil {
+		return fmt.Errorf("agentpulse: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("User-Agent", "taskify")
+	if tp, _ := ctx.Value(traceKey{}).(string); tp != "" {
+		req.Header.Set("traceparent", tp)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		// The URL holds no secrets; the API key travels in a header.
+		return fmt.Errorf("agentpulse: %s %s: %w", method, pathOnly(path), err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+		return &StatusError{Method: method, Path: pathOnly(path), Code: resp.StatusCode, Body: strings.TrimSpace(string(snippet))}
+	}
+	if out == nil {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		return nil
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 10<<20)).Decode(out); err != nil && !errors.Is(err, io.EOF) {
+		return fmt.Errorf("agentpulse: decode %s: %w", pathOnly(path), err)
+	}
+	return nil
+}
+
+// countsAsFailure: 5xx and transport errors count against AgentPulse. A 4xx
+// is the caller's fault, and a cancelled caller says nothing about AgentPulse.
+func countsAsFailure(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil {
+		return false
+	}
+	var se *StatusError
+	if errors.As(err, &se) {
+		return se.Code >= 500
+	}
+	// Transport errors and client timeouts.
+	return true
+}
+
+func pathOnly(p string) string {
+	if i := strings.IndexByte(p, '?'); i >= 0 {
+		return p[:i]
+	}
+	return p
+}

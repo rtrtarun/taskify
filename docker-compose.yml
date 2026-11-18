@@ -1,0 +1,68 @@
+# Local development stack. The credentials below are for local use only.
+#
+#   docker compose up --build            Postgres, mock AgentPulse, Taskify
+#   docker compose --profile agentpulse up   also the real AgentPulse and Redis
+#
+# The real AgentPulse image is not published from this repository. Set
+# AGENTPULSE_IMAGE, then point taskify's AGENTPULSE_BASE_URL at it.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: taskify
+      POSTGRES_PASSWORD: taskify
+      POSTGRES_DB: taskify
+    ports:
+      - "5433:5432"   # 5433 on the host: a local PostgreSQL often holds 5432
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskify -d taskify"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  mock-agentpulse:
+    build: .
+    entrypoint: ["mock-agentpulse"]
+    environment:
+      PORT: "9090"
+    ports:
+      - "9090:9090"
+
+  taskify:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-agentpulse:
+        condition: service_started
+    environment:
+      ENV: development
+      PORT: "8080"
+      DATABASE_URL: postgres://taskify:taskify@postgres:5432/taskify?sslmode=disable
+      PUBLIC_BASE_URL: http://localhost:8080
+      AGENTPULSE_BASE_URL: http://mock-agentpulse:9090
+      AGENTPULSE_API_KEY: dev-agentpulse-key
+      AGENTPULSE_WEBHOOK_SECRET: dev-webhook-secret
+      JWT_SECRET: dev-secret
+    ports:
+      - "8080:8080"
+
+  redis:
+    profiles: ["agentpulse"]
+    image: redis:7-alpine
+
+  agentpulse:
+    profiles: ["agentpulse"]
+    image: ${AGENTPULSE_IMAGE:-agentpulse/notification-service:latest}
+    depends_on:
+      - redis
+    environment:
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "9091:8080"
+
+volumes:
+  pgdata:

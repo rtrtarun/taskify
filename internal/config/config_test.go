@@ -1,0 +1,185 @@
+package config
+
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+func lookupFrom(m map[string]string) func(string) (string, bool) {
+	return func(k string) (string, bool) {
+		v, ok := m[k]
+		return v, ok
+	}
+}
+
+// valid returns the smallest environment that passes validation in production.
+func valid() map[string]string {
+	return map[string]string{
+		"DATABASE_URL":              "postgres://u:p@localhost:5432/taskify",
+		"PUBLIC_BASE_URL":           "https://taskify.example/",
+		"AGENTPULSE_BASE_URL":       "http://agentpulse:9090",
+		"AGENTPULSE_API_KEY":        "key",
+		"AGENTPULSE_WEBHOOK_SECRET": "whsec",
+		"JWT_SECRET":                "jwt-secret",
+	}
+}
+
+func TestDefaults(t *testing.T) {
+	c, err := FromLookup(lookupFrom(valid()))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Env != EnvProduction {
+		t.Errorf("Env = %q, want production", c.Env)
+	}
+	if c.IsDevelopment() {
+		t.Error("IsDevelopment() = true by default")
+	}
+	if c.Port != 8080 {
+		t.Errorf("Port = %d, want 8080", c.Port)
+	}
+	if c.PublicBaseURL != "https://taskify.example" {
+		t.Errorf("PublicBaseURL = %q, want trailing slash trimmed", c.PublicBaseURL)
+	}
+	if c.OutboxWorkers != 8 || c.OutboxBatchSize != 100 || c.OutboxMaxAttempts != 10 {
+		t.Errorf("outbox defaults = %d/%d/%d", c.OutboxWorkers, c.OutboxBatchSize, c.OutboxMaxAttempts)
+	}
+	if c.OutboxPollInterval != 200*time.Millisecond {
+		t.Errorf("OutboxPollInterval = %v", c.OutboxPollInterval)
+	}
+	if c.OutboxLease != time.Minute || c.SchedulerInterval != time.Minute {
+		t.Errorf("lease/scheduler = %v/%v", c.OutboxLease, c.SchedulerInterval)
+	}
+	if c.JWTAlgorithm != JWTAlgHS256 {
+		t.Errorf("JWTAlgorithm = %q", c.JWTAlgorithm)
+	}
+	if c.RateLimitRPS != 20 || c.RateLimitBurst != 40 {
+		t.Errorf("rate limit defaults = %v/%d", c.RateLimitRPS, c.RateLimitBurst)
+	}
+	if len(c.TrustedGatewayCIDRs) != 0 {
+		t.Errorf("TrustedGatewayCIDRs = %v, want empty", c.TrustedGatewayCIDRs)
+	}
+}
+
+func TestOverrides(t *testing.T) {
+	env := valid()
+	env["ENV"] = "development"
+	env["PORT"] = "9000"
+	env["OUTBOX_POLL_INTERVAL"] = "1s"
+	env["TRUSTED_GATEWAY_CIDRS"] = "10.0.0.0/8, 192.168.1.7/24"
+	env["RATE_LIMIT_RPS"] = "2.5"
+
+	c, err := FromLookup(lookupFrom(env))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !c.IsDevelopment() || c.Port != 9000 || c.OutboxPollInterval != time.Second || c.RateLimitRPS != 2.5 {
+		t.Errorf("overrides not applied: %+v", c)
+	}
+	if len(c.TrustedGatewayCIDRs) != 2 || c.TrustedGatewayCIDRs[1].String() != "192.168.1.0/24" {
+		t.Errorf("TrustedGatewayCIDRs = %v", c.TrustedGatewayCIDRs)
+	}
+}
+
+func TestRequiredVariables(t *testing.T) {
+	for _, name := range []string{
+		"DATABASE_URL", "PUBLIC_BASE_URL", "AGENTPULSE_BASE_URL",
+		"AGENTPULSE_API_KEY", "AGENTPULSE_WEBHOOK_SECRET", "JWT_SECRET",
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := valid()
+			delete(env, name)
+			_, err := FromLookup(lookupFrom(env))
+			if err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("error = %v, want one naming %s", err, name)
+			}
+		})
+	}
+}
+
+func TestInvalidValues(t *testing.T) {
+	cases := []struct{ name, value string }{
+		{"ENV", "staging"},
+		{"PORT", "http"},
+		{"PORT", "70000"},
+		{"PUBLIC_BASE_URL", "taskify.example"},
+		{"AGENTPULSE_BASE_URL", "ftp://agentpulse"},
+		{"OUTBOX_WORKERS", "0"},
+		{"OUTBOX_POLL_INTERVAL", "fast"},
+		{"OUTBOX_POLL_INTERVAL", "-1s"},
+		{"SCHEDULER_INTERVAL", "60"},
+		{"JWT_ALGORITHM", "none"},
+		{"TRUSTED_GATEWAY_CIDRS", "10.0.0.1"},
+		{"RATE_LIMIT_RPS", "0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+"="+tc.value, func(t *testing.T) {
+			env := valid()
+			env[tc.name] = tc.value
+			_, err := FromLookup(lookupFrom(env))
+			if err == nil || !strings.Contains(err.Error(), tc.name) {
+				t.Fatalf("error = %v, want one naming %s", err, tc.name)
+			}
+		})
+	}
+}
+
+func TestJWTKeyRules(t *testing.T) {
+	t.Run("RS256 in production needs the public key", func(t *testing.T) {
+		env := valid()
+		env["JWT_ALGORITHM"] = "RS256"
+		_, err := FromLookup(lookupFrom(env))
+		if err == nil || !strings.Contains(err.Error(), "JWT_PUBLIC_KEY") {
+			t.Fatalf("error = %v, want one naming JWT_PUBLIC_KEY", err)
+		}
+		env["JWT_PUBLIC_KEY"] = "-----BEGIN PUBLIC KEY-----"
+		if _, err := FromLookup(lookupFrom(env)); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+	t.Run("development may run without a key", func(t *testing.T) {
+		env := valid()
+		env["ENV"] = "development"
+		delete(env, "JWT_SECRET")
+		if _, err := FromLookup(lookupFrom(env)); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+func TestAllProblemsReportedTogether(t *testing.T) {
+	_, err := FromLookup(lookupFrom(map[string]string{}))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, name := range []string{"DATABASE_URL", "AGENTPULSE_API_KEY", "JWT_SECRET"} {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("error does not mention %s: %v", name, err)
+		}
+	}
+}
+
+func TestSecretsAreNotExposed(t *testing.T) {
+	env := valid()
+	env["JWT_SECRET"] = "super-secret-value"
+	env["AGENTPULSE_API_KEY"] = "ap-key-value"
+	env["PORT"] = "bad"
+
+	_, err := FromLookup(lookupFrom(env))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(err.Error(), "super-secret-value") || strings.Contains(err.Error(), "ap-key-value") {
+		t.Errorf("error leaks a secret: %v", err)
+	}
+
+	env["PORT"] = "8080"
+	c, err := FromLookup(lookupFrom(env))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if s := c.String(); strings.Contains(s, "super-secret-value") || strings.Contains(s, "ap-key-value") {
+		t.Errorf("String() leaks a secret: %s", s)
+	}
+}

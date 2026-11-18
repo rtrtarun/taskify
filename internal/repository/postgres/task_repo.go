@@ -1,0 +1,350 @@
+package postgres
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"github.com/RONGALI-TARUN/taskify/internal/domain"
+	"github.com/RONGALI-TARUN/taskify/internal/repository"
+)
+
+// TaskRepo implements repository.TaskRepository.
+type TaskRepo struct{ db *DB }
+
+// NewTaskRepo returns a task repository on db.
+func NewTaskRepo(db *DB) *TaskRepo { return &TaskRepo{db: db} }
+
+var _ repository.TaskRepository = (*TaskRepo)(nil)
+
+const taskColumns = `id, tenant_id, workspace_id, title, description, status::text, priority::text,
+	creator_id, assignee_id, labels, metadata, due_at, remind_at, completed_at, archived_at,
+	last_due_soon_notified_at, last_overdue_notified_at, status_before_blocked::text, blocked_reason,
+	version, created_at, updated_at`
+
+// openTasks is the predicate of the partial index idx_tasks_due_scan.
+const openTasks = `status NOT IN ('completed', 'archived')`
+
+func (r *TaskRepo) Create(ctx context.Context, t *domain.Task) error {
+	return r.db.WithTx(ctx, func(ctx context.Context) error {
+		q := r.db.q(ctx)
+		_, err := q.Exec(ctx, `
+			INSERT INTO tasks (id, tenant_id, workspace_id, title, description, status, priority,
+				creator_id, assignee_id, labels, metadata, due_at, remind_at, completed_at, archived_at,
+				last_due_soon_notified_at, last_overdue_notified_at, status_before_blocked, blocked_reason,
+				version, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6::text::task_status, $7::text::task_priority,
+				$8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::text::task_status, $19, $20, $21, $22)`,
+			t.ID, t.TenantID, t.WorkspaceID, t.Title, t.Description, string(t.Status), string(t.Priority),
+			t.CreatorID, nullString(t.AssigneeID), labels(t.Labels), metadata(t.Metadata),
+			t.DueAt, t.RemindAt, t.CompletedAt, t.ArchivedAt,
+			t.LastDueSoonNotifiedAt, t.LastOverdueNotifiedAt, statusPtr(t.StatusBeforeBlocked), reasonPtr(t.BlockedReason),
+			t.Version, t.CreatedAt, t.UpdatedAt)
+		if err != nil {
+			return mapErr(err)
+		}
+		return r.replaceWatchers(ctx, t.ID, t.Watchers)
+	})
+}
+
+func (r *TaskRepo) Get(ctx context.Context, tenantID string, id uuid.UUID) (*domain.Task, error) {
+	return r.getOne(ctx, tenantID, id, "")
+}
+
+func (r *TaskRepo) GetForUpdate(ctx context.Context, tenantID string, id uuid.UUID) (*domain.Task, error) {
+	if _, err := r.db.tx(ctx); err != nil {
+		return nil, err
+	}
+	return r.getOne(ctx, tenantID, id, " FOR UPDATE")
+}
+
+func (r *TaskRepo) getOne(ctx context.Context, tenantID string, id uuid.UUID, lock string) (*domain.Task, error) {
+	row := r.db.q(ctx).QueryRow(ctx,
+		`SELECT `+taskColumns+` FROM tasks WHERE id = $1 AND tenant_id = $2`+lock, id, tenantID)
+	t, err := scanTask(row)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	if err := r.loadWatchers(ctx, []*domain.Task{t}); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (r *TaskRepo) Update(ctx context.Context, t *domain.Task, expectedVersion int) error {
+	return r.db.WithTx(ctx, func(ctx context.Context) error {
+		tag, err := r.db.q(ctx).Exec(ctx, `
+			UPDATE tasks SET
+				title = $3, description = $4, status = $5::text::task_status, priority = $6::text::task_priority,
+				assignee_id = $7, labels = $8, metadata = $9, due_at = $10, remind_at = $11,
+				completed_at = $12, archived_at = $13, last_due_soon_notified_at = $14,
+				last_overdue_notified_at = $15, status_before_blocked = $16::text::task_status,
+				blocked_reason = $17, version = $18, updated_at = $19
+			WHERE id = $1 AND tenant_id = $2 AND version = $20`,
+			t.ID, t.TenantID, t.Title, t.Description, string(t.Status), string(t.Priority),
+			nullString(t.AssigneeID), labels(t.Labels), metadata(t.Metadata), t.DueAt, t.RemindAt,
+			t.CompletedAt, t.ArchivedAt, t.LastDueSoonNotifiedAt,
+			t.LastOverdueNotifiedAt, statusPtr(t.StatusBeforeBlocked),
+			reasonPtr(t.BlockedReason), t.Version, t.UpdatedAt, expectedVersion)
+		if err != nil {
+			return mapErr(err)
+		}
+		if tag.RowsAffected() == 0 {
+			// Tell a stale version apart from a missing task.
+			var exists bool
+			err := r.db.q(ctx).QueryRow(ctx,
+				`SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1 AND tenant_id = $2)`, t.ID, t.TenantID).Scan(&exists)
+			if err != nil {
+				return err
+			}
+			if exists {
+				return domain.ErrVersionConflict
+			}
+			return domain.ErrNotFound
+		}
+		return r.replaceWatchers(ctx, t.ID, t.Watchers)
+	})
+}
+
+func (r *TaskRepo) List(ctx context.Context, f repository.TaskFilter) (repository.TaskPage, error) {
+	if f.Limit <= 0 {
+		return repository.TaskPage{}, fmt.Errorf("%w: limit must be positive", domain.ErrValidation)
+	}
+	args := []any{f.TenantID}
+	where := []string{"tenant_id = $1"}
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if f.Status != "" {
+		where = append(where, "status = "+arg(string(f.Status))+"::text::task_status")
+	} else {
+		where = append(where, "status <> 'archived'")
+	}
+	if f.AssigneeID != "" {
+		where = append(where, "assignee_id = "+arg(f.AssigneeID))
+	}
+	if f.Priority != "" {
+		where = append(where, "priority = "+arg(string(f.Priority))+"::text::task_priority")
+	}
+	if f.After != nil {
+		where = append(where, fmt.Sprintf("(updated_at, id) < (%s::timestamptz, %s::uuid)", arg(f.After.UpdatedAt), arg(f.After.ID)))
+	}
+	sql := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + strings.Join(where, " AND ") +
+		` ORDER BY updated_at DESC, id DESC LIMIT ` + arg(f.Limit+1)
+
+	tasks, err := r.query(ctx, sql, args...)
+	if err != nil {
+		return repository.TaskPage{}, err
+	}
+	page := repository.TaskPage{Tasks: tasks}
+	if len(tasks) > f.Limit {
+		page.Tasks = tasks[:f.Limit]
+		last := page.Tasks[f.Limit-1]
+		page.Next = &repository.Cursor{UpdatedAt: last.UpdatedAt, ID: last.ID}
+	}
+	return page, nil
+}
+
+func (r *TaskRepo) ClaimDueSoon(ctx context.Context, now time.Time, limit int) ([]*domain.Task, error) {
+	if _, err := r.db.tx(ctx); err != nil {
+		return nil, err
+	}
+	// The 24h reminder fires once; the 1h reminder fires if nothing was sent
+	// since the 1h window opened. See docs/implementation/README.md, G2.
+	return r.query(ctx, `
+		SELECT `+taskColumns+` FROM tasks
+		WHERE `+openTasks+` AND due_at IS NOT NULL
+		  AND due_at > $1 AND due_at <= $1 + interval '24 hours'
+		  AND (last_due_soon_notified_at IS NULL
+		       OR (due_at <= $1 + interval '1 hour'
+		           AND last_due_soon_notified_at < due_at - interval '1 hour'))
+		ORDER BY due_at
+		LIMIT $2
+		FOR UPDATE SKIP LOCKED`, now, limit)
+}
+
+func (r *TaskRepo) ClaimOverdue(ctx context.Context, now time.Time, limit int) ([]*domain.Task, error) {
+	if _, err := r.db.tx(ctx); err != nil {
+		return nil, err
+	}
+	startOfDay := now.UTC().Truncate(24 * time.Hour)
+	return r.query(ctx, `
+		SELECT `+taskColumns+` FROM tasks
+		WHERE `+openTasks+` AND due_at IS NOT NULL AND due_at <= $1
+		  AND (last_overdue_notified_at IS NULL OR last_overdue_notified_at < $2)
+		ORDER BY due_at
+		LIMIT $3
+		FOR UPDATE SKIP LOCKED`, now, startOfDay, limit)
+}
+
+func (r *TaskRepo) MarkDueSoonNotified(ctx context.Context, tenantID string, id uuid.UUID, at time.Time) error {
+	return r.mark(ctx, "last_due_soon_notified_at", tenantID, id, at)
+}
+
+func (r *TaskRepo) MarkOverdueNotified(ctx context.Context, tenantID string, id uuid.UUID, at time.Time) error {
+	return r.mark(ctx, "last_overdue_notified_at", tenantID, id, at)
+}
+
+func (r *TaskRepo) mark(ctx context.Context, column, tenantID string, id uuid.UUID, at time.Time) error {
+	tag, err := r.db.q(ctx).Exec(ctx,
+		`UPDATE tasks SET `+column+` = $3 WHERE id = $1 AND tenant_id = $2`, id, tenantID, at)
+	if err != nil {
+		return mapErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// query runs a task SELECT and loads watchers for the result.
+func (r *TaskRepo) query(ctx context.Context, sql string, args ...any) ([]*domain.Task, error) {
+	rows, err := r.db.q(ctx).Query(ctx, sql, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	tasks, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (*domain.Task, error) { return scanTask(row) })
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	if err := r.loadWatchers(ctx, tasks); err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}
+
+func (r *TaskRepo) loadWatchers(ctx context.Context, tasks []*domain.Task) error {
+	if len(tasks) == 0 {
+		return nil
+	}
+	ids := make([]string, len(tasks))
+	byID := make(map[uuid.UUID]*domain.Task, len(tasks))
+	for i, t := range tasks {
+		ids[i] = t.ID.String()
+		t.Watchers = []string{}
+		byID[t.ID] = t
+	}
+	rows, err := r.db.q(ctx).Query(ctx,
+		`SELECT task_id, user_id FROM task_watchers WHERE task_id = ANY($1::uuid[]) ORDER BY user_id`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var taskID uuid.UUID
+		var user string
+		if err := rows.Scan(&taskID, &user); err != nil {
+			return err
+		}
+		byID[taskID].Watchers = append(byID[taskID].Watchers, user)
+	}
+	return rows.Err()
+}
+
+func (r *TaskRepo) replaceWatchers(ctx context.Context, taskID uuid.UUID, watchers []string) error {
+	q := r.db.q(ctx)
+	if watchers == nil {
+		watchers = []string{}
+	}
+	if _, err := q.Exec(ctx,
+		`DELETE FROM task_watchers WHERE task_id = $1 AND NOT (user_id = ANY($2::text[]))`, taskID, watchers); err != nil {
+		return mapErr(err)
+	}
+	if len(watchers) == 0 {
+		return nil
+	}
+	_, err := q.Exec(ctx, `
+		INSERT INTO task_watchers (task_id, user_id)
+		SELECT $1, w FROM unnest($2::text[]) AS w
+		ON CONFLICT DO NOTHING`, taskID, watchers)
+	return mapErr(err)
+}
+
+func scanTask(row pgx.Row) (*domain.Task, error) {
+	var (
+		t                         domain.Task
+		status, priority          string
+		assignee, before, reason  *string
+		due, remind, completed    *time.Time
+		archived, dueSoon, overdu *time.Time
+	)
+	err := row.Scan(&t.ID, &t.TenantID, &t.WorkspaceID, &t.Title, &t.Description, &status, &priority,
+		&t.CreatorID, &assignee, &t.Labels, &t.Metadata, &due, &remind, &completed, &archived,
+		&dueSoon, &overdu, &before, &reason, &t.Version, &t.CreatedAt, &t.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	t.Status = domain.Status(status)
+	t.Priority = domain.Priority(priority)
+	if assignee != nil {
+		t.AssigneeID = *assignee
+	}
+	if before != nil {
+		s := domain.Status(*before)
+		t.StatusBeforeBlocked = &s
+	}
+	if reason != nil {
+		br := domain.BlockedReason(*reason)
+		t.BlockedReason = &br
+	}
+	t.DueAt, t.RemindAt, t.CompletedAt, t.ArchivedAt = utc(due), utc(remind), utc(completed), utc(archived)
+	t.LastDueSoonNotifiedAt, t.LastOverdueNotifiedAt = utc(dueSoon), utc(overdu)
+	t.CreatedAt, t.UpdatedAt = t.CreatedAt.UTC(), t.UpdatedAt.UTC()
+	if t.Labels == nil {
+		t.Labels = []string{}
+	}
+	if t.Metadata == nil {
+		t.Metadata = map[string]any{}
+	}
+	return &t, nil
+}
+
+func utc(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
+}
+
+func nullString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func labels(l []string) []string {
+	if l == nil {
+		return []string{}
+	}
+	return l
+}
+
+func metadata(m map[string]any) map[string]any {
+	if m == nil {
+		return map[string]any{}
+	}
+	return m
+}
+
+func statusPtr(s *domain.Status) *string {
+	if s == nil {
+		return nil
+	}
+	v := string(*s)
+	return &v
+}
+
+func reasonPtr(r *domain.BlockedReason) *string {
+	if r == nil {
+		return nil
+	}
+	v := string(*r)
+	return &v
+}
