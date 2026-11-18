@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"time"
 
@@ -44,14 +43,14 @@ func (r *OutboxRepo) Insert(ctx context.Context, entries []domain.OutboxEntry) (
 				VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', 0, $8, $9, $10)
 				ON CONFLICT (idempotency_key) DO NOTHING`,
 				e.ID, e.TenantID, e.AggregateID, e.EventType, e.IdempotencyKey,
-				json.RawMessage(e.Payload), trace, e.MaxAttempts, e.NextAttemptAt, e.CreatedAt)
+				e.Payload, trace, e.MaxAttempts, e.NextAttemptAt, e.CreatedAt)
 		}
 		tx, err := r.db.tx(ctx)
 		if err != nil {
 			return err
 		}
 		res := tx.SendBatch(ctx, batch)
-		defer res.Close()
+		defer func() { _ = res.Close() }()
 		for range entries {
 			tag, err := res.Exec()
 			if err != nil {

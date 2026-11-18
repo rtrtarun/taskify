@@ -8,6 +8,7 @@ This folder breaks the milestones in [milestones.md](../milestones.md) into task
 | [architecture.md](../architecture.md) | How it is designed. This is the authority for every task below. |
 | [milestones.md](../milestones.md) | Delivery order, deliverables, and exit criteria per milestone |
 | This folder | Who builds which piece, in what order, and how we know it is finished |
+| [releasing.md](../releasing.md) | How merges to `main` are versioned, packaged, and released |
 
 Task lists:
 
@@ -130,8 +131,9 @@ For a Careful task, add: "Explain how the code behaves when two replicas run thi
 7. **Migrations have a working down script.**
 8. **Secrets are never logged**, including in tests and error messages.
 9. **AgentPulse payloads are camelCase; the Taskify API is snake_case.**
-10. **From M12 onward**, a change to an endpoint, event, or tool is made in `contract/` first, and generated clients are regenerated in the same change.
-11. **Do not widen scope.** A missing prerequisite is reported, not built ad hoc.
+10. **Commit messages follow Conventional Commits** (`feat:`, `fix:`, `docs:`, ...): they decide the next release version. See [releasing.md](../releasing.md).
+11. **From M12 onward**, a change to an endpoint, event, or tool is made in `contract/` first, and generated clients are regenerated in the same change.
+12. **Do not widen scope.** A missing prerequisite is reported, not built ad hoc.
 
 ## 7. Progress
 

@@ -14,7 +14,7 @@ func TestHealthz(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), `"status":"ok"`) {
+	if !strings.Contains(rec.Body.String(), `"status":"ok"`) || !strings.Contains(rec.Body.String(), `"version":"dev"`) {
 		t.Errorf("body = %q", rec.Body.String())
 	}
 }

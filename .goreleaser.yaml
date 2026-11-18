@@ -1,0 +1,96 @@
+# Release build. Run by the release job in .github/workflows/ci.yml after a
+# merge to main has been tagged. See docs/releasing.md.
+#
+# Local dry run (builds everything, publishes nothing):
+#   IMAGE_REPO=local/taskify goreleaser release --snapshot --clean
+version: 2
+
+project_name: taskify
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: taskify
+    main: ./cmd/taskify
+    binary: taskify
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .ShortCommit }}
+    # Reproducible: the same commit gives byte-identical binaries.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    # The server does not migrate its own database; operators apply these.
+    files:
+      - README.md
+      - migrations/*.sql
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: git
+  sort: asc
+  groups:
+    - title: Breaking changes
+      regexp: '^.*?[a-zA-Z]+(\(.+\))?!:.+$'
+      order: 0
+    - title: Features
+      regexp: '^.*?feat(\(.+\))?:.+$'
+      order: 1
+    - title: Fixes
+      regexp: '^.*?fix(\(.+\))?:.+$'
+      order: 2
+    - title: Other changes
+      order: 999
+  filters:
+    exclude:
+      - '^.*?(docs|test|ci|chore|style|build)(\(.+\))?:'
+      - '^Merge pull request'
+      - '^Merge branch'
+
+# One multi-platform image (amd64 and arm64), built and pushed with buildx.
+# The base image is distroless, so building arm64 needs no emulation.
+dockers_v2:
+  - id: taskify
+    ids: [taskify]
+    dockerfile: Dockerfile.release
+    extra_files: [migrations]
+    images:
+      - "ghcr.io/{{ .Env.IMAGE_REPO }}"
+    tags:
+      - "{{ .Version }}"
+      - "{{ .Major }}.{{ .Minor }}"
+      - latest
+    platforms: [linux/amd64, linux/arm64]
+    labels:
+      org.opencontainers.image.title: "{{ .ProjectName }}"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.created: "{{ .Date }}"
+      org.opencontainers.image.source: "{{ .GitURL }}"
+
+release:
+  name_template: "Taskify {{ .Tag }}"
+  # Versions below 1.0 are marked as pre-releases on GitHub.
+  prerelease: auto
+  # A re-run after a partial failure replaces what was uploaded.
+  replace_existing_artifacts: true
+  footer: |
+    **Container image:** `docker pull ghcr.io/{{ .Env.IMAGE_REPO }}:{{ .Version }}`
+
+    **Go module:** `go get github.com/RONGALI-TARUN/taskify@{{ .Tag }}`
+
+    Apply the SQL files in `migrations/` (included in every archive and at `/migrations` in the image) before starting a new version.
