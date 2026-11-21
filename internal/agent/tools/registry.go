@@ -4,7 +4,7 @@
 // The model can only ask for a registered tool by name. Typed Go code then
 // decides whether and how the request runs: Dispatch rejects unknown tools,
 // tools not offered to the job's agent, arguments that fail the tool's JSON
-// Schema, and task IDs outside the job's scope, and it turns every call into
+// Schema (see schema.go), and task IDs outside the job's scope, and it turns every call into
 // a proposal when the workspace requires approval for everything.
 package tools
 
@@ -19,9 +19,6 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
-	"github.com/santhosh-tekuri/jsonschema/v6"
-	"golang.org/x/text/language"
-	"golang.org/x/text/message"
 
 	"github.com/rtrtarun/taskify/internal/agent/llm"
 	"github.com/rtrtarun/taskify/internal/domain"
@@ -152,7 +149,7 @@ type Registry struct {
 
 type entry struct {
 	tool   Tool
-	schema *jsonschema.Schema
+	schema *schema
 }
 
 // NewRegistry returns an empty registry that resolves task IDs with lookup.
@@ -167,7 +164,7 @@ func (r *Registry) Register(t Tool) error {
 	if name == "" {
 		return errors.New("tools: a tool needs a name")
 	}
-	schema, err := compile(name, t.Parameters())
+	schema, err := compileSchema(t.Parameters())
 	if err != nil {
 		return fmt.Errorf("tools: %s: %w", name, err)
 	}
@@ -178,23 +175,6 @@ func (r *Registry) Register(t Tool) error {
 	}
 	r.tools[name] = entry{tool: t, schema: schema}
 	return nil
-}
-
-func compile(name string, params json.RawMessage) (*jsonschema.Schema, error) {
-	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(params))
-	if err != nil {
-		return nil, fmt.Errorf("parameters: %w", err)
-	}
-	if obj, ok := doc.(map[string]any); !ok || obj["type"] != "object" {
-		return nil, errors.New(`parameters must be a schema with "type": "object"`)
-	}
-	c := jsonschema.NewCompiler()
-	c.AssertFormat() // so "format": "uuid" is enforced, not only annotated
-	url := "tool:///" + name + ".json"
-	if err := c.AddResource(url, doc); err != nil {
-		return nil, err
-	}
-	return c.Compile(url)
 }
 
 // Schemas returns the named tools in the form offered to the model.
@@ -233,8 +213,8 @@ func (r *Registry) Dispatch(ctx context.Context, scope Scope, call llm.ToolCall)
 	if err != nil {
 		return reject(CodeInvalidArguments, "arguments are not a JSON object: %v", err)
 	}
-	if err := e.schema.Validate(doc); err != nil {
-		return reject(CodeInvalidArguments, "%s", validationMessage(err))
+	if errs := e.schema.validate(doc); len(errs) > 0 {
+		return reject(CodeInvalidArguments, "%s", strings.Join(errs, "; "))
 	}
 	if err := r.checkScope(ctx, scope, doc); err != nil {
 		var ce *CallError
@@ -263,7 +243,7 @@ func parseArgs(text string) (json.RawMessage, any, error) {
 	if text == "" {
 		text = "{}"
 	}
-	doc, err := jsonschema.UnmarshalJSON(strings.NewReader(text))
+	doc, err := decodeJSON([]byte(text))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -275,30 +255,6 @@ func parseArgs(text string) (json.RawMessage, any, error) {
 		return nil, nil, err
 	}
 	return buf.Bytes(), doc, nil
-}
-
-var english = message.NewPrinter(language.English)
-
-// validationMessage flattens a schema error into one line for the model.
-func validationMessage(err error) string {
-	var ve *jsonschema.ValidationError
-	if !errors.As(err, &ve) {
-		return err.Error()
-	}
-	var leaves []string
-	var walk func(*jsonschema.ValidationError)
-	walk = func(v *jsonschema.ValidationError) {
-		if len(v.Causes) == 0 {
-			loc := "/" + strings.Join(v.InstanceLocation, "/")
-			leaves = append(leaves, fmt.Sprintf("at %s: %s", loc, v.ErrorKind.LocalizedString(english)))
-			return
-		}
-		for _, c := range v.Causes {
-			walk(c)
-		}
-	}
-	walk(ve)
-	return strings.Join(leaves, "; ")
 }
 
 // checkScope verifies every task ID in the arguments.
