@@ -104,6 +104,7 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 	for _, tool := range []tools.Tool{
 		tools.UpdateTaskAttributes{Tasks: taskSvc},
 		tools.LinkDependencies{Tasks: taskSvc},
+		tools.CreateSubtaskDAG{Tasks: taskSvc},
 	} {
 		if err := registry.Register(tool); err != nil {
 			return nil, err
@@ -172,13 +173,15 @@ func newAgentRuntime(cfg config.Config, db *postgres.DB, tasks *postgres.TaskRep
 	if err != nil {
 		return nil, err
 	}
-	triage := agent.Triage{Tasks: tasks, Comments: postgres.NewCommentRepo(db)}
+	comments, workspaces := postgres.NewCommentRepo(db), postgres.NewWorkspaceRepo(db)
+	triage := agent.Triage{Tasks: tasks, Comments: comments}
+	decomposer := agent.Decomposer{Tasks: tasks, Comments: comments, Workspaces: workspaces}
 	return agent.New(agent.Deps{
 		Tx:         db,
 		Outbox:     postgres.NewOutboxRepo(db),
 		Jobs:       postgres.NewAgentJobRepo(db),
 		Tasks:      tasks,
-		Workspaces: postgres.NewWorkspaceRepo(db),
+		Workspaces: workspaces,
 		LLM:        client,
 		Tools:      registry,
 	}, agent.Config{
@@ -191,7 +194,7 @@ func newAgentRuntime(cfg config.Config, db *postgres.DB, tasks *postgres.TaskRep
 		PublicBaseURL:     cfg.PublicBaseURL,
 		OutboxMaxAttempts: cfg.OutboxMaxAttempts,
 		Wake:              wake,
-	}, triage)
+	}, triage, decomposer)
 }
 
 // AgentsRunning reports whether the agent runtime is part of this instance.
