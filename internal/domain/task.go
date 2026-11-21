@@ -46,6 +46,11 @@ type Task struct {
 	StatusBeforeBlocked *Status
 	BlockedReason       *BlockedReason
 
+	// EstimatedMinutes is the expected effort, when known.
+	EstimatedMinutes *int
+	// AgentMetadata is what agents recorded about the task.
+	AgentMetadata AgentMetadata
+
 	// ParentID is the task this one was split from, if any. It is set when
 	// a task is created and never changed by an update; deleting the parent
 	// clears it (departure D15).
@@ -143,6 +148,8 @@ type Patch struct {
 	Watchers    *[]string
 	DueAt       TimePatch
 	RemindAt    TimePatch
+	// EstimatedMinutes sets the estimate; it must be positive.
+	EstimatedMinutes *int
 
 	// BlockedReason applies only when Status moves to blocked. It defaults
 	// to manual; the system passes dependency.
@@ -187,6 +194,10 @@ func (t *Task) Apply(p Patch, actor Actor, now time.Time) ([]Event, error) {
 	if p.RemindAt.Set {
 		next.RemindAt = utcPtr(p.RemindAt.Value)
 	}
+	if p.EstimatedMinutes != nil {
+		v := *p.EstimatedMinutes
+		next.EstimatedMinutes = &v
+	}
 	if p.Status != nil && *p.Status != prev.Status {
 		if err := next.moveTo(*p.Status, p.BlockedReason, now); err != nil {
 			return nil, err
@@ -206,6 +217,7 @@ func (t *Task) Apply(p Patch, actor Actor, now time.Time) ([]Event, error) {
 		!slices.Equal(prev.Labels, next.Labels) ||
 		!slices.Equal(prev.Watchers, next.Watchers) ||
 		!timeEqual(prev.RemindAt, next.RemindAt) ||
+		!intEqual(prev.EstimatedMinutes, next.EstimatedMinutes) ||
 		p.Metadata != nil
 	if !changed {
 		return nil, nil
@@ -352,6 +364,8 @@ func (t *Task) validate() error {
 		return invalid("assignee_id must be at most %d characters", maxUserIDLen)
 	case len(t.Labels) > maxLabels:
 		return invalid("a task can have at most %d labels", maxLabels)
+	case t.EstimatedMinutes != nil && (*t.EstimatedMinutes <= 0 || *t.EstimatedMinutes > maxEstimateMinutes):
+		return invalid("estimated_minutes must be between 1 and %d", maxEstimateMinutes)
 	}
 	for _, l := range t.Labels {
 		if len(l) > maxLabelLen {
@@ -372,6 +386,11 @@ func (t *Task) clone() Task {
 	c.Labels = slices.Clone(t.Labels)
 	c.Watchers = slices.Clone(t.Watchers)
 	c.Metadata = maps.Clone(t.Metadata)
+	c.AgentMetadata = t.AgentMetadata.Clone()
+	if t.EstimatedMinutes != nil {
+		v := *t.EstimatedMinutes
+		c.EstimatedMinutes = &v
+	}
 	return c
 }
 
@@ -402,6 +421,16 @@ func utcPtr(t *time.Time) *time.Time {
 	}
 	u := t.UTC()
 	return &u
+}
+
+// maxEstimateMinutes bounds an estimate at 60 working days of 8 hours.
+const maxEstimateMinutes = 60 * 8 * 60
+
+func intEqual(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func timeEqual(a, b *time.Time) bool {

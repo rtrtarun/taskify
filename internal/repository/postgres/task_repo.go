@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -24,7 +25,7 @@ var _ repository.TaskRepository = (*TaskRepo)(nil)
 const taskColumns = `id, tenant_id, workspace_id, title, description, status::text, priority::text,
 	creator_id, assignee_id, labels, metadata, due_at, remind_at, completed_at, archived_at,
 	last_due_soon_notified_at, last_overdue_notified_at, status_before_blocked::text, blocked_reason,
-	version, created_at, updated_at, parent_id`
+	version, created_at, updated_at, parent_id, estimated_minutes, agent_metadata`
 
 // openTasks is the predicate of the partial index idx_tasks_due_scan.
 const openTasks = `status NOT IN ('completed', 'archived')`
@@ -36,14 +37,14 @@ func (r *TaskRepo) Create(ctx context.Context, t *domain.Task) error {
 			INSERT INTO tasks (id, tenant_id, workspace_id, title, description, status, priority,
 				creator_id, assignee_id, labels, metadata, due_at, remind_at, completed_at, archived_at,
 				last_due_soon_notified_at, last_overdue_notified_at, status_before_blocked, blocked_reason,
-				version, created_at, updated_at, parent_id)
+				version, created_at, updated_at, parent_id, estimated_minutes, agent_metadata)
 			VALUES ($1, $2, $3, $4, $5, $6::text::task_status, $7::text::task_priority,
-				$8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::text::task_status, $19, $20, $21, $22, $23)`,
+				$8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::text::task_status, $19, $20, $21, $22, $23, $24, $25)`,
 			t.ID, t.TenantID, t.WorkspaceID, t.Title, t.Description, string(t.Status), string(t.Priority),
 			t.CreatorID, nullString(t.AssigneeID), labels(t.Labels), metadata(t.Metadata),
 			t.DueAt, t.RemindAt, t.CompletedAt, t.ArchivedAt,
 			t.LastDueSoonNotifiedAt, t.LastOverdueNotifiedAt, statusPtr(t.StatusBeforeBlocked), reasonPtr(t.BlockedReason),
-			t.Version, t.CreatedAt, t.UpdatedAt, t.ParentID)
+			t.Version, t.CreatedAt, t.UpdatedAt, t.ParentID, t.EstimatedMinutes, agentMetadata(t.AgentMetadata))
 		if err != nil {
 			return mapErr(err)
 		}
@@ -84,13 +85,15 @@ func (r *TaskRepo) Update(ctx context.Context, t *domain.Task, expectedVersion i
 				assignee_id = $7, labels = $8, metadata = $9, due_at = $10, remind_at = $11,
 				completed_at = $12, archived_at = $13, last_due_soon_notified_at = $14,
 				last_overdue_notified_at = $15, status_before_blocked = $16::text::task_status,
-				blocked_reason = $17, version = $18, updated_at = $19
+				blocked_reason = $17, version = $18, updated_at = $19,
+				estimated_minutes = $21, agent_metadata = $22
 			WHERE id = $1 AND tenant_id = $2 AND version = $20`,
 			t.ID, t.TenantID, t.Title, t.Description, string(t.Status), string(t.Priority),
 			nullString(t.AssigneeID), labels(t.Labels), metadata(t.Metadata), t.DueAt, t.RemindAt,
 			t.CompletedAt, t.ArchivedAt, t.LastDueSoonNotifiedAt,
 			t.LastOverdueNotifiedAt, statusPtr(t.StatusBeforeBlocked),
-			reasonPtr(t.BlockedReason), t.Version, t.UpdatedAt, expectedVersion)
+			reasonPtr(t.BlockedReason), t.Version, t.UpdatedAt, expectedVersion,
+			t.EstimatedMinutes, agentMetadata(t.AgentMetadata))
 		if err != nil {
 			return mapErr(err)
 		}
@@ -289,12 +292,17 @@ func scanTask(row pgx.Row) (*domain.Task, error) {
 		assignee, before, reason  *string
 		due, remind, completed    *time.Time
 		archived, dueSoon, overdu *time.Time
+		agentMeta                 []byte
 	)
 	err := row.Scan(&t.ID, &t.TenantID, &t.WorkspaceID, &t.Title, &t.Description, &status, &priority,
 		&t.CreatorID, &assignee, &t.Labels, &t.Metadata, &due, &remind, &completed, &archived,
-		&dueSoon, &overdu, &before, &reason, &t.Version, &t.CreatedAt, &t.UpdatedAt, &t.ParentID)
+		&dueSoon, &overdu, &before, &reason, &t.Version, &t.CreatedAt, &t.UpdatedAt, &t.ParentID,
+		&t.EstimatedMinutes, &agentMeta)
 	if err != nil {
 		return nil, err
+	}
+	if t.AgentMetadata, err = domain.ParseAgentMetadata(agentMeta); err != nil {
+		return nil, fmt.Errorf("task %s: stored %w", t.ID, err)
 	}
 	t.Status = domain.Status(status)
 	t.Priority = domain.Priority(priority)
@@ -341,6 +349,15 @@ func labels(l []string) []string {
 		return []string{}
 	}
 	return l
+}
+
+// agentMetadata is the JSON stored in tasks.agent_metadata.
+func agentMetadata(m domain.AgentMetadata) []byte {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return []byte(`{}`) // a struct of plain fields always encodes
+	}
+	return b
 }
 
 func metadata(m map[string]any) map[string]any {

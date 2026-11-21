@@ -498,3 +498,46 @@ func TestAgentJobRetryAfter(t *testing.T) {
 		}
 	})
 }
+
+func TestTaskEstimateAndAgentMetadata(t *testing.T) {
+	each(t, func(t *testing.T, b Backend) {
+		seedWorkspace(t, b, tenant)
+		task := newTask(t, tenant, nil)
+		task.EstimatedMinutes = ptr(45)
+		create(t, b, task)
+		got, err := b.Tasks.Get(ctx, tenant, task.ID)
+		if err != nil || got.EstimatedMinutes == nil || *got.EstimatedMinutes != 45 ||
+			got.AgentMetadata.Runs != nil || got.AgentMetadata.PriorityRecommendation != nil {
+			t.Fatalf("created = %+v, %v", got, err)
+		}
+
+		job := uuid.New()
+		got.RecordAgentRun(domain.AgentRunRecord{JobID: job, Agent: domain.AgentTriage, At: t0,
+			Changes: map[string]any{"labels": []any{"bug"}, "estimated_minutes": float64(90)}, Reasoning: "crash in checkout"})
+		if err := got.RecommendPriority(domain.PriorityRecommendation{Value: domain.PriorityHigh, JobID: job, At: t0}); err != nil {
+			t.Fatal(err)
+		}
+		got.EstimatedMinutes = ptr(90)
+		got.Version++
+		if err := b.Tasks.Update(ctx, got, got.Version-1); err != nil {
+			t.Fatal(err)
+		}
+		again, _ := b.Tasks.Get(ctx, tenant, task.ID)
+		if *again.EstimatedMinutes != 90 || len(again.AgentMetadata.Runs) != 1 {
+			t.Fatalf("updated = %+v", again)
+		}
+		run := again.AgentMetadata.Runs[0]
+		if run.JobID != job || run.Reasoning != "crash in checkout" || !run.At.Equal(t0) || run.Changes["estimated_minutes"] != float64(90) {
+			t.Errorf("run = %+v", run)
+		}
+		if rec := again.AgentMetadata.PriorityRecommendation; rec == nil || rec.Value != domain.PriorityHigh || rec.JobID != job {
+			t.Errorf("recommendation = %+v", rec)
+		}
+
+		// A stored copy is not changed through the caller's value.
+		again.AgentMetadata.Runs[0].Changes["labels"] = "mutated"
+		if fresh, _ := b.Tasks.Get(ctx, tenant, task.ID); fresh.AgentMetadata.Runs[0].Changes["labels"] == "mutated" {
+			t.Error("the store shares agent metadata with callers")
+		}
+	})
+}
