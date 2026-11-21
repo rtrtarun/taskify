@@ -28,6 +28,7 @@ const (
 	OutcomeToolCall        = "tool_call"        // every call ran
 	OutcomeProposal        = "proposal"         // at least one call was stored for approval
 	OutcomeRejected        = "rejected"         // at least one call failed validation
+	OutcomeRuleRejected    = "rule_rejected"    // a tool refused a call under a business rule
 	OutcomeVersionConflict = "version_conflict" // a person changed the task meanwhile
 	OutcomeToolError       = "tool_error"       // a tool failed
 	OutcomeLLMError        = "llm_error"        // the model could not be reached
@@ -429,7 +430,7 @@ func (ru *run) turn(ctx context.Context, messages *[]llm.Message, schemas []llm.
 
 	outcome := OutcomeToolCall
 	results := make([]json.RawMessage, 0, len(calls))
-	malformed := false
+	malformed, ruleRejected := false, false
 	for _, call := range calls {
 		res, err := r.deps.Tools.Dispatch(ctx, ru.scope, call)
 		var rejected *tools.CallError
@@ -441,6 +442,12 @@ func (ru *run) turn(ctx context.Context, messages *[]llm.Message, schemas []llm.
 		case errors.Is(err, domain.ErrVersionConflict):
 			_ = ru.record(ctx, resp, latency, OutcomeVersionConflict, calls, results) // the conflict is what matters
 			return false, err
+		case ruleRefusal(err):
+			// A well-formed call the rules refuse, such as a dependency
+			// cycle: the model hears why and may try something else. It
+			// changed nothing and does not use the repair turn.
+			ruleRejected = true
+			content = map[string]string{"error": "rejected", "message": err.Error()}
 		case err != nil:
 			_ = ru.record(ctx, resp, latency, OutcomeToolError, calls, results) // the tool error is what matters
 			return false, fmt.Errorf("tool %s: %w", call.Name, err)
@@ -470,6 +477,8 @@ func (ru *run) turn(ctx context.Context, messages *[]llm.Message, schemas []llm.
 	switch {
 	case malformed:
 		outcome = OutcomeRejected
+	case ruleRejected:
+		outcome = OutcomeRuleRejected
 	case len(ru.proposals) > 0:
 		outcome = OutcomeProposal
 	}
@@ -485,6 +494,13 @@ func (ru *run) turn(ctx context.Context, messages *[]llm.Message, schemas []llm.
 		ru.repaired = true
 	}
 	return false, nil
+}
+
+// ruleRefusal reports a tool error that is the rules saying no, as opposed
+// to something going wrong.
+func ruleRefusal(err error) bool {
+	return errors.Is(err, domain.ErrValidation) || errors.Is(err, domain.ErrInvalidStateTransition) ||
+		errors.Is(err, domain.ErrNotFound)
 }
 
 // record writes the turn's run history row. Several calls in one turn are
