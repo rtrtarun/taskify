@@ -238,7 +238,7 @@ func (s *AgentJobService) failApply(ctx context.Context, tenantID string, id uui
 		s.metrics.AgentProposals(job.AgentType, observability.DecisionStale, proposalCount(job))
 		return job, false, ErrStaleProposal
 	}
-	return job, false, fmt.Errorf("%w: the approved changes could not be applied: %v", domain.ErrValidation, cause)
+	return job, false, fmt.Errorf("%w: the approved changes could not be applied: %s", domain.ErrValidation, cause.Error())
 }
 
 func proposalCount(job *domain.AgentJob) int {
