@@ -79,6 +79,8 @@ type testAgent struct {
 	seen   []string
 	// afterBuild runs once, after the first context is built.
 	afterBuild func()
+	// everyBuild runs after every context is built.
+	everyBuild func()
 }
 
 func (a *testAgent) Type() string           { return domain.AgentTriage }
@@ -91,11 +93,14 @@ func (a *testAgent) BuildContext(ctx context.Context, job *domain.AgentJob) ([]l
 	a.mu.Lock()
 	a.builds[job.ID]++
 	a.seen = append(a.seen, task.Title)
-	hook := a.afterBuild
+	hook, every := a.afterBuild, a.everyBuild
 	a.afterBuild = nil
 	a.mu.Unlock()
 	if hook != nil {
 		hook()
+	}
+	if every != nil {
+		every()
 	}
 	return []llm.Message{
 		{Role: llm.RoleSystem, Content: "You triage tasks."},
@@ -326,9 +331,18 @@ func TestVersionConflictReRunsWithFreshContext(t *testing.T) {
 			t.Fatal(err)
 		}
 		got := f.job(t, job.ID)
-		if got.Status != domain.JobPending || got.Attempts != 0 {
-			t.Fatalf("after the conflict: %s, %d attempts", got.Status, got.Attempts)
+		if got.Status != domain.JobPending || got.Attempts != 0 || got.ConflictCount != 1 {
+			t.Fatalf("after the conflict: %s, %d attempts, %d conflicts", got.Status, got.Attempts, got.ConflictCount)
 		}
+		// It waits briefly before running again.
+		if got.RetryAfter == nil || got.RetryAfter.Sub(got.UpdatedAt) != 10*time.Second {
+			t.Errorf("retry_after = %v, updated %v", got.RetryAfter, got.UpdatedAt)
+		}
+		var res executionResult
+		if err := json.Unmarshal(got.ExecutionResult, &res); err != nil || res.Stopped != stoppedConflict {
+			t.Errorf("execution_result = %s", got.ExecutionResult)
+		}
+		f.clock.advance(10 * time.Second)
 		if stored, _ := b.Tasks.Get(ctx, "tenant_acme", task.ID); stored.Description != "" {
 			t.Errorf("the stale write landed: %q", stored.Description)
 		}
@@ -388,6 +402,7 @@ func TestErrorsCountAttempts(t *testing.T) {
 		down := errors.New("model unavailable")
 		f.mock.Then(llm.Fail(down), llm.Fail(down), llm.Fail(down))
 		rt := f.runtime(t, Config{MaxAttempts: 3})
+		waits := []time.Duration{30 * time.Second, 2 * time.Minute, 0}
 		for i, want := range []domain.JobStatus{domain.JobPending, domain.JobPending, domain.JobFailed} {
 			if _, err := rt.RunOnce(ctx); err != nil {
 				t.Fatal(err)
@@ -396,6 +411,20 @@ func TestErrorsCountAttempts(t *testing.T) {
 			if got.Status != want || got.Attempts != i+1 || !strings.Contains(got.ErrorMessage, "model unavailable") {
 				t.Errorf("run %d: %s, %d attempts, %q", i+1, got.Status, got.Attempts, got.ErrorMessage)
 			}
+			if waits[i] == 0 {
+				if got.RetryAfter != nil {
+					t.Errorf("run %d: a failed job has retry_after %v", i+1, got.RetryAfter)
+				}
+				continue
+			}
+			if got.RetryAfter == nil || got.RetryAfter.Sub(got.UpdatedAt) != waits[i] {
+				t.Errorf("run %d: retry_after = %v after %v, want +%s", i+1, got.RetryAfter, got.UpdatedAt, waits[i])
+			}
+			// Not claimed again before the wait is over.
+			if n, _ := rt.RunOnce(ctx); n != 0 {
+				t.Errorf("run %d: claimed again during its backoff", i+1)
+			}
+			f.clock.advance(waits[i])
 		}
 		if want := []string{OutcomeLLMError, OutcomeLLMError, OutcomeLLMError}; !slices.Equal(f.outcomes(t, job.ID), want) {
 			t.Errorf("history = %v", f.outcomes(t, job.ID))
@@ -552,4 +581,68 @@ func (a *badAgent) Type() string           { return a.typ }
 func (a *badAgent) AllowedTools() []string { return a.tools }
 func (a *badAgent) BuildContext(context.Context, *domain.AgentJob) ([]llm.Message, error) {
 	return nil, nil
+}
+
+func TestConflictsBeyondTheFreeOnesUseAttempts(t *testing.T) {
+	each(t, func(t *testing.T, b repotest.Backend) {
+		f := newFixture(t, b, false)
+		task, job := f.task(t, "Busy task")
+		// Every run, a person edits the task while the model thinks. The
+		// assignee change queues no job of its own.
+		f.agent.everyBuild = func() {
+			cur, _ := b.Tasks.Get(ctx, "tenant_acme", task.ID)
+			who := "usr_" + uuid.NewString()[:8]
+			if _, err := f.svc.UpdateTask(ctx, alice, "tenant_acme", task.ID, cur.Version, domain.Patch{AssigneeID: &who}); err != nil {
+				t.Error(err)
+			}
+		}
+		for range 4 {
+			f.mock.Then(llm.Call("c", "Describe", describe(task.ID, "never lands")))
+		}
+		rt := f.runtime(t, Config{FreeConflicts: 2, MaxAttempts: 2, ConflictDelay: time.Second})
+		want := []struct {
+			status    domain.JobStatus
+			attempts  int
+			conflicts int
+		}{
+			{domain.JobPending, 0, 1}, {domain.JobPending, 0, 2}, // free
+			{domain.JobPending, 1, 3}, {domain.JobFailed, 2, 4}, // counted
+		}
+		for i, w := range want {
+			if _, err := rt.RunOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+			got := f.job(t, job.ID)
+			if got.Status != w.status || got.Attempts != w.attempts || got.ConflictCount != w.conflicts {
+				t.Fatalf("run %d: %s, %d attempts, %d conflicts; want %+v", i+1, got.Status, got.Attempts, got.ConflictCount, w)
+			}
+			f.clock.advance(time.Second)
+		}
+		if stored, _ := b.Tasks.Get(ctx, "tenant_acme", task.ID); stored.Description != "" {
+			t.Errorf("a stale write landed: %q", stored.Description)
+		}
+	})
+}
+
+func TestFailedRunRecordsWhatRan(t *testing.T) {
+	each(t, func(t *testing.T, b repotest.Backend) {
+		f := newFixture(t, b, false)
+		task, job := f.task(t, "T")
+		// One write lands, then the model breaks twice: the write stays and
+		// the job result says so.
+		f.mock.Then(llm.Call("c1", "Describe", describe(task.ID, "landed")),
+			llm.Call("c2", "Describe", "nope"), llm.Call("c3", "Describe", "still nope"))
+		if _, err := f.runtime(t, Config{}).RunOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		got := f.job(t, job.ID)
+		var res executionResult
+		if err := json.Unmarshal(got.ExecutionResult, &res); err != nil || got.Status != domain.JobFailed ||
+			res.Stopped != stoppedFailed || len(res.Executed) != 1 || res.Executed[0].Tool != "Describe" {
+			t.Errorf("job = %s, result %s", got.Status, got.ExecutionResult)
+		}
+		if stored, _ := b.Tasks.Get(ctx, "tenant_acme", task.ID); stored.Description != "landed" {
+			t.Errorf("description = %q", stored.Description)
+		}
+	})
 }

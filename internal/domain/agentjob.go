@@ -89,10 +89,15 @@ type AgentJob struct {
 	ExecutionResult json.RawMessage
 	ErrorMessage    string
 	Attempts        int
-	DecidedBy       string
-	DecidedAt       *time.Time
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// RetryAfter holds a pending job back until then: the runtime's backoff
+	// after a failed run or a version conflict.
+	RetryAfter *time.Time
+	// ConflictCount is how many runs ended in a version conflict.
+	ConflictCount int
+	DecidedBy     string
+	DecidedAt     *time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // TransitionTo moves the job to a new status, or returns

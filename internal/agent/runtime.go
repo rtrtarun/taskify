@@ -31,8 +31,12 @@ const (
 
 // How a run ended, in execution_result.
 const (
-	stoppedFinal    = "final"
-	stoppedMaxTurns = "max_turns"
+	stoppedFinal       = "final"
+	stoppedMaxTurns    = "max_turns"
+	stoppedConflict    = "version_conflict"
+	stoppedError       = "error"
+	stoppedFailed      = "failed"
+	stoppedInterrupted = "interrupted"
 )
 
 // Config tunes the runtime. Zero values take the defaults in G11.
@@ -46,8 +50,17 @@ type Config struct {
 	StuckAfter time.Duration
 	// RecoverEvery is how often stuck jobs are looked for; default 1m.
 	RecoverEvery time.Duration
-	Now          func() time.Time
-	Logger       *slog.Logger
+	// RetryBackoff is the wait after failed attempt n (1-based; the last
+	// entry repeats). Default 30s, 2m, 10m.
+	RetryBackoff []time.Duration
+	// ConflictDelay is the wait before re-running after a version conflict;
+	// default 10s.
+	ConflictDelay time.Duration
+	// FreeConflicts is how many version conflicts re-run without using an
+	// attempt; each one after that uses one. Default 5.
+	FreeConflicts int
+	Now           func() time.Time
+	Logger        *slog.Logger
 }
 
 func (c *Config) defaults() {
@@ -69,12 +82,26 @@ func (c *Config) defaults() {
 	if c.RecoverEvery <= 0 {
 		c.RecoverEvery = time.Minute
 	}
+	if len(c.RetryBackoff) == 0 {
+		c.RetryBackoff = []time.Duration{30 * time.Second, 2 * time.Minute, 10 * time.Minute}
+	}
+	if c.ConflictDelay <= 0 {
+		c.ConflictDelay = 10 * time.Second
+	}
+	if c.FreeConflicts <= 0 {
+		c.FreeConflicts = 5
+	}
 	if c.Now == nil {
 		c.Now = time.Now
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
 	}
+}
+
+// backoff returns the wait after failed attempt n.
+func (c *Config) backoff(n int) time.Duration {
+	return c.RetryBackoff[min(max(n, 1), len(c.RetryBackoff))-1]
 }
 
 // Deps are what the runtime uses.
@@ -491,24 +518,25 @@ type executionResult struct {
 }
 
 // finish saves the job's next status. Its writes outlive a cancelled ctx,
-// so a shutdown still returns the job to pending.
+// so a shutdown still returns the job to pending. Every outcome records what
+// the run did, including Tier 1 calls that ran before a failure, since each
+// of those committed on its own.
 func (r *Runtime) finish(ctx context.Context, ru *run, runErr error) {
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	job, log, now := ru.job, ru.log, r.now()
 	var perm *permanentError
+	retryIn := func(d time.Duration) {
+		at := now.Add(d)
+		job.RetryAfter = &at
+	}
+	job.RetryAfter = nil
 
 	switch {
 	case errors.Is(runErr, repository.ErrJobMoved):
 		log.Warn("agent runtime: job was taken over; dropping this run", "error", runErr)
 		return
 	case runErr == nil:
-		result := executionResult{Turns: ru.turns, Stopped: ru.stopped, FinalMessage: ru.final,
-			Executed: ru.executed, Proposals: len(ru.proposals)}
-		if result.Executed == nil {
-			result.Executed = []executedCall{}
-		}
-		job.ExecutionResult, _ = json.Marshal(result)
 		job.ErrorMessage = ""
 		next := domain.JobCompleted
 		if len(ru.proposals) > 0 {
@@ -519,25 +547,51 @@ func (r *Runtime) finish(ctx context.Context, ru *run, runErr error) {
 		_ = job.TransitionTo(next, now)
 	case ctx.Err() != nil:
 		// Shutting down: the job is not at fault.
+		ru.stopped = stoppedInterrupted
 		job.ErrorMessage = "interrupted by shutdown"
 		_ = job.TransitionTo(domain.JobPending, now)
 	case errors.Is(runErr, domain.ErrVersionConflict):
-		// A person changed the task: run again from their edit, without
-		// using an attempt.
+		// A person changed the task: run again from their edit after a short
+		// wait. The first few conflicts are free; later ones use an attempt,
+		// so a task under constant editing cannot keep its job spinning.
+		ru.stopped = stoppedConflict
+		job.ConflictCount++
 		job.ErrorMessage = "version conflict; will run again on the current task"
-		_ = job.TransitionTo(domain.JobPending, now)
+		next := domain.JobPending
+		if job.ConflictCount > r.cfg.FreeConflicts {
+			job.Attempts++
+			if job.Attempts >= r.cfg.MaxAttempts {
+				next = domain.JobFailed
+				job.ErrorMessage = "the task kept changing while the agent worked; giving up"
+			}
+		}
+		if next == domain.JobPending {
+			retryIn(r.cfg.ConflictDelay)
+		}
+		_ = job.TransitionTo(next, now)
 	case errors.As(runErr, &perm):
+		ru.stopped = stoppedFailed
 		job.ErrorMessage = perm.msg
 		_ = job.TransitionTo(domain.JobFailed, now)
 	default:
+		ru.stopped = stoppedError
 		job.Attempts++
 		job.ErrorMessage = runErr.Error()
 		next := domain.JobPending
 		if job.Attempts >= r.cfg.MaxAttempts {
 			next = domain.JobFailed
+		} else {
+			retryIn(r.cfg.backoff(job.Attempts))
 		}
 		_ = job.TransitionTo(next, now)
 	}
+
+	result := executionResult{Turns: ru.turns, Stopped: ru.stopped, FinalMessage: ru.final,
+		Executed: ru.executed, Proposals: len(ru.proposals)}
+	if result.Executed == nil {
+		result.Executed = []executedCall{}
+	}
+	job.ExecutionResult, _ = json.Marshal(result)
 
 	if err := r.deps.Jobs.Update(wctx, job, domain.JobRunning, ru.lease); err != nil {
 		if errors.Is(err, repository.ErrJobMoved) || errors.Is(err, domain.ErrNotFound) {

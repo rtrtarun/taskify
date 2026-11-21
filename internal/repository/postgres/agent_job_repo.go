@@ -23,7 +23,7 @@ var _ repository.AgentJobRepository = (*AgentJobRepo)(nil)
 
 const jobColumns = `id, tenant_id, task_id, agent_type, status::text, dedup_key, base_task_version,
 	input_context, proposed_actions, execution_result, error_message, attempts, decided_by, decided_at,
-	created_at, updated_at`
+	created_at, updated_at, retry_after, conflict_count`
 
 func (r *AgentJobRepo) Insert(ctx context.Context, j domain.AgentJob) (bool, error) {
 	// ON CONFLICT rather than catching the unique violation: an error would
@@ -62,7 +62,7 @@ func (r *AgentJobRepo) Claim(ctx context.Context, now time.Time, limit int, agen
 		UPDATE agent_jobs SET status = 'running', updated_at = $1
 		WHERE id IN (
 			SELECT id FROM agent_jobs
-			WHERE status = 'pending' AND agent_type = ANY($3)
+			WHERE status = 'pending' AND agent_type = ANY($3) AND (retry_after IS NULL OR retry_after <= $1)
 			ORDER BY created_at, id
 			LIMIT $2
 			FOR UPDATE SKIP LOCKED)
@@ -74,11 +74,12 @@ func (r *AgentJobRepo) Update(ctx context.Context, j *domain.AgentJob, from doma
 		UPDATE agent_jobs
 		SET status = $4::text::agent_job_status, proposed_actions = $5, execution_result = $6,
 			error_message = $7, attempts = $8, decided_by = $9, decided_at = $10, updated_at = $11,
-			base_task_version = $13
+			base_task_version = $13, retry_after = $14, conflict_count = $15
 		WHERE id = $1 AND tenant_id = $2 AND status = $3::text::agent_job_status AND updated_at = $12`,
 		j.ID, j.TenantID, string(from), string(j.Status), jsonOrNull(j.ProposedActions), jsonOrNull(j.ExecutionResult),
 		nullString(truncateErr(j.ErrorMessage)), j.Attempts, nullString(j.DecidedBy), j.DecidedAt,
-		j.UpdatedAt.UTC().Truncate(time.Microsecond), fromUpdatedAt.UTC().Truncate(time.Microsecond), j.BaseTaskVersion)
+		j.UpdatedAt.UTC().Truncate(time.Microsecond), fromUpdatedAt.UTC().Truncate(time.Microsecond), j.BaseTaskVersion,
+		j.RetryAfter, j.ConflictCount)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -184,7 +185,8 @@ func (r *AgentJobRepo) query(ctx context.Context, sql string, args ...any) ([]*d
 			errMsg, decidedBy       *string
 		)
 		err := row.Scan(&j.ID, &j.TenantID, &j.TaskID, &j.AgentType, &status, &j.DedupKey, &j.BaseTaskVersion,
-			&input, &proposed, &result, &errMsg, &j.Attempts, &decidedBy, &j.DecidedAt, &j.CreatedAt, &j.UpdatedAt)
+			&input, &proposed, &result, &errMsg, &j.Attempts, &decidedBy, &j.DecidedAt, &j.CreatedAt, &j.UpdatedAt,
+			&j.RetryAfter, &j.ConflictCount)
 		if err != nil {
 			return nil, err
 		}
@@ -197,6 +199,7 @@ func (r *AgentJobRepo) query(ctx context.Context, sql string, args ...any) ([]*d
 			j.DecidedBy = *decidedBy
 		}
 		j.CreatedAt, j.UpdatedAt, j.DecidedAt = j.CreatedAt.UTC(), j.UpdatedAt.UTC(), utc(j.DecidedAt)
+		j.RetryAfter = utc(j.RetryAfter)
 		return &j, nil
 	})
 	if errors.Is(err, pgx.ErrNoRows) {

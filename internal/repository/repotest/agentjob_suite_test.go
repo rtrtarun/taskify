@@ -456,3 +456,45 @@ func TestAgentJobRecoverStuck(t *testing.T) {
 		check("pending", domain.JobPending, 0)
 	})
 }
+
+func TestAgentJobRetryAfter(t *testing.T) {
+	each(t, func(t *testing.T, b Backend) {
+		seedWorkspace(t, b, tenant)
+		j := newJob(t, nil, domain.AgentTriage, t0)
+		insertJob(t, b, j)
+		claimed, err := b.AgentJobs.Claim(ctx, t0, 1, domain.AgentTypes)
+		if err != nil || len(claimed) != 1 {
+			t.Fatal(claimed, err)
+		}
+		got := claimed[0]
+		if got.RetryAfter != nil || got.ConflictCount != 0 {
+			t.Errorf("new job: retry_after %v, conflicts %d", got.RetryAfter, got.ConflictCount)
+		}
+
+		// Back to pending, held until a minute from now.
+		lease, retry := got.UpdatedAt, t0.Add(time.Minute)
+		if err := got.TransitionTo(domain.JobPending, t0.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		got.RetryAfter, got.ConflictCount = &retry, 2
+		if err := b.AgentJobs.Update(ctx, got, domain.JobRunning, lease); err != nil {
+			t.Fatal(err)
+		}
+		stored, _ := b.AgentJobs.Get(ctx, tenant, j.ID)
+		if stored.RetryAfter == nil || !stored.RetryAfter.Equal(retry) || stored.ConflictCount != 2 {
+			t.Errorf("stored = retry_after %v, conflicts %d", stored.RetryAfter, stored.ConflictCount)
+		}
+		if early, _ := b.AgentJobs.Claim(ctx, retry.Add(-time.Millisecond), 1, domain.AgentTypes); len(early) != 0 {
+			t.Error("a job was claimed before its retry_after")
+		}
+		if due, _ := b.AgentJobs.Claim(ctx, retry, 1, domain.AgentTypes); len(due) != 1 {
+			t.Error("a job was not claimed at its retry_after")
+		}
+
+		bad := *stored
+		bad.ConflictCount = -1
+		if err := b.AgentJobs.Update(ctx, &bad, domain.JobRunning, retry); !errors.Is(err, domain.ErrValidation) {
+			t.Errorf("negative conflict count: %v", err)
+		}
+	})
+}

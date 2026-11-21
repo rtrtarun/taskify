@@ -36,6 +36,7 @@ func copyJob(j *domain.AgentJob) *domain.AgentJob {
 		c.BaseTaskVersion = &v
 	}
 	c.DecidedAt = microPtr(j.DecidedAt)
+	c.RetryAfter = microPtr(j.RetryAfter)
 	return &c
 }
 
@@ -55,6 +56,7 @@ func (r *AgentJobRepo) Insert(ctx context.Context, j domain.AgentJob) (created b
 			return fmt.Errorf("%w: agent job %s", domain.ErrAlreadyExists, j.ID)
 		}
 		c := copyJob(&j)
+		c.RetryAfter, c.ConflictCount = nil, 0 // as the insert leaves them to their defaults
 		if len(c.InputContext) == 0 {
 			c.InputContext = []byte(`{}`)
 		}
@@ -91,7 +93,8 @@ func (r *AgentJobRepo) Claim(ctx context.Context, now time.Time, limit int, agen
 	err = r.st.do(ctx, func(s *state) error {
 		var pending []*domain.AgentJob
 		for _, j := range s.jobs {
-			if j.Status == domain.JobPending && slices.Contains(agentTypes, j.AgentType) {
+			due := j.RetryAfter == nil || !j.RetryAfter.After(now)
+			if j.Status == domain.JobPending && due && slices.Contains(agentTypes, j.AgentType) {
 				pending = append(pending, j)
 			}
 		}
@@ -114,7 +117,7 @@ func (r *AgentJobRepo) Update(ctx context.Context, j *domain.AgentJob, from doma
 		if stored.Status != from || !stored.UpdatedAt.Equal(micro(fromUpdatedAt)) {
 			return repository.ErrJobMoved
 		}
-		if j.Attempts < 0 || !j.Status.Valid() || (j.DecidedBy == "") != (j.DecidedAt == nil) {
+		if j.Attempts < 0 || j.ConflictCount < 0 || !j.Status.Valid() || (j.DecidedBy == "") != (j.DecidedAt == nil) {
 			return fmt.Errorf("%w: invalid agent job", domain.ErrValidation)
 		}
 		c := copyJob(j)
@@ -122,6 +125,7 @@ func (r *AgentJobRepo) Update(ctx context.Context, j *domain.AgentJob, from doma
 		stored.ErrorMessage, stored.Attempts = c.ErrorMessage, c.Attempts
 		stored.DecidedBy, stored.DecidedAt, stored.UpdatedAt = c.DecidedBy, c.DecidedAt, micro(c.UpdatedAt)
 		stored.BaseTaskVersion = c.BaseTaskVersion
+		stored.RetryAfter, stored.ConflictCount = c.RetryAfter, c.ConflictCount
 		return nil
 	})
 }
