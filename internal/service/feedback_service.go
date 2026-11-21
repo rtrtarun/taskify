@@ -113,6 +113,9 @@ func ParseSignal(signal, duration string) (time.Duration, error) {
 const (
 	ActionComplete = "complete"
 	ActionSnooze   = "snooze"
+	// ActionApprove and ActionReject decide an agent job's proposals.
+	ActionApprove = "approve"
+	ActionReject  = "reject"
 )
 
 // Callback is an authenticated action from AgentPulse, such as a "Mark
@@ -120,11 +123,13 @@ const (
 type Callback struct {
 	// Key identifies the delivery; a repeated key is ignored. The webhook
 	// handler uses the request signature.
-	Key            string
-	Action         string
-	TenantID       string
-	UserID         string
-	TaskID         uuid.UUID
+	Key      string
+	Action   string
+	TenantID string
+	UserID   string
+	TaskID   uuid.UUID
+	// JobID names the agent job, for approve and reject.
+	JobID          uuid.UUID
 	NotificationID string
 	Duration       string // for snooze
 }
@@ -137,6 +142,13 @@ type WebhookService struct {
 	feedback   *FeedbackService
 	logger     *slog.Logger
 	now        func() time.Time
+	agentJobs  *AgentJobService
+}
+
+// WithAgentJobs enables the approve and reject actions.
+func (s *WebhookService) WithAgentJobs(j *AgentJobService) *WebhookService {
+	s.agentJobs = j
+	return s
 }
 
 // NewWebhookService returns a WebhookService.
@@ -157,6 +169,9 @@ func NewWebhookService(tx repository.TxManager, d repository.WebhookDeliveryRepo
 // forwarding failure is logged, not returned: the user's action has already
 // taken effect.
 func (s *WebhookService) Handle(ctx context.Context, cb Callback) (duplicate bool, err error) {
+	if cb.Action == ActionApprove || cb.Action == ActionReject {
+		return s.decide(ctx, cb)
+	}
 	if strings.TrimSpace(cb.TenantID) == "" || strings.TrimSpace(cb.UserID) == "" || cb.TaskID == uuid.Nil {
 		return false, fmt.Errorf("%w: tenantId, userId, and taskId are required", domain.ErrValidation)
 	}
@@ -202,6 +217,59 @@ func (s *WebhookService) Handle(ctx context.Context, cb Callback) (duplicate boo
 	if fbErr != nil {
 		s.logger.Warn("webhook: action applied but feedback not forwarded",
 			"tenant_id", cb.TenantID, "task_id", cb.TaskID, "signal", signal, "error", fbErr)
+	}
+	return false, nil
+}
+
+// decide approves or rejects an agent job's proposals for the user named in
+// the callback, through the same AgentJobService as the API and with the
+// same permission check (G10). AgentPulse does not say whether the user is
+// an admin, so a callback decides as a member.
+//
+// The decision is idempotent by itself: approving an approved job changes
+// nothing. The delivery is recorded after it, and feedback is forwarded only
+// when the decision changed the job, so a repeated callback sends no second
+// signal. duplicate reports a callback that changed nothing.
+func (s *WebhookService) decide(ctx context.Context, cb Callback) (duplicate bool, err error) {
+	if strings.TrimSpace(cb.TenantID) == "" || strings.TrimSpace(cb.UserID) == "" || cb.JobID == uuid.Nil {
+		return false, fmt.Errorf("%w: tenantId, userId, and jobId are required", domain.ErrValidation)
+	}
+	if s.agentJobs == nil {
+		return false, fmt.Errorf("%w: agent approvals are not available", domain.ErrValidation)
+	}
+	who := Decider{UserID: cb.UserID}
+	var (
+		job     *domain.AgentJob
+		changed bool
+	)
+	signal := SignalActed
+	if cb.Action == ActionApprove {
+		job, changed, err = s.agentJobs.Apply(ctx, cb.TenantID, cb.JobID, who)
+	} else {
+		signal = SignalDismissed
+		job, changed, err = s.agentJobs.Dismiss(ctx, cb.TenantID, cb.JobID, who)
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := s.tx.WithTx(ctx, func(ctx context.Context) error {
+		_, err := s.deliveries.Record(ctx, cb.Key, s.now().UTC())
+		return err
+	}); err != nil {
+		s.logger.Warn("webhook: decision applied but delivery not recorded", "job_id", cb.JobID, "error", err)
+	}
+	if !changed {
+		return true, nil
+	}
+	if job.TaskID != nil {
+		fbErr := s.feedback.forward(ctx, FeedbackInput{
+			TenantID: cb.TenantID, UserID: cb.UserID, TaskID: *job.TaskID,
+			NotificationID: cb.NotificationID, Signal: signal,
+		})
+		if fbErr != nil {
+			s.logger.Warn("webhook: decision applied but feedback not forwarded",
+				"tenant_id", cb.TenantID, "job_id", cb.JobID, "signal", signal, "error", fbErr)
+		}
 	}
 	return false, nil
 }

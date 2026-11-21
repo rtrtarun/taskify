@@ -107,7 +107,7 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 		Tasks:      taskSvc,
 		Workspaces: service.NewWorkspaceService(db, postgres.NewWorkspaceRepo(db), postgres.NewRuleRepo(db), client, nil),
 		Feedback:   feedback,
-		Webhooks:   service.NewWebhookService(db, deliveries, taskSvc, feedback, logger, nil),
+		Webhooks:   service.NewWebhookService(db, deliveries, taskSvc, feedback, logger, nil).WithAgentJobs(agentJobs),
 		AgentJobs:  agentJobs,
 		Learning:   client,
 		Auth: api.AuthConfig{

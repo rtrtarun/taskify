@@ -69,12 +69,13 @@ func newEnv(t *testing.T, opts ...option) *env {
 	if err := registry.Register(agenttest.DescribeTool{Tasks: tasks, Tier2: true}); err != nil {
 		t.Fatal(err)
 	}
+	agentJobs := service.NewAgentJobService(b.Tx, b.AgentJobs, b.Tasks, registry, nil, clock)
 	d := Deps{
-		AgentJobs:     service.NewAgentJobService(b.Tx, b.AgentJobs, b.Tasks, registry, nil, clock),
+		AgentJobs:     agentJobs,
 		Tasks:         tasks,
 		Workspaces:    service.NewWorkspaceService(b.Tx, b.Workspaces, b.Rules, client, clock),
 		Feedback:      feedback,
-		Webhooks:      service.NewWebhookService(b.Tx, b.Deliveries, tasks, feedback, quiet, clock),
+		Webhooks:      service.NewWebhookService(b.Tx, b.Deliveries, tasks, feedback, quiet, clock).WithAgentJobs(agentJobs),
 		Learning:      client,
 		Auth:          AuthConfig{Algorithm: "HS256", Secret: secret},
 		WebhookSecret: webhookSecret,

@@ -44,6 +44,7 @@ type webhookBody struct {
 	TenantID       string `json:"tenantId"`
 	UserID         string `json:"userId"`
 	TaskID         string `json:"taskId"`
+	JobID          string `json:"jobId"` // approve and reject
 	NotificationID string `json:"notificationId"`
 	Duration       string `json:"duration"`
 }
@@ -67,15 +68,24 @@ func (h *handlers) webhook(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, badRequest("callback body is not valid JSON"))
 		return
 	}
-	taskID, err := uuid.Parse(body.TaskID)
-	if err != nil {
-		h.fail(w, r, domain.ErrNotFound)
-		return
+	cb := service.Callback{Key: sig, Action: body.Action, TenantID: body.TenantID, UserID: body.UserID,
+		NotificationID: body.NotificationID, Duration: body.Duration}
+	// A malformed ID names nothing; an absent one is for the service to judge.
+	for _, f := range []struct {
+		raw string
+		dst *uuid.UUID
+	}{{body.TaskID, &cb.TaskID}, {body.JobID, &cb.JobID}} {
+		if f.raw == "" {
+			continue
+		}
+		id, err := uuid.Parse(f.raw)
+		if err != nil {
+			h.fail(w, r, domain.ErrNotFound)
+			return
+		}
+		*f.dst = id
 	}
-	dup, err := h.webhooks.Handle(r.Context(), service.Callback{
-		Key: sig, Action: body.Action, TenantID: body.TenantID, UserID: body.UserID,
-		TaskID: taskID, NotificationID: body.NotificationID, Duration: body.Duration,
-	})
+	dup, err := h.webhooks.Handle(r.Context(), cb)
 	if err != nil {
 		h.fail(w, r, err)
 		return

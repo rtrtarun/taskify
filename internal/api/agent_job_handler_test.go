@@ -124,3 +124,76 @@ func TestAgentJobStaleAndPending(t *testing.T) {
 		t.Errorf("dismiss pending: %d %s", r.status, r.raw)
 	}
 }
+
+func TestWebhookApproveAndReject(t *testing.T) {
+	e := newEnv(t)
+	task := e.createTask(nil) // assignee usr_carol, creator usr_bob
+	taskID := task["id"].(string)
+	now := e.now.Unix()
+	feedbackFor := func(signal string) int {
+		n := 0
+		for _, fb := range e.mock.Feedback() {
+			if fb["signal"] == signal && fb["taskId"] == taskID {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Approve, from the assignee's notification.
+	jobID := e.proposal(taskID, "Approved in Slack")
+	approve := map[string]any{"action": "approve", "tenantId": tenant, "userId": "usr_carol", "jobId": jobID,
+		"taskId": taskID, "notificationId": "ntf_approve"}
+	if r := e.webhook(approve, now, ""); r.status != 200 || r.json["status"] != "applied" {
+		t.Fatalf("approve: %d %s", r.status, r.raw)
+	}
+	if got := e.do(req{method: "GET", path: "/api/v1/tasks/" + taskID}); got.json["description"] != "Approved in Slack" {
+		t.Errorf("task after approve = %s", got.raw)
+	}
+	if n := feedbackFor("acted"); n != 1 {
+		t.Errorf("acted signals = %d, want 1", n)
+	}
+	// A replay, and a fresh delivery of the same decision: no second signal.
+	if r := e.webhook(approve, now, ""); r.status != 200 || r.json["status"] != "duplicate" {
+		t.Errorf("replay: %d %s", r.status, r.raw)
+	}
+	if r := e.webhook(approve, now+1, ""); r.status != 200 || r.json["status"] != "duplicate" {
+		t.Errorf("repeat: %d %s", r.status, r.raw)
+	}
+	if n := feedbackFor("acted"); n != 1 {
+		t.Errorf("acted signals after repeats = %d, want 1", n)
+	}
+	// The opposite decision on a decided job is refused.
+	reject := map[string]any{"action": "reject", "tenantId": tenant, "userId": "usr_carol", "jobId": jobID}
+	if r := e.webhook(reject, now+2, ""); r.status != 409 || r.errCode() != CodeAlreadyDecided {
+		t.Errorf("reject after approve: %d %s", r.status, r.raw)
+	}
+
+	// Reject a second proposal.
+	second := e.proposal(taskID, "never")
+	reject["jobId"] = second
+	if r := e.webhook(reject, now+3, ""); r.status != 200 || r.json["status"] != "applied" {
+		t.Fatalf("reject: %d %s", r.status, r.raw)
+	}
+	if n := feedbackFor("dismissed"); n != 1 {
+		t.Errorf("dismissed signals = %d, want 1", n)
+	}
+
+	// The callback's user goes through the same permission check.
+	third := e.proposal(taskID, "not yours")
+	stranger := map[string]any{"action": "approve", "tenantId": tenant, "userId": "usr_eve", "jobId": third}
+	if r := e.webhook(stranger, now+4, ""); r.status != 403 || r.errCode() != CodeForbidden {
+		t.Errorf("stranger approve: %d %s", r.status, r.raw)
+	}
+	if got := e.do(req{method: "GET", path: "/api/v1/agent-jobs/" + third}); got.json["status"] != "awaiting_approval" {
+		t.Errorf("job after a refused callback = %s", got.raw)
+	}
+
+	// Malformed or missing job IDs.
+	if r := e.webhook(map[string]any{"action": "approve", "tenantId": tenant, "userId": "usr_carol", "jobId": "x"}, now+5, ""); r.status != 404 {
+		t.Errorf("malformed jobId: %d %s", r.status, r.raw)
+	}
+	if r := e.webhook(map[string]any{"action": "approve", "tenantId": tenant, "userId": "usr_carol"}, now+6, ""); r.status != 422 {
+		t.Errorf("missing jobId: %d %s", r.status, r.raw)
+	}
+}
