@@ -2,6 +2,12 @@
 #
 #   docker compose up --build            Postgres, mock AgentPulse, Taskify
 #   docker compose --profile agentpulse up   also the real AgentPulse and Redis
+#   AGENTS_ENABLED=true docker compose --profile ollama up
+#                                            also Ollama, pulling LLM_MODEL first
+#
+# Agents can use an Ollama already running on the host instead of the
+# profile: AGENTS_ENABLED=true LLM_BASE_URL=http://host.docker.internal:11434/v1
+# docker compose up. See "Agents and local models" in README.md.
 #
 # The real AgentPulse image is not published from this repository. Set
 # AGENTPULSE_IMAGE, then point taskify's AGENTPULSE_BASE_URL at it.
@@ -47,8 +53,38 @@ services:
       AGENTPULSE_API_KEY: dev-agentpulse-key
       AGENTPULSE_WEBHOOK_SECRET: dev-webhook-secret
       JWT_SECRET: dev-secret
+      AGENTS_ENABLED: ${AGENTS_ENABLED:-false}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://ollama:11434/v1}
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5-coder:7b}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # a host Ollama, on Linux too
     ports:
       - "8080:8080"
+
+  ollama:
+    profiles: ["ollama"]
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama # models survive restarts; about 5 GB for a 7B model
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  ollama-pull:
+    profiles: ["ollama"]
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: ollama:11434
+    entrypoint: ["ollama", "pull", "${LLM_MODEL:-qwen2.5-coder:7b}"]
+    restart: "no"
 
   redis:
     profiles: ["agentpulse"]
@@ -66,3 +102,4 @@ services:
 
 volumes:
   pgdata:
+  ollama:

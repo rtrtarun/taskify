@@ -82,8 +82,39 @@ All settings are environment variables. In development, a `.env` file is also re
 | `SCHEDULER_INTERVAL` | `1m` | Deadline scan period |
 | `RATE_LIMIT_RPS`, `RATE_LIMIT_BURST` | `20`, `40` | Per-user request rate, per replica |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | Export traces over OTLP/HTTP; other `OTEL_*` variables apply |
+| `AGENTS_ENABLED` | `false` | Runs the agent runtime in this process. Workspaces still opt in through their agent settings. |
+| `AGENT_WORKERS` | `4` | Concurrent agent jobs per replica |
+| `AGENT_MAX_TURNS` | `6` | Model turns per job run |
+| `AGENT_MAX_ATTEMPTS` | `3` | Failed runs before a job fails |
+| `LLM_BASE_URL` | required with agents | OpenAI-compatible API root, such as `http://localhost:11434/v1` |
+| `LLM_MODEL` | required with agents | Model name, such as `qwen2.5-coder:7b` |
+| `LLM_API_KEY` | empty | Bearer token; leave empty for a local Ollama |
+| `LLM_TIMEOUT` | `30s` | Limit for each model call |
 
 A missing or invalid setting stops start-up with a message naming every problem.
+
+## Agents and local models
+
+Agents are off twice over by default: the process needs `AGENTS_ENABLED=true`, and each workspace needs `agents_enabled` in its agent settings (`PATCH /api/v1/workspaces/{id}/settings`). Even then every agent action waits for approval until the workspace also turns `require_hitl_for_all` off.
+
+Agents talk to any OpenAI-compatible endpoint with tool calling. Locally that is [Ollama](https://ollama.com) with `qwen2.5-coder:7b` or `llama3.1:8b`, in either of two ways:
+
+```bash
+# 1. Ollama in Docker. The first start downloads the model (about 5 GB) into a volume.
+AGENTS_ENABLED=true docker compose --profile ollama up -d --build
+
+# 2. An Ollama already running on your machine, reused from the container.
+ollama pull qwen2.5-coder:7b
+AGENTS_ENABLED=true LLM_BASE_URL=http://host.docker.internal:11434/v1 docker compose up -d --build
+```
+
+Outside Docker, point `LLM_BASE_URL` at `http://localhost:11434/v1`. A hosted model works the same way with its own base URL, model name, and `LLM_API_KEY`; switching is configuration only.
+
+A smoke test checks the client, the runtime, and the model together. It is skipped unless `LLM_BASE_URL` is set, so CI never needs a model:
+
+```bash
+LLM_BASE_URL=http://localhost:11434/v1 LLM_MODEL=qwen2.5-coder:7b go test ./tests/e2e -run TestLLMSmoke -v
+```
 
 ## API
 
