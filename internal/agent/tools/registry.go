@@ -204,34 +204,10 @@ func (r *Registry) Schemas(names []string) ([]llm.ToolSchema, error) {
 // call returns a *CallError and runs nothing. Errors from the tool itself,
 // such as domain.ErrVersionConflict, are returned as they are.
 func (r *Registry) Dispatch(ctx context.Context, scope Scope, call llm.ToolCall) (Result, error) {
-	r.mu.RLock()
-	e, ok := r.tools[call.Name]
-	r.mu.RUnlock()
-	reject := func(code, format string, a ...any) (Result, error) {
-		return Result{}, &CallError{Tool: call.Name, Code: code, Message: fmt.Sprintf(format, a...)}
-	}
-	if !ok {
-		return reject(CodeUnknownTool, "no tool named %q exists", call.Name)
-	}
-	if scope.AllowedTools != nil && !slices.Contains(scope.AllowedTools, call.Name) {
-		return reject(CodeNotAllowed, "this agent may not use %q", call.Name)
-	}
-
-	args, doc, err := parseArgs(call.Arguments)
+	e, args, err := r.check(ctx, scope, call.Name, call.Arguments)
 	if err != nil {
-		return reject(CodeInvalidArguments, "arguments are not a JSON object: %v", err)
-	}
-	if errs := e.schema.validate(doc); len(errs) > 0 {
-		return reject(CodeInvalidArguments, "%s", strings.Join(errs, "; "))
-	}
-	if err := r.checkScope(ctx, scope, doc); err != nil {
-		var ce *CallError
-		if errors.As(err, &ce) {
-			ce.Tool = call.Name
-		}
 		return Result{}, err
 	}
-
 	tier := e.tool.Tier(args)
 	if scope.RequireHITL || tier != domain.Tier1 {
 		// Anything but an explicit Tier 1 waits for a person.
@@ -242,6 +218,65 @@ func (r *Registry) Dispatch(ctx context.Context, scope Scope, call llm.ToolCall)
 		return Result{}, err
 	}
 	return Result{Tier: domain.Tier1, Output: out}, nil
+}
+
+// check runs every rule except the tier: the tool exists and is offered,
+// its arguments satisfy the schema, and every task ID is in scope.
+func (r *Registry) check(ctx context.Context, scope Scope, name, arguments string) (entry, json.RawMessage, error) {
+	r.mu.RLock()
+	e, ok := r.tools[name]
+	r.mu.RUnlock()
+	reject := func(code, format string, a ...any) (entry, json.RawMessage, error) {
+		return entry{}, nil, &CallError{Tool: name, Code: code, Message: fmt.Sprintf(format, a...)}
+	}
+	if !ok {
+		return reject(CodeUnknownTool, "no tool named %q exists", name)
+	}
+	if scope.AllowedTools != nil && !slices.Contains(scope.AllowedTools, name) {
+		return reject(CodeNotAllowed, "this agent may not use %q", name)
+	}
+	args, doc, err := parseArgs(arguments)
+	if err != nil {
+		return reject(CodeInvalidArguments, "arguments are not a JSON object: %v", err)
+	}
+	if errs := e.schema.validate(doc); len(errs) > 0 {
+		return reject(CodeInvalidArguments, "%s", strings.Join(errs, "; "))
+	}
+	if err := r.checkScope(ctx, scope, doc); err != nil {
+		var ce *CallError
+		if errors.As(err, &ce) {
+			ce.Tool = name
+		}
+		return entry{}, nil, err
+	}
+	return e, args, nil
+}
+
+// ApplyProposals runs a job's approved proposals, in order, as the agent.
+// Each is checked again against its schema and the job's scope: stored
+// proposals are not trusted. The calls join the caller's transaction, so
+// either all of them apply or none does. Each expects the version the
+// previous one produced, starting from the job's base version.
+func (r *Registry) ApplyProposals(ctx context.Context, job *domain.AgentJob) error {
+	var proposals []Proposal
+	if err := json.Unmarshal(job.ProposedActions, &proposals); err != nil {
+		return fmt.Errorf("tools: job %s: proposed_actions: %w", job.ID, err)
+	}
+	scope := NewScope(job, domain.AgentSettings{}, nil)
+	for i, p := range proposals {
+		e, args, err := r.check(ctx, scope, p.Tool, string(p.Arguments))
+		if err != nil {
+			return fmt.Errorf("proposal %d: %w", i+1, err)
+		}
+		out, err := e.tool.Execute(ctx, scope, args)
+		if err != nil {
+			return fmt.Errorf("proposal %d (%s): %w", i+1, p.Tool, err)
+		}
+		if v, ok := out.(VersionedOutput); ok && scope.TaskID != nil {
+			scope.BaseVersion = v.TaskVersion()
+		}
+	}
+	return nil
 }
 
 // parseArgs returns the arguments compacted and decoded. Empty arguments
