@@ -35,6 +35,7 @@ archives:
     # The server does not migrate its own database; operators apply these.
     files:
       - README.md
+      - LICENSE
       - migrations/*.sql
 
 checksum:

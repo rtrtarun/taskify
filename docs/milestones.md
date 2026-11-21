@@ -1,12 +1,19 @@
 # Taskify Milestones
 
-Companion documents: [features.md](features.md) (what and why) and [architecture.md](architecture.md) (how). Feature IDs (F1 to F8, A1 to A5) refer to [features.md](features.md). `AG-` IDs refer to the backlog in [agentic.md](agentic.md). `T` IDs refer to the phases in [initial.md](initial.md).
+Companion documents: [features.md](features.md) (what and why) and [architecture.md](architecture.md) (how). Feature IDs (F1 to F8, A1 to A5) refer to [features.md](features.md). `AG-` IDs refer to the backlog in [agentic.md](archive/agentic.md). `T` IDs refer to the phases in [initial.md](archive/initial.md).
 
 Each milestone is broken into individual tasks, with a delegation level and acceptance tests, in [implementation/README.md](implementation/README.md).
 
-## Starting point
+## Status (2026-11-21)
 
-The repository contains a `main.go` that prints a greeting, an uncompilable router stub in `internal/router/routes.go`, and a `go.mod` with module path `taskify`. There is no database, no handlers, and no tests. Every milestone below is new work.
+| Milestones | State |
+| --- | --- |
+| M0 to M4 (**R1**) | Done and released as v0.1.0 to v0.3.0, except M0-07, which waits on AgentPulse access (owner action O1) |
+| M5 to M7 | Done and released: M5 in v0.4.0, M6 and M7 in v0.5.0 |
+| M8 to M11 | Not started |
+| M12 to M15 (**R3**) | Not started |
+
+Task-level progress and every departure from the plan are in [implementation/README.md](implementation/README.md). The work began from a `main.go` that printed a greeting and an uncompilable router stub.
 
 ## Overview
 
@@ -31,7 +38,7 @@ Three releases. **R1** makes Taskify an attention-aware task service (M0 to M4).
 | M14 | Web frontend (**R3 complete**) | C4 | new | 10 to 14 days | M12; approvals screens need M6 |
 | M15 | Python client SDK | C2 | new | 2 days | M12 |
 
-Total: roughly 29 to 36 working days for R1 and R2, plus 18 to 24 for R3, for one engineer. The `AG-` estimates are from [agentic.md](agentic.md). The M0 to M4 and M12 to M15 estimates are mine and have not been validated against real velocity; the frontend figure is the least certain.
+Total: roughly 29 to 36 working days for R1 and R2, plus 18 to 24 for R3, for one engineer. The `AG-` estimates are from [agentic.md](archive/agentic.md). The M0 to M4 and M12 to M15 estimates are mine and have not been validated against real velocity; the frontend figure is the least certain.
 
 There is no second server. An earlier draft planned a full Python implementation (two milestones, 12 to 16 days); it was replaced by the SDK on 2026-11-11.
 
@@ -57,7 +64,7 @@ flowchart LR
 
 The dotted line means a partial dependency: the frontend can start after M12, but its approvals and agent-activity screens need the HITL bridge.
 
-One ordering change from the source backlog: the HITL bridge (AG-106, listed as P1) is scheduled before the triage agent (AG-103, listed as P0). Triage recommends priority changes, and [agentic.md](agentic.md) classes priority changes as approval-required, so triage cannot be finished without the approval flow.
+One ordering change from the source backlog: the HITL bridge (AG-106, listed as P1) is scheduled before the triage agent (AG-103, listed as P0). Triage recommends priority changes, and [agentic.md](archive/agentic.md) classes priority changes as approval-required, so triage cannot be finished without the approval flow.
 
 M7, M8, and M9 are independent of each other and can run in parallel if more than one person is available.
 
