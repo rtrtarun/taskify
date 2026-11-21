@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -538,6 +539,65 @@ func TestTaskEstimateAndAgentMetadata(t *testing.T) {
 		again.AgentMetadata.Runs[0].Changes["labels"] = "mutated"
 		if fresh, _ := b.Tasks.Get(ctx, tenant, task.ID); fresh.AgentMetadata.Runs[0].Changes["labels"] == "mutated" {
 			t.Error("the store shares agent metadata with callers")
+		}
+	})
+}
+
+func TestTriageQueries(t *testing.T) {
+	each(t, func(t *testing.T, b Backend) {
+		seedWorkspace(t, b, tenant)
+		other, _ := domain.NewWorkspace(tenant, "ws_other", "Other", t0)
+		if err := b.Workspaces.Create(ctx, other); err != nil {
+			t.Fatal(err)
+		}
+		mk := func(title, workspace string, labels []string, status domain.Status) *domain.Task {
+			t.Helper()
+			task := newTask(t, tenant, func(in *domain.NewTaskInput) { in.Title, in.WorkspaceID, in.Labels = title, workspace, labels })
+			create(t, b, task)
+			if status != domain.StatusTodo {
+				if _, err := task.TransitionTo(status, alice, t0); err != nil {
+					t.Fatal(err)
+				}
+				if err := b.Tasks.Update(ctx, task, task.Version-1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return task
+		}
+		target := mk("Checkout page crashes on empty cart", ws, []string{"bug"}, domain.StatusTodo)
+		strong := mk("Checkout crashes when the cart is empty", ws, []string{"bug", "checkout"}, domain.StatusInProgress)
+		weak := mk("Cart icon misaligned", ws, []string{"ui", "bug"}, domain.StatusTodo)
+		mk("Update the logo", ws, []string{"ui"}, domain.StatusTodo)
+		mk("Checkout crashes on empty cart, fixed", ws, nil, domain.StatusCompleted)               // closed
+		mk("Checkout crashes on empty cart", "ws_other", []string{"elsewhere"}, domain.StatusTodo) // other workspace
+
+		got, err := b.Tasks.SimilarOpen(ctx, tenant, ws, target.ID, target.Title, 5)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []uuid.UUID
+		for _, s := range got {
+			ids = append(ids, s.ID)
+		}
+		if len(ids) != 2 || ids[0] != strong.ID || ids[1] != weak.ID {
+			t.Errorf("similar = %v, want [strong %s, weak %s]", ids, strong.ID, weak.ID)
+		}
+		if one, _ := b.Tasks.SimilarOpen(ctx, tenant, ws, target.ID, target.Title, 1); len(one) != 1 || one[0].ID != strong.ID {
+			t.Errorf("limit 1 = %v", one)
+		}
+		if none, err := b.Tasks.SimilarOpen(ctx, tenant, ws, target.ID, "a of", 5); err != nil || len(none) != 0 {
+			t.Errorf("no terms = %v, %v", none, err)
+		}
+		if none, _ := b.Tasks.SimilarOpen(ctx, "tenant_other", ws, uuid.Nil, target.Title, 5); len(none) != 0 {
+			t.Errorf("another tenant sees %d tasks", len(none))
+		}
+
+		labels, err := b.Tasks.WorkspaceLabels(ctx, tenant, ws, 10)
+		if err != nil || !slices.Equal(labels, []string{"bug", "ui", "checkout"}) {
+			t.Errorf("labels = %v, %v", labels, err)
+		}
+		if two, _ := b.Tasks.WorkspaceLabels(ctx, tenant, ws, 2); !slices.Equal(two, []string{"bug", "ui"}) {
+			t.Errorf("labels limit 2 = %v", two)
 		}
 	})
 }

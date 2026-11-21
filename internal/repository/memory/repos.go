@@ -599,3 +599,70 @@ func (r *OutboxRepo) CountByStatus(ctx context.Context, status domain.OutboxStat
 	})
 	return n, err
 }
+
+func (r *TaskRepo) WorkspaceLabels(ctx context.Context, tenantID, workspaceID string, limit int) ([]string, error) {
+	counts := map[string]int{}
+	err := r.st.do(ctx, func(s *state) error {
+		for _, t := range s.tasks {
+			if t.TenantID == tenantID && t.WorkspaceID == workspaceID {
+				for _, l := range t.Labels {
+					counts[l]++
+				}
+			}
+		}
+		return nil
+	})
+	out := make([]string, 0, len(counts))
+	for l := range counts {
+		out = append(out, l)
+	}
+	slices.SortFunc(out, func(a, b string) int {
+		if counts[a] != counts[b] {
+			return counts[b] - counts[a]
+		}
+		return strings.Compare(a, b)
+	})
+	return out[:min(limit, len(out))], err
+}
+
+// SimilarOpen scores by shared search terms. PostgreSQL also stems words,
+// so it can match more; the order of clear matches is the same.
+func (r *TaskRepo) SimilarOpen(ctx context.Context, tenantID, workspaceID string, exclude uuid.UUID, text string, limit int) ([]*domain.Task, error) {
+	want := domain.SearchTerms(text)
+	type scored struct {
+		t     *domain.Task
+		score int
+	}
+	var hits []scored
+	err := r.st.do(ctx, func(s *state) error {
+		for _, t := range s.tasks {
+			if t.TenantID != tenantID || t.WorkspaceID != workspaceID || t.ID == exclude || !t.IsOpen() {
+				continue
+			}
+			n := 0
+			for _, w := range domain.SearchTerms(t.Title) {
+				if slices.Contains(want, w) {
+					n++
+				}
+			}
+			if n > 0 {
+				hits = append(hits, scored{copyTask(t), n})
+			}
+		}
+		return nil
+	})
+	slices.SortFunc(hits, func(a, b scored) int {
+		if a.score != b.score {
+			return b.score - a.score
+		}
+		if c := b.t.UpdatedAt.Compare(a.t.UpdatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(a.t.ID.String(), b.t.ID.String())
+	})
+	out := []*domain.Task{}
+	for _, h := range hits[:min(limit, len(hits))] {
+		out = append(out, h.t)
+	}
+	return out, err
+}

@@ -382,3 +382,38 @@ func reasonPtr(r *domain.BlockedReason) *string {
 	v := string(*r)
 	return &v
 }
+
+func (r *TaskRepo) WorkspaceLabels(ctx context.Context, tenantID, workspaceID string, limit int) ([]string, error) {
+	rows, err := r.db.q(ctx).Query(ctx, `
+		SELECT l FROM tasks, unnest(labels) AS l
+		WHERE tenant_id = $1 AND workspace_id = $2
+		GROUP BY l ORDER BY count(*) DESC, l LIMIT $3`, tenantID, workspaceID, limit)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if out == nil {
+		out = []string{}
+	}
+	return out, mapErr(err)
+}
+
+// SimilarOpen ranks titles with English full-text search: any shared word
+// (after stemming) is a match. The query is built from domain.SearchTerms,
+// plain letters and digits, so it needs no escaping.
+func (r *TaskRepo) SimilarOpen(ctx context.Context, tenantID, workspaceID string, exclude uuid.UUID, text string, limit int) ([]*domain.Task, error) {
+	terms := domain.SearchTerms(text)
+	if len(terms) == 0 {
+		return []*domain.Task{}, nil
+	}
+	tasks, err := r.query(ctx, `
+		SELECT `+taskColumns+` FROM tasks, to_tsquery('english', $4) AS q
+		WHERE tenant_id = $1 AND workspace_id = $2 AND id <> $3 AND `+openTasks+`
+		  AND to_tsvector('english', title) @@ q
+		ORDER BY ts_rank(to_tsvector('english', title), q) DESC, updated_at DESC, id
+		LIMIT $5`, tenantID, workspaceID, exclude, strings.Join(terms, " | "), limit)
+	if tasks == nil {
+		tasks = []*domain.Task{}
+	}
+	return tasks, err
+}

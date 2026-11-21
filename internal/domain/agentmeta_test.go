@@ -3,6 +3,7 @@ package domain
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -86,5 +87,25 @@ func TestRecommendationIsThePriorityHint(t *testing.T) {
 	task.BlockedReason = &reason
 	if got := hint(EventTaskBlocked); got != "high" {
 		t.Errorf("manual block with a medium recommendation = %s", got)
+	}
+}
+
+func TestSearchTerms(t *testing.T) {
+	got := SearchTerms("Checkout page CRASHES when the cart is empty -- checkout (again)! a1b2 ü-mlaut x'; DROP TABLE tasks;--")
+	want := []string{"checkout", "page", "crashes", "cart", "empty", "again", "a1b2", "mlaut", "drop", "table", "tasks"}
+	if len(got) != len(want) {
+		t.Fatalf("terms = %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("terms = %v, want %v", got, want)
+			break
+		}
+	}
+	if len(SearchTerms(strings.Repeat("word ", 3)+"alpha beta gamma delta epsilon zeta theta iota kappa lambda omicron sigma tau")) != maxSearchTerms {
+		t.Error("terms are not capped")
+	}
+	if SearchTerms("a an to of") != nil {
+		t.Error("short words kept")
 	}
 }

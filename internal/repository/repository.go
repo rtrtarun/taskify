@@ -79,6 +79,14 @@ type TaskRepository interface {
 	// not an edit and must not cause a client's next save to conflict.
 	MarkDueSoonNotified(ctx context.Context, tenantID string, id uuid.UUID, at time.Time) error
 	MarkOverdueNotified(ctx context.Context, tenantID string, id uuid.UUID, at time.Time) error
+
+	// WorkspaceLabels returns up to limit labels used in the workspace, most
+	// used first, ties by name.
+	WorkspaceLabels(ctx context.Context, tenantID, workspaceID string, limit int) ([]string, error)
+	// SimilarOpen returns up to limit open tasks in the workspace whose
+	// titles share words with text, best match first, never the task
+	// exclude (default G18).
+	SimilarOpen(ctx context.Context, tenantID, workspaceID string, exclude uuid.UUID, text string, limit int) ([]*domain.Task, error)
 }
 
 // WorkspaceRepository stores workspaces.
