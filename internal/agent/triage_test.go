@@ -12,6 +12,7 @@ import (
 	"github.com/rtrtarun/taskify/internal/agent/tools"
 	"github.com/rtrtarun/taskify/internal/domain"
 	"github.com/rtrtarun/taskify/internal/repository/repotest"
+	"github.com/rtrtarun/taskify/internal/service"
 )
 
 // triageRuntime runs the real triage agent with its two real tools.
@@ -240,6 +241,47 @@ func TestTriageDoesNotOverwriteAPersonsEdit(t *testing.T) {
 		stored, _ := b.Tasks.Get(ctx, "tenant_acme", task.ID)
 		if stored.Description != human || !slices.Equal(stored.Labels, []string{"chore"}) || *stored.EstimatedMinutes != 30 {
 			t.Errorf("task = %+v", stored)
+		}
+	})
+}
+
+func TestRejectedRecommendationNoLongerSetsTheHint(t *testing.T) {
+	each(t, func(t *testing.T, b repotest.Backend) {
+		f := newFixture(t, b, false)
+		task, job := f.task(t, "Payments are down for every customer")
+		f.mock.Then(llm.Call("c1", tools.UpdateTaskAttributesName, update(task.ID, map[string]any{
+			"priority": "p1_critical", "reasoning": "Every customer is affected."})), llm.Text("Proposed."))
+		if _, err := f.triageRuntime(t, nil).RunOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.job(t, job.ID); got.Status != domain.JobAwaitingApproval {
+			t.Fatalf("job = %s", got.Status)
+		}
+
+		// The creator rejects the proposal.
+		jobs := service.NewAgentJobService(b.Tx, b.AgentJobs, b.Tasks, f.reg, nil, f.clock.now)
+		if _, dismissed, err := jobs.Dismiss(ctx, "tenant_acme", job.ID, service.Decider{UserID: alice.ID}); err != nil || !dismissed {
+			t.Fatalf("Dismiss = %v, %v", dismissed, err)
+		}
+		stored, _ := b.Tasks.Get(ctx, "tenant_acme", task.ID)
+		if stored.AgentMetadata.PriorityRecommendation != nil || stored.Version != 1 {
+			t.Errorf("after rejection: recommendation %+v, v%d", stored.AgentMetadata.PriorityRecommendation, stored.Version)
+		}
+		if rej := stored.AgentMetadata.RejectedRecommendations; len(rej) != 1 || rej[0].Value != domain.PriorityCritical ||
+			rej[0].JobID != job.ID || rej[0].RejectedBy != alice.ID {
+			t.Errorf("audit = %+v", rej)
+		}
+
+		// The next notification uses the task's own priority again.
+		bob := "usr_bob"
+		if _, err := f.svc.UpdateTask(ctx, alice, "tenant_acme", task.ID, 1, domain.Patch{AssigneeID: &bob}); err != nil {
+			t.Fatal(err)
+		}
+		entries, _ := b.Outbox.ListForAggregate(ctx, task.ID)
+		var last domain.Notification
+		_ = json.Unmarshal(entries[len(entries)-1].Payload, &last)
+		if last.EventType != domain.EventTaskAssigned || last.PriorityHint != stored.Priority.Hint() || last.PriorityHint == "critical" {
+			t.Errorf("notification after rejection = %s with hint %s, want %s", last.EventType, last.PriorityHint, stored.Priority.Hint())
 		}
 	})
 }

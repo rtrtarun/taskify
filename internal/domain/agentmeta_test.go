@@ -3,6 +3,7 @@ package domain
 import (
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -107,5 +108,54 @@ func TestSearchTerms(t *testing.T) {
 	}
 	if SearchTerms("a an to of") != nil {
 		t.Error("short words kept")
+	}
+}
+
+func TestRejectPriorityRecommendation(t *testing.T) {
+	task := newTaskT(t, "T", "usr_bob", PriorityLow)
+	job, other := uuid.New(), uuid.New()
+	_ = task.RecommendPriority(PriorityRecommendation{Value: PriorityCritical, JobID: job, Reasoning: "outage", At: t0})
+
+	// Rejecting another job's proposal leaves this recommendation alone.
+	if task.RejectPriorityRecommendation(other, "usr_bob", t0) || task.AgentMetadata.PriorityRecommendation == nil {
+		t.Fatal("another job's rejection cleared the recommendation")
+	}
+	if !task.RejectPriorityRecommendation(job, "usr_bob", t0) {
+		t.Fatal("rejection reported no change")
+	}
+	m := task.AgentMetadata
+	if m.PriorityRecommendation != nil || len(m.RejectedRecommendations) != 1 {
+		t.Fatalf("metadata = %+v", m)
+	}
+	r := m.RejectedRecommendations[0]
+	if r.Value != PriorityCritical || r.JobID != job || r.Reasoning != "outage" || r.RejectedBy != "usr_bob" || !r.RejectedAt.Equal(t0) {
+		t.Errorf("rejected = %+v", r)
+	}
+	if got := task.event(EventTaskUpdated, alice, t0).priorityHint(); got != "low" {
+		t.Errorf("hint after rejection = %s, want the task's own", got)
+	}
+	if task.RejectPriorityRecommendation(job, "usr_bob", t0) {
+		t.Error("a second rejection changed something")
+	}
+
+	// Stored and capped.
+	for i := range MaxAgentRuns + 2 {
+		id := uuid.New()
+		_ = task.RecommendPriority(PriorityRecommendation{Value: PriorityHigh, JobID: id, At: t0})
+		task.RejectPriorityRecommendation(id, "usr_"+strconv.Itoa(i), t0)
+	}
+	if n := len(task.AgentMetadata.RejectedRecommendations); n != MaxAgentRuns {
+		t.Errorf("kept %d rejections", n)
+	}
+	raw, _ := json.Marshal(task.AgentMetadata)
+	back, err := ParseAgentMetadata(raw)
+	if err != nil || len(back.RejectedRecommendations) != MaxAgentRuns || back.RejectedRecommendations[0].RejectedBy == "" ||
+		!strings.Contains(string(raw), `"rejected_priority_recommendations"`) {
+		t.Errorf("round trip = %+v, %v", back, err)
+	}
+	c := task.AgentMetadata.Clone()
+	c.RejectedRecommendations[0].RejectedBy = "changed"
+	if task.AgentMetadata.RejectedRecommendations[0].RejectedBy == "changed" {
+		t.Error("clone shares rejections")
 	}
 }

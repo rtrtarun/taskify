@@ -153,6 +153,11 @@ func (s *AgentJobService) decide(ctx context.Context, tenantID string, id uuid.U
 			if err := s.jobs.Update(ctx, job, domain.JobAwaitingApproval, prev); err != nil {
 				return err
 			}
+			if task != nil {
+				if err := s.rejectRecommendation(ctx, job, d.UserID, now); err != nil {
+					return err
+				}
+			}
 			changed = true
 			s.metrics.AgentProposals(job.AgentType, observability.DecisionRejected, n)
 			return nil
@@ -184,6 +189,20 @@ func (s *AgentJobService) decide(ctx context.Context, tenantID string, id uuid.U
 		return nil, false, false, err
 	}
 	return job, changed, stale, nil
+}
+
+// rejectRecommendation stops a dismissed job's priority recommendation from
+// steering the task's notifications, keeping it for audit (G25). The
+// task's version does not move: nothing a person edits has changed.
+func (s *AgentJobService) rejectRecommendation(ctx context.Context, job *domain.AgentJob, by string, now time.Time) error {
+	task, err := s.tasks.GetForUpdate(ctx, job.TenantID, *job.TaskID)
+	if err != nil {
+		return err
+	}
+	if !task.RejectPriorityRecommendation(job.ID, by, now) {
+		return nil
+	}
+	return s.tasks.Update(ctx, task, task.Version)
 }
 
 // lockForDecision locks the job and checks that d may decide on it.

@@ -18,8 +18,19 @@ type AgentMetadata struct {
 	// Runs lists the Tier 1 changes agents made, oldest first.
 	Runs []AgentRunRecord `json:"runs,omitempty"`
 	// PriorityRecommendation is an agent's suggested priority, proposed for
-	// approval. Notifications use it as their priority hint.
+	// approval. Notifications use it as their priority hint until a person
+	// rejects it.
 	PriorityRecommendation *PriorityRecommendation `json:"priority_recommendation,omitempty"`
+	// RejectedRecommendations keeps rejected recommendations for audit,
+	// oldest first, the last MaxAgentRuns of them.
+	RejectedRecommendations []RejectedRecommendation `json:"rejected_priority_recommendations,omitempty"`
+}
+
+// RejectedRecommendation is a priority recommendation a person rejected.
+type RejectedRecommendation struct {
+	PriorityRecommendation
+	RejectedBy string    `json:"rejected_by"`
+	RejectedAt time.Time `json:"rejected_at"`
 }
 
 // AgentRunRecord is one agent change and its reason.
@@ -65,6 +76,7 @@ func (m AgentMetadata) Clone() AgentMetadata {
 		rec := *m.PriorityRecommendation
 		c.PriorityRecommendation = &rec
 	}
+	c.RejectedRecommendations = slices.Clone(m.RejectedRecommendations)
 	return c
 }
 
@@ -87,4 +99,23 @@ func (t *Task) RecommendPriority(rec PriorityRecommendation) error {
 	rec.At = rec.At.UTC()
 	t.AgentMetadata.PriorityRecommendation = &rec
 	return nil
+}
+
+// RejectPriorityRecommendation clears the active recommendation if it came
+// from jobID, so later notifications fall back to the task's own priority,
+// and keeps it among the rejected ones for audit (G25). A recommendation
+// from another job is left alone. It reports whether anything changed. Like
+// RecommendPriority, it does not move the task's version.
+func (t *Task) RejectPriorityRecommendation(jobID uuid.UUID, by string, at time.Time) bool {
+	rec := t.AgentMetadata.PriorityRecommendation
+	if rec == nil || rec.JobID != jobID {
+		return false
+	}
+	t.AgentMetadata.RejectedRecommendations = append(t.AgentMetadata.RejectedRecommendations,
+		RejectedRecommendation{PriorityRecommendation: *rec, RejectedBy: by, RejectedAt: at.UTC()})
+	if n := len(t.AgentMetadata.RejectedRecommendations); n > MaxAgentRuns {
+		t.AgentMetadata.RejectedRecommendations = slices.Clone(t.AgentMetadata.RejectedRecommendations[n-MaxAgentRuns:])
+	}
+	t.AgentMetadata.PriorityRecommendation = nil
+	return true
 }
