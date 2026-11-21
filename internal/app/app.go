@@ -122,7 +122,7 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 		return nil, err
 	}
 
-	runtime, err := newAgentRuntime(cfg, db, tasks, logger, metrics)
+	runtime, err := newAgentRuntime(cfg, db, tasks, logger, metrics, relay.Wake)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +148,7 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 // newAgentRuntime builds the agent runtime, or returns nil when
 // AGENTS_ENABLED is false: then no job is ever claimed.
 func newAgentRuntime(cfg config.Config, db *postgres.DB, tasks *postgres.TaskRepo, logger *slog.Logger,
-	metrics *observability.Metrics) (*agent.Runtime, error) {
+	metrics *observability.Metrics, wake func()) (*agent.Runtime, error) {
 	if !cfg.AgentsEnabled {
 		return nil, nil
 	}
@@ -161,6 +161,8 @@ func newAgentRuntime(cfg config.Config, db *postgres.DB, tasks *postgres.TaskRep
 	// Agents and their tools are registered here as they are built (M7 on).
 	// Until then the runtime claims nothing and only recovers stuck jobs.
 	return agent.New(agent.Deps{
+		Tx:         db,
+		Outbox:     postgres.NewOutboxRepo(db),
 		Jobs:       postgres.NewAgentJobRepo(db),
 		Tasks:      tasks,
 		Workspaces: postgres.NewWorkspaceRepo(db),
@@ -172,6 +174,10 @@ func newAgentRuntime(cfg config.Config, db *postgres.DB, tasks *postgres.TaskRep
 		MaxAttempts: cfg.AgentMaxAttempts,
 		Logger:      logger,
 		Metrics:     metrics,
+
+		PublicBaseURL:     cfg.PublicBaseURL,
+		OutboxMaxAttempts: cfg.OutboxMaxAttempts,
+		Wake:              wake,
 	})
 }
 

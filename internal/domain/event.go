@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -48,6 +49,8 @@ type Event struct {
 	// Blocker is set for dependency events and system-applied blocks: the
 	// task whose change caused this one.
 	Blocker *BlockerRef
+	// Job is set for agent.approval_requested.
+	Job *JobRef
 }
 
 func (t *Task) event(eventType string, actor Actor, at time.Time) Event {
@@ -79,6 +82,12 @@ func (e Event) Recipients() []string {
 		candidates = append([]string{t.AssigneeID}, t.Watchers...)
 	case EventTaskCompleted:
 		candidates = append([]string{t.CreatorID}, t.Watchers...)
+	case EventAgentApprovalRequested:
+		// Someone must decide: the assignee, or the creator when unassigned.
+		candidates = []string{t.AssigneeID}
+		if t.AssigneeID == "" {
+			candidates = []string{t.CreatorID}
+		}
 	case EventTaskCommentAdded:
 		candidates = append([]string{t.AssigneeID}, t.Watchers...)
 		if e.Comment != nil {
@@ -134,6 +143,13 @@ func (e Event) IdempotencyKey(recipient string) string {
 			blocker, version = e.Blocker.ID.String(), e.Blocker.Version
 		}
 		key = fmt.Sprintf("%s:%s:%s:v%d", base, e.Type, blocker, version)
+	case EventAgentApprovalRequested:
+		// A job asks for approval at most once.
+		job := ""
+		if e.Job != nil {
+			job = e.Job.ID.String()
+		}
+		key = fmt.Sprintf("%s:%s:%s", base, e.Type, job)
 	default:
 		key = fmt.Sprintf("%s:%s:v%d", base, e.Type, e.Task.Version)
 	}
@@ -254,6 +270,17 @@ func (e Event) payload(publicBaseURL string) map[string]any {
 		p["blockerTaskId"] = e.Blocker.ID.String()
 		p["blockerStatus"] = string(e.Blocker.Status)
 	}
+	if j := e.Job; j != nil {
+		jobURL := fmt.Sprintf("%s/api/v1/agent-jobs/%s", publicBaseURL, j.ID)
+		p["jobId"] = j.ID.String()
+		p["agentType"] = j.AgentType
+		p["proposedTools"] = append([]string{}, j.Tools...)
+		p["actionUrls"] = map[string]string{
+			"approve": jobURL + "/apply",
+			"reject":  jobURL + "/dismiss",
+			"view":    jobURL,
+		}
+	}
 	if e.bypassDigest() {
 		p["bypassDigest"] = true
 	}
@@ -295,6 +322,8 @@ func (e Event) title(mentioned bool) string {
 		return "New dependency: " + t
 	case EventTaskDependencyReopened:
 		return "Dependency reopened: " + t
+	case EventAgentApprovalRequested:
+		return "Approval needed: " + t
 	}
 	return t
 }
@@ -324,6 +353,11 @@ func (e Event) body() string {
 		if e.Comment != nil {
 			return fmt.Sprintf("%s commented: %s", by, truncate(e.Comment.Body, 280))
 		}
+	case EventAgentApprovalRequested:
+		if j := e.Job; j != nil {
+			return fmt.Sprintf("The %s agent proposes %s to %s: %s. Nothing changes until you approve. %s",
+				j.AgentType, plural(len(j.Tools), "change"), ref, strings.Join(j.Tools, ", "), prio)
+		}
 	}
 	if b := e.Blocker; b != nil {
 		blocker := fmt.Sprintf("%q (#%s)", truncate(b.Title, 80), b.ID.String()[:8])
@@ -342,6 +376,13 @@ func (e Event) body() string {
 		}
 	}
 	return ref
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return strconv.Itoa(n) + " " + noun + "s"
 }
 
 func formatDue(t *time.Time) string {

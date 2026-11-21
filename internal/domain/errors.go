@@ -19,6 +19,8 @@ var (
 	ErrValidation = errors.New("validation failed")
 	// ErrAlreadyExists means a row with the same identity exists.
 	ErrAlreadyExists = errors.New("already exists")
+	// ErrForbidden means the caller is known but may not take this action.
+	ErrForbidden = errors.New("forbidden")
 )
 
 func invalid(format string, args ...any) error {

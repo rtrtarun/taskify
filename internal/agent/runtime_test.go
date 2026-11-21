@@ -114,7 +114,7 @@ func (f *fixture) runtime(t *testing.T, cfg Config) *Runtime {
 		cfg.Now = f.clock.now
 	}
 	cfg.Logger = quiet
-	r, err := New(Deps{Jobs: f.b.AgentJobs, Tasks: f.b.Tasks, Workspaces: f.b.Workspaces, LLM: f.mock, Tools: f.reg}, cfg, f.agent)
+	r, err := New(Deps{Tx: f.b.Tx, Outbox: f.b.Outbox, Jobs: f.b.AgentJobs, Tasks: f.b.Tasks, Workspaces: f.b.Workspaces, LLM: f.mock, Tools: f.reg}, cfg, f.agent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +483,7 @@ func TestTwoRuntimesNeverRunTheSameJob(t *testing.T) {
 		}
 		var runtimes []*Runtime
 		for range 2 {
-			r, err := New(Deps{Jobs: b.AgentJobs, Tasks: b.Tasks, Workspaces: b.Workspaces, LLM: slowLLM{f.mock}, Tools: f.reg},
+			r, err := New(Deps{Tx: b.Tx, Outbox: b.Outbox, Jobs: b.AgentJobs, Tasks: b.Tasks, Workspaces: b.Workspaces, LLM: slowLLM{f.mock}, Tools: f.reg},
 				Config{Workers: 3, PollInterval: 2 * time.Millisecond, Logger: quiet}, f.agent)
 			if err != nil {
 				t.Fatal(err)
@@ -530,7 +530,7 @@ func TestTwoRuntimesNeverRunTheSameJob(t *testing.T) {
 
 func TestNewValidatesAgents(t *testing.T) {
 	f := newFixture(t, repotest.Memory(), false)
-	deps := Deps{Jobs: f.b.AgentJobs, Tasks: f.b.Tasks, Workspaces: f.b.Workspaces, LLM: f.mock, Tools: f.reg}
+	deps := Deps{Tx: f.b.Tx, Outbox: f.b.Outbox, Jobs: f.b.AgentJobs, Tasks: f.b.Tasks, Workspaces: f.b.Workspaces, LLM: f.mock, Tools: f.reg}
 	if _, err := New(deps, Config{}, f.agent, f.agent); err == nil {
 		t.Error("duplicate agent accepted")
 	}
@@ -641,7 +641,7 @@ func TestReferenceAgentEndToEnd(t *testing.T) {
 			Message:      llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "c1", Name: "Describe", Arguments: `{"task_id":"` + task.ID.String() + `","description":"Written by the agent"}`}}},
 			FinishReason: "tool_calls", Usage: llm.Usage{PromptTokens: 100, CompletionTokens: 20}, Model: "mock"}),
 			llm.Reply(llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: "Done."}, Usage: llm.Usage{PromptTokens: 150, CompletionTokens: 5}}))
-		rt, err := New(Deps{Jobs: b.AgentJobs, Tasks: b.Tasks, Workspaces: b.Workspaces, LLM: f.mock, Tools: f.reg},
+		rt, err := New(Deps{Tx: b.Tx, Outbox: b.Outbox, Jobs: b.AgentJobs, Tasks: b.Tasks, Workspaces: b.Workspaces, LLM: f.mock, Tools: f.reg},
 			Config{Logger: quiet, Now: f.clock.now, Metrics: metrics}, ref)
 		if err != nil {
 			t.Fatal(err)
@@ -682,7 +682,7 @@ func TestProposalsAreCounted(t *testing.T) {
 	task, _ := f.task(t, "T")
 	metrics := observability.NewMetrics(nil)
 	f.mock.Then(llm.Call("c1", "Describe", describe(task.ID, "a")), llm.Call("c2", "Describe", describe(task.ID, "b")), llm.Text("ok"))
-	rt, err := New(Deps{Jobs: f.b.AgentJobs, Tasks: f.b.Tasks, Workspaces: f.b.Workspaces, LLM: f.mock, Tools: f.reg},
+	rt, err := New(Deps{Tx: f.b.Tx, Outbox: f.b.Outbox, Jobs: f.b.AgentJobs, Tasks: f.b.Tasks, Workspaces: f.b.Workspaces, LLM: f.mock, Tools: f.reg},
 		Config{Logger: quiet, Now: f.clock.now, Metrics: metrics}, f.agent)
 	if err != nil {
 		t.Fatal(err)
@@ -717,4 +717,53 @@ func scrape(t *testing.T, m *observability.Metrics) string {
 	rec := httptest.NewRecorder()
 	m.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
 	return rec.Body.String()
+}
+
+func TestProposalRequestsApprovalOnce(t *testing.T) {
+	each(t, func(t *testing.T, b repotest.Backend) {
+		f := newFixture(t, b, true)
+		task, job := f.task(t, "Needs a description") // unassigned: the creator decides
+		f.mock.Then(llm.Call("c1", "Describe", describe(task.ID, "proposed")), llm.Text("Proposed."))
+		if _, err := f.runtime(t, Config{PublicBaseURL: "https://taskify.test"}).RunOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.job(t, job.ID); got.Status != domain.JobAwaitingApproval {
+			t.Fatalf("job = %s", got.Status)
+		}
+		if stored, _ := b.Tasks.Get(ctx, "tenant_acme", task.ID); stored.Version != 1 || stored.Description != "" {
+			t.Errorf("a proposal changed the task: %+v", stored)
+		}
+		entries, err := b.Outbox.ListForAggregate(ctx, task.ID)
+		if err != nil || len(entries) != 1 {
+			t.Fatalf("outbox = %+v, %v", entries, err)
+		}
+		e := entries[0]
+		var n domain.Notification
+		if err := json.Unmarshal(e.Payload, &n); err != nil {
+			t.Fatal(err)
+		}
+		if e.EventType != domain.EventAgentApprovalRequested || n.UserID != alice.ID ||
+			n.Payload["jobId"] != job.ID.String() || !strings.HasSuffix(n.IdempotencyKey, job.ID.String()) {
+			t.Errorf("approval notification = %s %+v", e.EventType, n)
+		}
+		urls, _ := n.Payload["actionUrls"].(map[string]any)
+		if urls["approve"] != "https://taskify.test/api/v1/agent-jobs/"+job.ID.String()+"/apply" {
+			t.Errorf("actionUrls = %v", urls)
+		}
+
+		// A run that completes without proposals asks nobody.
+		f2 := newFixture(t, repotest.Memory(), false)
+		task2, _ := f2.task(t, "T")
+		f2.mock.Then(llm.Call("c1", "Describe", describe(task2.ID, "done")), llm.Text("ok"))
+		if _, err := f2.runtime(t, Config{}).RunOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if entries, _ := f2.b.Outbox.ListForAggregate(ctx, task2.ID); len(entries) != 0 {
+			for _, e := range entries {
+				if e.EventType == domain.EventAgentApprovalRequested {
+					t.Errorf("approval requested for a completed job")
+				}
+			}
+		}
+	})
 }
