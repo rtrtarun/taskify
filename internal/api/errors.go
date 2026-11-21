@@ -32,6 +32,7 @@ const (
 	CodeUpstreamError       = "upstream_error"
 	CodeUpstreamUnavailable = "upstream_unavailable"
 	CodeInternal            = "internal_error"
+	CodeAgentDisabled       = "agent_disabled"
 )
 
 // httpError is an error a handler raises with a specific status and code.
@@ -94,6 +95,8 @@ func classify(err error) *httpError {
 		return newError(http.StatusConflict, CodeAlreadyDecided, err.Error())
 	case errors.Is(err, service.ErrNotAwaitingApproval):
 		return newError(http.StatusConflict, CodeNotAwaitingApproval, err.Error())
+	case errors.Is(err, service.ErrAgentDisabled):
+		return newError(http.StatusConflict, CodeAgentDisabled, err.Error())
 	case errors.Is(err, domain.ErrAlreadyExists):
 		return newError(http.StatusConflict, CodeAlreadyExists, err.Error())
 	case errors.Is(err, domain.ErrInvalidStateTransition):

@@ -160,6 +160,19 @@ func EventJobDedupKey(agentType string, taskID uuid.UUID, version int) string {
 	return fmt.Sprintf("%s:%s:v%d", agentType, taskID, version)
 }
 
+// RequestJobDedupKey is the dedup key of a job a person asked for
+// explicitly, such as a decomposition. Every request gets a key of its own;
+// a repeated request is caught by the service, which returns the job still
+// open for the task instead of queueing another.
+func RequestJobDedupKey(agentType string, taskID, requestID uuid.UUID) string {
+	return fmt.Sprintf("%s:%s:request:%s", agentType, taskID, requestID)
+}
+
+// Active reports whether the job may still run or change its task.
+func (s JobStatus) Active() bool {
+	return s == JobPending || s == JobRunning || s == JobAwaitingApproval
+}
+
 // StaleJobDedupKey is the dedup key of a stale-task investigation: at most
 // one per task per calendar day in UTC (default G12).
 func StaleJobDedupKey(agentType string, taskID uuid.UUID, day time.Time) string {

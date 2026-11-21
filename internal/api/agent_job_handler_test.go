@@ -197,3 +197,65 @@ func TestWebhookApproveAndReject(t *testing.T) {
 		t.Errorf("missing jobId: %d %s", r.status, r.raw)
 	}
 }
+
+func TestDecomposeEndpoint(t *testing.T) {
+	e := newEnv(t)
+	taskID := e.createTask(nil)["id"].(string)
+	path := "/api/v1/tasks/" + taskID + "/decompose"
+	settings := func(s map[string]any) {
+		t.Helper()
+		if r := e.do(req{method: "PATCH", path: "/api/v1/workspaces/ws_core/settings", as: "admin",
+			body: map[string]any{"agent_settings": s}}); r.status != 200 {
+			t.Fatalf("settings: %d %s", r.status, r.raw)
+		}
+	}
+
+	// G21: a disabled decomposer is 409 agent_disabled, not 202.
+	if r := e.do(req{method: "POST", path: path}); r.status != 409 || r.errCode() != CodeAgentDisabled {
+		t.Errorf("agents off: %d %s", r.status, r.raw)
+	}
+	settings(map[string]any{"agents_enabled": true, "disabled_agents": []string{"decomposer"}})
+	if r := e.do(req{method: "POST", path: path}); r.status != 409 || r.errCode() != CodeAgentDisabled {
+		t.Errorf("decomposer off: %d %s", r.status, r.raw)
+	}
+
+	settings(map[string]any{"disabled_agents": []string{}})
+	r := e.do(req{method: "POST", path: path})
+	if r.status != 202 || r.json["agent_type"] != "decomposer" || r.json["status"] != "pending" || r.json["task_id"] != taskID {
+		t.Fatalf("decompose: %d %s", r.status, r.raw)
+	}
+	jobID := r.json["id"].(string)
+	if loc := r.header.Get("Location"); loc != "/api/v1/agent-jobs/"+jobID {
+		t.Errorf("Location = %q", loc)
+	}
+	if got := e.do(req{method: "GET", path: "/api/v1/agent-jobs/" + jobID}); got.status != 200 || got.json["status"] != "pending" {
+		t.Errorf("job: %d %s", got.status, got.raw)
+	}
+	// A repeat returns the open job.
+	if again := e.do(req{method: "POST", path: path}); again.status != 202 || again.json["id"] != jobID {
+		t.Errorf("repeat: %d %s", again.status, again.raw)
+	}
+
+	for name, rq := range map[string]req{
+		"unknown":      {method: "POST", path: "/api/v1/tasks/" + uuid.NewString() + "/decompose"},
+		"malformed":    {method: "POST", path: "/api/v1/tasks/nope/decompose"},
+		"other tenant": {method: "POST", path: path, as: "other-tenant"},
+	} {
+		if r := e.do(rq); r.status != 404 || r.errCode() != CodeNotFound {
+			t.Errorf("%s: %d %s", name, r.status, r.raw)
+		}
+	}
+	done := e.createTask(nil)["id"].(string)
+	if r := e.do(req{method: "POST", path: "/api/v1/tasks/" + done + "/complete"}); r.status != 200 {
+		t.Fatalf("complete: %d", r.status)
+	}
+	archived := e.createTask(nil)["id"].(string)
+	if r := e.do(req{method: "DELETE", path: "/api/v1/tasks/" + archived}); r.status != 200 {
+		t.Fatalf("archive: %d", r.status)
+	}
+	for name, id := range map[string]string{"completed": done, "archived": archived} {
+		if r := e.do(req{method: "POST", path: "/api/v1/tasks/" + id + "/decompose"}); r.status != 422 || r.errCode() != CodeValidation {
+			t.Errorf("%s task: %d %s", name, r.status, r.raw)
+		}
+	}
+}
