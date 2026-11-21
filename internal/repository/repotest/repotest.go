@@ -35,6 +35,8 @@ type Backend struct {
 	Outbox     repository.OutboxRepository
 	Rules      repository.WorkspaceRuleRepository
 	Deliveries repository.WebhookDeliveryRepository
+	Deps       repository.DependencyRepository
+	AgentJobs  repository.AgentJobRepository
 	// DB is set for the PostgreSQL backend only.
 	DB *postgres.DB
 }
@@ -64,7 +66,7 @@ func Memory() Backend {
 	return Backend{
 		Name: "memory", Tx: st,
 		Tasks: st.Tasks(), Workspaces: st.Workspaces(), Comments: st.Comments(), Outbox: st.Outbox(),
-		Rules: st.Rules(), Deliveries: st.Deliveries(),
+		Rules: st.Rules(), Deliveries: st.Deliveries(), Deps: st.Dependencies(), AgentJobs: st.AgentJobs(),
 	}
 }
 
@@ -78,6 +80,7 @@ func Postgres(t testing.TB) Backend {
 		Tasks: postgres.NewTaskRepo(db), Workspaces: postgres.NewWorkspaceRepo(db),
 		Comments: postgres.NewCommentRepo(db), Outbox: postgres.NewOutboxRepo(db),
 		Rules: postgres.NewRuleRepo(db), Deliveries: postgres.NewDeliveryRepo(db),
+		Deps: postgres.NewDependencyRepo(db), AgentJobs: postgres.NewAgentJobRepo(db),
 	}
 }
 

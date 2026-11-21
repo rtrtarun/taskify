@@ -8,7 +8,8 @@ import (
 	"unicode/utf8"
 )
 
-// The nine R1 event types. See docs/architecture.md section 5.6.
+// The nine R1 event types. See docs/architecture.md section 5.6. The R2
+// dependency events are in dependency.go.
 const (
 	EventTaskCreated           = "task.created"
 	EventTaskAssigned          = "task.assigned"
@@ -44,6 +45,9 @@ type Event struct {
 	Comment *Comment
 	// DueWindow is set for task.due_soon: DueWindow24h or DueWindow1h.
 	DueWindow string
+	// Blocker is set for dependency events and system-applied blocks: the
+	// task whose change caused this one.
+	Blocker *BlockerRef
 }
 
 func (t *Task) event(eventType string, actor Actor, at time.Time) Event {
@@ -68,7 +72,8 @@ func (e Event) Recipients() []string {
 	t := e.Task
 	var candidates []string
 	switch e.Type {
-	case EventTaskCreated, EventTaskAssigned, EventTaskDueSoon, EventTaskOverdue:
+	case EventTaskCreated, EventTaskAssigned, EventTaskDueSoon, EventTaskOverdue,
+		EventTaskUnblocked, EventTaskDependencyResolved, EventTaskDependencyAdded, EventTaskDependencyReopened:
 		candidates = []string{t.AssigneeID}
 	case EventTaskUpdated, EventTaskPriorityEscalated, EventTaskBlocked:
 		candidates = append([]string{t.AssigneeID}, t.Watchers...)
@@ -102,6 +107,8 @@ func (e Event) Recipients() []string {
 //     again;
 //   - comment keys use the comment ID, because a comment does not change the
 //     task version and two comments would otherwise share a key.
+//   - dependency notices (added, resolved, reopened) use the blocker's ID and
+//     version, for the same reason: they leave the dependent's version alone.
 func (e Event) IdempotencyKey(recipient string) string {
 	base := fmt.Sprintf("%s:%s:%s", Source, e.Task.TenantID, e.Task.ID)
 	var key string
@@ -120,6 +127,13 @@ func (e Event) IdempotencyKey(recipient string) string {
 			id = e.Comment.ID.String()
 		}
 		key = fmt.Sprintf("%s:%s:%s", base, e.Type, id)
+	case EventTaskDependencyAdded, EventTaskDependencyResolved, EventTaskDependencyReopened:
+		var blocker string
+		version := 0
+		if e.Blocker != nil {
+			blocker, version = e.Blocker.ID.String(), e.Blocker.Version
+		}
+		key = fmt.Sprintf("%s:%s:%s:v%d", base, e.Type, blocker, version)
 	default:
 		key = fmt.Sprintf("%s:%s:v%d", base, e.Type, e.Task.Version)
 	}
@@ -196,7 +210,9 @@ func (e Event) blockedReason() BlockedReason {
 
 func (e Event) priorityHint() string {
 	// A manual block is at least high, whatever the task's own priority.
-	if e.Type == EventTaskBlocked && e.blockedReason() == BlockedManual && e.Task.Priority != PriorityCritical {
+	// A revived blocker on started work is sent as at least high (section 5.6).
+	manualBlock := e.Type == EventTaskBlocked && e.blockedReason() == BlockedManual
+	if (manualBlock || e.Type == EventTaskDependencyReopened) && e.Task.Priority != PriorityCritical {
 		return PriorityHigh.Hint()
 	}
 	return e.Task.Priority.Hint()
@@ -234,6 +250,10 @@ func (e Event) payload(publicBaseURL string) map[string]any {
 	if e.Comment != nil {
 		p["commentId"] = e.Comment.ID.String()
 	}
+	if e.Blocker != nil {
+		p["blockerTaskId"] = e.Blocker.ID.String()
+		p["blockerStatus"] = string(e.Blocker.Status)
+	}
 	if e.bypassDigest() {
 		p["bypassDigest"] = true
 	}
@@ -267,6 +287,14 @@ func (e Event) title(mentioned bool) string {
 			return "You were mentioned on: " + t
 		}
 		return "New comment on: " + t
+	case EventTaskUnblocked:
+		return "Unblocked: " + t
+	case EventTaskDependencyResolved:
+		return "Dependency done: " + t
+	case EventTaskDependencyAdded:
+		return "New dependency: " + t
+	case EventTaskDependencyReopened:
+		return "Dependency reopened: " + t
 	}
 	return t
 }
@@ -295,6 +323,22 @@ func (e Event) body() string {
 	case EventTaskCommentAdded:
 		if e.Comment != nil {
 			return fmt.Sprintf("%s commented: %s", by, truncate(e.Comment.Body, 280))
+		}
+	}
+	if b := e.Blocker; b != nil {
+		blocker := fmt.Sprintf("%q (#%s)", truncate(b.Title, 80), b.ID.String()[:8])
+		switch e.Type {
+		case EventTaskUnblocked:
+			return fmt.Sprintf("%s is ready: its last dependency, %s, is %s. %s", ref, blocker, b.Status, prio)
+		case EventTaskDependencyResolved:
+			if e.Task.Status == StatusBlocked {
+				return fmt.Sprintf("%s: dependency %s is %s. The task stays blocked until someone unblocks it. %s", ref, blocker, b.Status, prio)
+			}
+			return fmt.Sprintf("%s: dependency %s is %s. %s", ref, blocker, b.Status, prio)
+		case EventTaskDependencyAdded:
+			return fmt.Sprintf("%s now depends on %s, which is not done. Its status was left unchanged. %s", ref, blocker, prio)
+		case EventTaskDependencyReopened:
+			return fmt.Sprintf("%s: dependency %s is open again (%s). Its status was left unchanged. %s", ref, blocker, b.Status, prio)
 		}
 	}
 	return ref

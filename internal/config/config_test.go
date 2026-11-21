@@ -183,3 +183,46 @@ func TestSecretsAreNotExposed(t *testing.T) {
 		t.Errorf("String() leaks a secret: %s", s)
 	}
 }
+
+func TestAgentSettings(t *testing.T) {
+	c, err := FromLookup(lookupFrom(valid()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AgentsEnabled || c.AgentWorkers != 4 || c.AgentMaxTurns != 6 || c.AgentMaxAttempts != 3 || c.LLMTimeout != 30*time.Second {
+		t.Errorf("agent defaults = %+v", c)
+	}
+
+	// Turning agents on needs a model endpoint and a model name.
+	env := valid()
+	env["AGENTS_ENABLED"] = "true"
+	_, err = FromLookup(lookupFrom(env))
+	if err == nil || !strings.Contains(err.Error(), "LLM_BASE_URL") || !strings.Contains(err.Error(), "LLM_MODEL") {
+		t.Errorf("agents on without a model: %v", err)
+	}
+
+	env["LLM_BASE_URL"] = "http://ollama:11434/v1/"
+	env["LLM_MODEL"] = "qwen2.5-coder:7b"
+	env["LLM_API_KEY"] = "llm-secret-key"
+	env["AGENT_WORKERS"] = "2"
+	env["AGENT_MAX_TURNS"] = "4"
+	env["LLM_TIMEOUT"] = "10s"
+	c, err = FromLookup(lookupFrom(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.AgentsEnabled || c.LLMBaseURL != "http://ollama:11434/v1" || c.AgentWorkers != 2 || c.AgentMaxTurns != 4 || c.LLMTimeout != 10*time.Second {
+		t.Errorf("agent config = %+v", c)
+	}
+	if strings.Contains(c.String(), "llm-secret-key") {
+		t.Errorf("String() leaks the LLM key: %s", c.String())
+	}
+
+	for name, value := range map[string]string{"AGENTS_ENABLED": "maybe", "LLM_BASE_URL": "ollama:11434", "AGENT_MAX_TURNS": "0"} {
+		bad := valid()
+		bad[name] = value
+		if _, err := FromLookup(lookupFrom(bad)); err == nil || !strings.Contains(err.Error(), name) {
+			t.Errorf("%s=%q: %v", name, value, err)
+		}
+	}
+}

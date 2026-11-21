@@ -32,6 +32,12 @@ type Deps struct {
 	Workspaces repository.WorkspaceRepository
 	Comments   repository.CommentRepository
 	Outbox     repository.OutboxRepository
+	// Dependencies is required from R2: task status changes re-check
+	// dependents.
+	Dependencies repository.DependencyRepository
+	// AgentJobs is required from R2: a person's change queues agent jobs in
+	// the same transaction.
+	AgentJobs repository.AgentJobRepository
 }
 
 // Config holds the settings that shape outbox rows.
@@ -42,10 +48,11 @@ type Config struct {
 
 // TaskService implements the task use cases.
 type TaskService struct {
-	deps Deps
-	cfg  Config
-	now  func() time.Time
-	wake func()
+	deps    Deps
+	cfg     Config
+	now     func() time.Time
+	wake    func()
+	metrics *observability.Metrics
 }
 
 // Option configures a TaskService.
@@ -58,6 +65,10 @@ func WithClock(now func() time.Time) Option { return func(s *TaskService) { s.no
 // so the relay can send them without waiting for its next tick. It must not
 // block.
 func WithWake(wake func()) Option { return func(s *TaskService) { s.wake = wake } }
+
+// WithMetrics sets where skipped agent jobs are counted. Without it nothing
+// is recorded.
+func WithMetrics(m *observability.Metrics) Option { return func(s *TaskService) { s.metrics = m } }
 
 // NewTaskService returns a TaskService.
 func NewTaskService(d Deps, cfg Config, opts ...Option) *TaskService {
@@ -90,15 +101,18 @@ func (s *TaskService) CreateWorkspace(ctx context.Context, tenantID, id, name st
 }
 
 // CreateTask creates a task in an existing workspace. The actor becomes its
-// creator.
+// creator. A task a person creates also queues triage, if the workspace
+// allows it.
 func (s *TaskService) CreateTask(ctx context.Context, actor domain.Actor, in domain.NewTaskInput) (*domain.Task, error) {
 	now := s.clock()
 	task, events, err := domain.NewTask(in, actor, now)
 	if err != nil {
 		return nil, err
 	}
+	var skipped []skippedJob
 	err = s.deps.Tx.WithTx(ctx, func(ctx context.Context) error {
-		if _, err := s.deps.Workspaces.Get(ctx, task.TenantID, task.WorkspaceID); err != nil {
+		w, err := s.deps.Workspaces.Get(ctx, task.TenantID, task.WorkspaceID)
+		if err != nil {
 			if errors.Is(err, domain.ErrNotFound) {
 				return fmt.Errorf("%w: workspace %q does not exist", domain.ErrValidation, task.WorkspaceID)
 			}
@@ -107,12 +121,17 @@ func (s *TaskService) CreateTask(ctx context.Context, actor domain.Actor, in dom
 		if err := s.deps.Tasks.Create(ctx, task); err != nil {
 			return err
 		}
-		return s.emit(ctx, events, now)
+		if err := s.emit(ctx, events, now); err != nil {
+			return err
+		}
+		skipped, err = s.queueAgentJobs(ctx, task, w.AgentSettings, domain.CreateTriggers(actor), actor, now)
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
 	s.signal(events)
+	s.countSkipped(skipped)
 	return task, nil
 }
 
@@ -166,26 +185,53 @@ func (s *TaskService) SnoozeTask(ctx context.Context, actor domain.Actor, tenant
 //
 // A relay worker that claimed one of the rows just before may still send it
 // once; recording its result then matches no row and is not an error.
+//
+// The task's dependents lose their link to it through the cascade, and are
+// then re-checked as if it had been resolved: a dependent whose only open
+// blocker was this task is unblocked. The check runs after the delete, in the
+// same transaction, so the deleted task no longer counts as an open blocker.
+// Agent jobs for the task go with it through ON DELETE CASCADE.
 func (s *TaskService) DeleteTask(ctx context.Context, tenantID string, id uuid.UUID) error {
-	return s.deps.Tx.WithTx(ctx, func(ctx context.Context) error {
-		if _, err := s.deps.Tasks.GetForUpdate(ctx, tenantID, id); err != nil {
+	now := s.clock()
+	var events []domain.Event
+	err := s.deps.Tx.WithTx(ctx, func(ctx context.Context) error {
+		task, err := s.deps.Tasks.GetForUpdate(ctx, tenantID, id)
+		if err != nil {
+			return err
+		}
+		dependents, err := s.deps.Dependencies.ListDependents(ctx, tenantID, id)
+		if err != nil {
 			return err
 		}
 		if _, err := s.deps.Outbox.DeleteForAggregate(ctx, tenantID, id); err != nil {
 			return err
 		}
-		return s.deps.Tasks.Delete(ctx, tenantID, id)
+		if err := s.deps.Tasks.Delete(ctx, tenantID, id); err != nil {
+			return err
+		}
+		gone := *task
+		gone.Status = domain.BlockerDeleted
+		events, err = s.resolveEach(ctx, &gone, dependents, now)
+		return err
 	})
+	if err != nil {
+		return err
+	}
+	s.signal(events)
+	return nil
 }
 
 // mutate loads and locks a task, checks its version, applies change, and
-// writes the task and its outbox rows.
+// writes the task, its outbox rows, and the agent jobs a person's change
+// triggers. Dependency effects run last and, being system changes, queue no
+// jobs.
 func (s *TaskService) mutate(ctx context.Context, tenantID string, id uuid.UUID, expectedVersion *int,
 	change func(t *domain.Task, now time.Time) ([]domain.Event, error)) (*domain.Task, error) {
 	now := s.clock()
 	var (
-		task   *domain.Task
-		events []domain.Event
+		task    *domain.Task
+		events  []domain.Event
+		skipped []skippedJob
 	)
 	err := s.deps.Tx.WithTx(ctx, func(ctx context.Context) error {
 		var err error
@@ -196,7 +242,7 @@ func (s *TaskService) mutate(ctx context.Context, tenantID string, id uuid.UUID,
 		if expectedVersion != nil && *expectedVersion != task.Version {
 			return &VersionConflictError{Current: task.Version}
 		}
-		before := task.Version
+		before, from := task.Version, task.Status
 		if events, err = change(task, now); err != nil {
 			return err
 		}
@@ -206,12 +252,24 @@ func (s *TaskService) mutate(ctx context.Context, tenantID string, id uuid.UUID,
 		if err := s.deps.Tasks.Update(ctx, task, before); err != nil {
 			return err
 		}
-		return s.emit(ctx, events, now)
+		if err := s.emit(ctx, events, now); err != nil {
+			return err
+		}
+		if skipped, err = s.queueForChange(ctx, task, events, now); err != nil {
+			return err
+		}
+		if task.Status == from {
+			return nil
+		}
+		depEvents, err := s.onBlockerStatusChange(ctx, task, from, now)
+		events = append(events, depEvents...)
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
 	s.signal(events)
+	s.countSkipped(skipped)
 	return task, nil
 }
 

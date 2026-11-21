@@ -37,9 +37,15 @@ type state struct {
 	outboxKeys map[string]uuid.UUID
 	rules      map[ruleKey]domain.WorkspaceRule
 	deliveries map[string]time.Time
+	deps       map[depKey]domain.Dependency
+	jobs       map[uuid.UUID]*domain.AgentJob
+	jobKeys    map[string]uuid.UUID
+	runs       []domain.AgentRun
 }
 
 type ruleKey struct{ tenant, workspace, key string }
+
+type depKey struct{ task, dependsOn uuid.UUID }
 
 // New returns an empty store.
 func New() *Store {
@@ -50,6 +56,9 @@ func New() *Store {
 		outboxKeys: map[string]uuid.UUID{},
 		rules:      map[ruleKey]domain.WorkspaceRule{},
 		deliveries: map[string]time.Time{},
+		deps:       map[depKey]domain.Dependency{},
+		jobs:       map[uuid.UUID]*domain.AgentJob{},
+		jobKeys:    map[string]uuid.UUID{},
 	}}
 }
 
@@ -99,6 +108,13 @@ func (s state) clone() state {
 		outboxKeys: maps.Clone(s.outboxKeys),
 		rules:      maps.Clone(s.rules),
 		deliveries: maps.Clone(s.deliveries),
+		deps:       maps.Clone(s.deps),
+		jobs:       make(map[uuid.UUID]*domain.AgentJob, len(s.jobs)),
+		jobKeys:    maps.Clone(s.jobKeys),
+		runs:       slices.Clone(s.runs),
+	}
+	for id, j := range s.jobs {
+		c.jobs[id] = copyJob(j)
 	}
 	for id, t := range s.tasks {
 		c.tasks[id] = copyTask(t)
@@ -117,6 +133,10 @@ func copyTask(t *domain.Task) *domain.Task {
 	c.Labels = slices.Clone(t.Labels)
 	c.Watchers = slices.Clone(t.Watchers)
 	c.Metadata = maps.Clone(t.Metadata)
+	if t.ParentID != nil {
+		p := *t.ParentID
+		c.ParentID = &p
+	}
 	if c.Labels == nil {
 		c.Labels = []string{}
 	}

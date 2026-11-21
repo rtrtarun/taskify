@@ -89,9 +89,17 @@ func (r *WorkspaceRepo) Create(ctx context.Context, w domain.Workspace) error {
 			return fmt.Errorf("%w: workspace", domain.ErrAlreadyExists)
 		}
 		w.CreatedAt, w.UpdatedAt = micro(w.CreatedAt), micro(w.UpdatedAt)
+		w.AgentSettings = cloneSettings(w.AgentSettings)
 		s.workspaces[k] = w
 		return nil
 	})
+}
+
+// cloneSettings copies settings so stored state never shares a slice with a
+// caller.
+func cloneSettings(a domain.AgentSettings) domain.AgentSettings {
+	a.DisabledAgents = append([]string{}, a.DisabledAgents...)
+	return a
 }
 
 func (r *WorkspaceRepo) Get(ctx context.Context, tenantID, id string) (w domain.Workspace, err error) {
@@ -100,6 +108,7 @@ func (r *WorkspaceRepo) Get(ctx context.Context, tenantID, id string) (w domain.
 		if w, ok = s.workspaces[wsKey{tenantID, id}]; !ok {
 			return domain.ErrNotFound
 		}
+		w.AgentSettings = cloneSettings(w.AgentSettings)
 		return nil
 	})
 	return w, err
@@ -120,6 +129,7 @@ func (r *WorkspaceRepo) Update(ctx context.Context, w domain.Workspace) error {
 			return domain.ErrNotFound
 		}
 		stored.Name, stored.UpdatedAt = w.Name, micro(w.UpdatedAt)
+		stored.AgentSettings = cloneSettings(w.AgentSettings)
 		s.workspaces[k] = stored
 		return nil
 	})
@@ -194,6 +204,9 @@ func (r *TaskRepo) Create(ctx context.Context, t *domain.Task) error {
 		if err := checkBlocked(t); err != nil {
 			return err
 		}
+		if p := t.ParentID; p != nil && (*p == t.ID || s.tasks[*p] == nil) {
+			return fmt.Errorf("%w: parent task does not exist", domain.ErrValidation)
+		}
 		c := copyTask(t)
 		normalizeTimes(c)
 		s.tasks[t.ID] = c
@@ -235,6 +248,7 @@ func (r *TaskRepo) Update(ctx context.Context, t *domain.Task, expectedVersion i
 		c := copyTask(t)
 		// Immutable columns keep their stored values, as in the SQL update.
 		c.WorkspaceID, c.CreatorID, c.CreatedAt = stored.WorkspaceID, stored.CreatorID, stored.CreatedAt
+		c.ParentID = stored.ParentID
 		normalizeTimes(c)
 		s.tasks[t.ID] = c
 		return nil
@@ -294,8 +308,21 @@ func (r *TaskRepo) Delete(ctx context.Context, tenantID string, id uuid.UUID) er
 			return domain.ErrNotFound
 		}
 		delete(s.tasks, id)
-		// Comments go with the task, as with ON DELETE CASCADE.
+		// Comments, dependency links, and agent jobs go with the task, as with
+		// ON DELETE CASCADE.
 		s.comments = slices.DeleteFunc(s.comments, func(c domain.Comment) bool { return c.TaskID == id })
+		s.deleteJobsForTask(id)
+		// Children keep existing, as with ON DELETE SET NULL.
+		for _, child := range s.tasks {
+			if child.ParentID != nil && *child.ParentID == id {
+				child.ParentID = nil
+			}
+		}
+		for k := range s.deps {
+			if k.task == id || k.dependsOn == id {
+				delete(s.deps, k)
+			}
+		}
 		return nil
 	})
 }

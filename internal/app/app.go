@@ -14,6 +14,9 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/rtrtarun/taskify/internal/agent"
+	"github.com/rtrtarun/taskify/internal/agent/llm"
+	"github.com/rtrtarun/taskify/internal/agent/tools"
 	"github.com/rtrtarun/taskify/internal/agentpulse"
 	"github.com/rtrtarun/taskify/internal/api"
 	"github.com/rtrtarun/taskify/internal/config"
@@ -38,6 +41,8 @@ type App struct {
 	relay      *worker.Relay
 	scheduler  *worker.Scheduler
 	cleanup    *worker.Cleanup
+	// agents is nil unless AGENTS_ENABLED is true.
+	agents *agent.Runtime
 }
 
 // New builds the service. It connects lazily, so it does not fail when
@@ -85,11 +90,12 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 	})
 	taskSvc := service.NewTaskService(service.Deps{
 		Tx: db, Tasks: tasks, Workspaces: postgres.NewWorkspaceRepo(db),
-		Comments: postgres.NewCommentRepo(db), Outbox: outbox,
+		Comments: postgres.NewCommentRepo(db), Outbox: outbox, Dependencies: postgres.NewDependencyRepo(db),
+		AgentJobs: postgres.NewAgentJobRepo(db),
 	}, service.Config{
 		PublicBaseURL:     cfg.PublicBaseURL,
 		OutboxMaxAttempts: cfg.OutboxMaxAttempts,
-	}, service.WithWake(relay.Wake))
+	}, service.WithWake(relay.Wake), service.WithMetrics(metrics))
 	feedback := service.NewFeedbackService(tasks, client, metrics)
 
 	handler, err := api.NewRouter(api.Deps{
@@ -116,7 +122,13 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 		return nil, err
 	}
 
+	runtime, err := newAgentRuntime(cfg, db, tasks, logger, metrics)
+	if err != nil {
+		return nil, err
+	}
+
 	return &App{
+		agents:  runtime,
 		Handler: handler,
 		cfg:     cfg,
 		logger:  logger,
@@ -133,12 +145,49 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 	}, nil
 }
 
-// RunWorkers runs the relay, scheduler, and cleanup until ctx is cancelled.
+// newAgentRuntime builds the agent runtime, or returns nil when
+// AGENTS_ENABLED is false: then no job is ever claimed.
+func newAgentRuntime(cfg config.Config, db *postgres.DB, tasks *postgres.TaskRepo, logger *slog.Logger,
+	metrics *observability.Metrics) (*agent.Runtime, error) {
+	if !cfg.AgentsEnabled {
+		return nil, nil
+	}
+	client, err := llm.NewOpenAICompat(llm.Config{
+		BaseURL: cfg.LLMBaseURL, APIKey: cfg.LLMAPIKey, Model: cfg.LLMModel, Timeout: cfg.LLMTimeout,
+	})
+	if err != nil {
+		return nil, err
+	}
+	// Agents and their tools are registered here as they are built (M7 on).
+	// Until then the runtime claims nothing and only recovers stuck jobs.
+	return agent.New(agent.Deps{
+		Jobs:       postgres.NewAgentJobRepo(db),
+		Tasks:      tasks,
+		Workspaces: postgres.NewWorkspaceRepo(db),
+		LLM:        client,
+		Tools:      tools.NewRegistry(tasks),
+	}, agent.Config{
+		Workers:     cfg.AgentWorkers,
+		MaxTurns:    cfg.AgentMaxTurns,
+		MaxAttempts: cfg.AgentMaxAttempts,
+		Logger:      logger,
+		Metrics:     metrics,
+	})
+}
+
+// AgentsRunning reports whether the agent runtime is part of this instance.
+func (a *App) AgentsRunning() bool { return a.agents != nil }
+
+// RunWorkers runs the relay, scheduler, cleanup, and, when AGENTS_ENABLED
+// is true, the agent runtime, until ctx is cancelled.
 func (a *App) RunWorkers(ctx context.Context) error {
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return a.relay.Run(ctx) })
 	g.Go(func() error { return a.scheduler.Run(ctx) })
 	g.Go(func() error { return a.cleanup.Run(ctx) })
+	if a.agents != nil {
+		g.Go(func() error { return a.agents.Run(ctx) })
+	}
 	return g.Wait()
 }
 

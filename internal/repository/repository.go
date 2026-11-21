@@ -64,7 +64,8 @@ type TaskRepository interface {
 	// ErrVersionConflict otherwise. Watchers are replaced.
 	Update(ctx context.Context, t *domain.Task, expectedVersion int) error
 	List(ctx context.Context, f TaskFilter) (TaskPage, error)
-	// Delete removes the task permanently, with its watchers and comments.
+	// Delete removes the task permanently, with its watchers, comments, and
+	// dependency links in both directions.
 	// It returns ErrNotFound when no row was deleted.
 	Delete(ctx context.Context, tenantID string, id uuid.UUID) error
 
@@ -87,7 +88,7 @@ type WorkspaceRepository interface {
 	Get(ctx context.Context, tenantID, id string) (domain.Workspace, error)
 	// GetForUpdate locks the row until the transaction ends.
 	GetForUpdate(ctx context.Context, tenantID, id string) (domain.Workspace, error)
-	// Update writes the name and updated_at.
+	// Update writes the name, agent settings, and updated_at.
 	Update(ctx context.Context, w domain.Workspace) error
 }
 
@@ -104,6 +105,64 @@ type WebhookDeliveryRepository interface {
 	// the callback was already processed.
 	Record(ctx context.Context, key string, at time.Time) (bool, error)
 	DeleteBefore(ctx context.Context, cutoff time.Time) (int, error)
+}
+
+// ErrJobMoved is returned by AgentJobRepository.Update when the job is no
+// longer as the caller read it, because another worker or a recovery sweep
+// changed it.
+var ErrJobMoved = errors.New("repository: agent job is no longer in the expected status")
+
+// AgentJobRepository stores agent_jobs and agent_run_history rows.
+type AgentJobRepository interface {
+	// Insert queues a job. A job whose dedup key is already stored is not an
+	// error: Insert reports false and leaves the stored job alone.
+	Insert(ctx context.Context, j domain.AgentJob) (bool, error)
+	Get(ctx context.Context, tenantID string, id uuid.UUID) (*domain.AgentJob, error)
+	// GetForUpdate requires a transaction.
+	GetForUpdate(ctx context.Context, tenantID string, id uuid.UUID) (*domain.AgentJob, error)
+	// Claim marks up to limit pending jobs of the given agent types running,
+	// oldest first, skipping jobs another claimer holds, and sets their
+	// updated_at to now. It spans tenants: the runtime serves all.
+	Claim(ctx context.Context, now time.Time, limit int, agentTypes []string) ([]*domain.AgentJob, error)
+	// Update saves the job's status, base version, results, error, attempts,
+	// decision, and updated_at, provided the stored job still has status from
+	// and updated_at fromUpdatedAt. updated_at is the job's lease: a worker
+	// whose job was recovered and claimed again cannot overwrite it.
+	// Otherwise Update returns ErrJobMoved, or domain.ErrNotFound when the job
+	// is gone.
+	Update(ctx context.Context, j *domain.AgentJob, from domain.JobStatus, fromUpdatedAt time.Time) error
+	// RecoverStuck handles jobs left running since before olderThan by a
+	// worker that died (default G11): each gets one more attempt and returns
+	// to pending, or fails once it reaches maxAttempts.
+	RecoverStuck(ctx context.Context, olderThan, now time.Time, maxAttempts int) (requeued, failed int, err error)
+	// ListForTask returns the task's jobs, oldest first.
+	ListForTask(ctx context.Context, tenantID string, taskID uuid.UUID) ([]*domain.AgentJob, error)
+	InsertRun(ctx context.Context, r domain.AgentRun) error
+	// ListRuns returns a job's turns in order.
+	ListRuns(ctx context.Context, jobID uuid.UUID) ([]domain.AgentRun, error)
+}
+
+// DependencyRepository stores task_dependencies rows. Every call is scoped to
+// a tenant.
+type DependencyRepository interface {
+	// LockTenant serialises dependency inserts within a tenant until the
+	// transaction ends. Locking only the two tasks being linked is not enough:
+	// two inserts on disjoint pairs can each pass the cycle check and together
+	// close a cycle through existing links.
+	LockTenant(ctx context.Context, tenantID string) error
+	// Create inserts the link and reports whether it was new. An existing
+	// link is left alone and is not an error.
+	Create(ctx context.Context, d domain.Dependency) (bool, error)
+	// Reaches reports whether to can be reached from from by following
+	// dependencies (from depends on ... depends on to).
+	Reaches(ctx context.Context, tenantID string, from, to uuid.UUID) (bool, error)
+	// ListBlockers returns the tasks taskID depends on.
+	ListBlockers(ctx context.Context, tenantID string, taskID uuid.UUID) ([]uuid.UUID, error)
+	// ListDependents returns the tasks that depend on blockerID.
+	ListDependents(ctx context.Context, tenantID string, blockerID uuid.UUID) ([]uuid.UUID, error)
+	// HasOpenBlocker reports whether taskID depends on any task that is not
+	// completed or archived.
+	HasOpenBlocker(ctx context.Context, tenantID string, taskID uuid.UUID) (bool, error)
 }
 
 // CommentRepository stores comments. Callers check the task's tenant first.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -781,14 +782,123 @@ func TestMigrationsRoundTrip(t *testing.T) {
 			t.Fatalf("step %d (%s): %v", i, d, err)
 		}
 	}
-	if n := tables(); n != 7 {
-		t.Errorf("tables after up/down/up = %d, want 7", n)
+	if n := tables(); n != 10 {
+		t.Errorf("tables after up/down/up = %d, want 10", n)
 	}
 	if err := migrations.Apply(ctx, exec, migrations.Down); err != nil {
 		t.Fatal(err)
 	}
 	if n := tables(); n != 0 {
 		t.Errorf("tables after down = %d, want 0", n)
+	}
+}
+
+// TestAgentSchemaOnR1Data applies the R1 migrations, writes R1 rows, then runs
+// 000004 up, down, and up again (task M5-01).
+func TestAgentSchemaOnR1Data(t *testing.T) {
+	pool := NewEmptyDatabase(t)
+	run := func(name string) {
+		t.Helper()
+		body, err := migrations.FS.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, string(body)); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	for _, name := range []string{"000001_init_tasks.up.sql", "000002_outbox.up.sql", "000003_integrations.up.sql"} {
+		run(name)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO workspaces (tenant_id, id, name) VALUES ('tenant_acme', 'ws_core', 'Core');
+		INSERT INTO tasks (tenant_id, workspace_id, title, creator_id) VALUES ('tenant_acme', 'ws_core', 'r1 task', 'u1');
+		INSERT INTO tasks (tenant_id, workspace_id, title, creator_id, status, blocked_reason, status_before_blocked)
+			VALUES ('tenant_acme', 'ws_core', 'r1 blocked', 'u1', 'blocked', 'manual', 'todo');`); err != nil {
+		t.Fatal(err)
+	}
+	run("000004_agent_schema.up.sql")
+	run("000004_agent_schema.down.sql")
+	run("000004_agent_schema.up.sql")
+
+	var tasks int
+	var settings string
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE agent_metadata = '{}'::jsonb AND parent_id IS NULL`).Scan(&tasks); err != nil {
+		t.Fatal(err)
+	}
+	if tasks != 2 {
+		t.Errorf("R1 tasks after migration = %d, want 2", tasks)
+	}
+	if err := pool.QueryRow(ctx, `SELECT agent_settings->>'agents_enabled' FROM workspaces WHERE id = 'ws_core'`).Scan(&settings); err != nil {
+		t.Fatal(err)
+	}
+	if settings != "false" {
+		t.Errorf("existing workspace agents_enabled = %s, want false", settings)
+	}
+}
+
+func TestAgentSchemaConstraints(t *testing.T) {
+	b := Postgres(t)
+	seedWorkspace(t, b, tenant)
+	pool := b.DB.Pool
+	exec := func(sql string, args ...any) error { _, err := pool.Exec(ctx, sql, args...); return err }
+	newTask := func() string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO tasks (tenant_id, workspace_id, title, creator_id) VALUES ('tenant_acme','ws_core','x','u') RETURNING id`).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	a, c := newTask(), newTask()
+
+	if err := exec(`INSERT INTO task_dependencies (task_id, depends_on_task_id, tenant_id) VALUES ($1, $1, 'tenant_acme')`, a); err == nil {
+		t.Error("a self-dependency was accepted")
+	}
+	if err := exec(`UPDATE tasks SET parent_id = id WHERE id = $1`, a); err == nil {
+		t.Error("a task was made its own parent")
+	}
+	if err := exec(`UPDATE tasks SET estimated_minutes = 0 WHERE id = $1`, a); err == nil {
+		t.Error("a zero estimate was accepted")
+	}
+	if err := exec(`INSERT INTO task_dependencies (task_id, depends_on_task_id, tenant_id) VALUES ($1, $2, 'tenant_acme')`, a, c); err != nil {
+		t.Fatalf("a valid dependency was rejected: %v", err)
+	}
+	if err := exec(`UPDATE tasks SET parent_id = $1 WHERE id = $2`, a, c); err != nil {
+		t.Fatal(err)
+	}
+	job := `INSERT INTO agent_jobs (tenant_id, task_id, agent_type, dedup_key) VALUES ('tenant_acme', $1, 'triage', $2)`
+	if err := exec(job, a, "triage:"+a+":v1"); err != nil {
+		t.Fatalf("a valid job was rejected: %v", err)
+	}
+	if err := exec(job, a, "triage:"+a+":v1"); err == nil {
+		t.Error("a duplicate dedup_key was accepted")
+	}
+	if err := exec(`INSERT INTO agent_jobs (tenant_id, agent_type, dedup_key, decided_by) VALUES ('tenant_acme', 'digest', 'd1', 'u')`); err == nil {
+		t.Error("decided_by without decided_at was accepted")
+	}
+
+	var defaults string
+	if err := pool.QueryRow(ctx, `SELECT agent_settings::text FROM workspaces WHERE id = 'ws_core'`).Scan(&defaults); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"agents_enabled": false`, `"require_hitl_for_all": true`, `"max_subtasks_per_decomposition": 5`} {
+		if !strings.Contains(defaults, want) {
+			t.Errorf("default agent_settings %s lacks %s", defaults, want)
+		}
+	}
+
+	// Deleting the blocker cascades its dependency row and the job; deleting
+	// the parent detaches the child rather than deleting it.
+	if err := exec(`DELETE FROM tasks WHERE id = $1`, a); err != nil {
+		t.Fatal(err)
+	}
+	var deps, jobs, children int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM task_dependencies`).Scan(&deps)
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM agent_jobs WHERE task_id IS NOT NULL`).Scan(&jobs)
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE id = $1 AND parent_id IS NULL`, c).Scan(&children)
+	if deps != 0 || jobs != 0 || children != 1 {
+		t.Errorf("after delete: deps=%d jobs=%d detached child=%d, want 0 0 1", deps, jobs, children)
 	}
 }
 
@@ -871,6 +981,21 @@ func TestWorkspaceUpdateAndRules(t *testing.T) {
 		got, _ := b.Workspaces.Get(ctx, tenant, ws)
 		if got.Name != "Core Platform" || !got.UpdatedAt.Equal(t0.Add(time.Hour)) || !got.CreatedAt.Equal(t0) {
 			t.Errorf("after update: %+v", got)
+		}
+		if !got.AgentSettings.RequireHITLForAll || got.AgentSettings.AgentsEnabled || got.AgentSettings.MaxSubtasksPerDecomposition != 5 {
+			t.Errorf("default agent settings = %+v", got.AgentSettings)
+		}
+		on, disabled := true, []string{domain.AgentDigest}
+		if err := w.UpdateAgentSettings(domain.AgentSettingsPatch{AgentsEnabled: &on, DisabledAgents: &disabled}, t0.Add(2*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Workspaces.Update(ctx, w); err != nil {
+			t.Fatal(err)
+		}
+		disabled[0] = "mutated after save"
+		got, _ = b.Workspaces.Get(ctx, tenant, ws)
+		if !got.AgentSettings.Allows(domain.AgentTriage) || got.AgentSettings.Allows(domain.AgentDigest) || !got.AgentSettings.RequireHITLForAll {
+			t.Errorf("agent settings after update = %+v", got.AgentSettings)
 		}
 		missing := w
 		missing.ID = "nope"

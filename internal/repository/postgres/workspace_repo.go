@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -19,9 +21,13 @@ func NewWorkspaceRepo(db *DB) *WorkspaceRepo { return &WorkspaceRepo{db: db} }
 var _ repository.WorkspaceRepository = (*WorkspaceRepo)(nil)
 
 func (r *WorkspaceRepo) Create(ctx context.Context, w domain.Workspace) error {
-	_, err := r.db.q(ctx).Exec(ctx,
-		`INSERT INTO workspaces (tenant_id, id, name, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)`,
-		w.TenantID, w.ID, w.Name, w.CreatedAt, w.UpdatedAt)
+	settings, err := json.Marshal(w.AgentSettings)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.q(ctx).Exec(ctx,
+		`INSERT INTO workspaces (tenant_id, id, name, agent_settings, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)`,
+		w.TenantID, w.ID, w.Name, settings, w.CreatedAt, w.UpdatedAt)
 	return mapErr(err)
 }
 
@@ -37,9 +43,13 @@ func (r *WorkspaceRepo) GetForUpdate(ctx context.Context, tenantID, id string) (
 }
 
 func (r *WorkspaceRepo) Update(ctx context.Context, w domain.Workspace) error {
+	settings, err := json.Marshal(w.AgentSettings)
+	if err != nil {
+		return err
+	}
 	tag, err := r.db.q(ctx).Exec(ctx,
-		`UPDATE workspaces SET name = $3, updated_at = $4 WHERE tenant_id = $1 AND id = $2`,
-		w.TenantID, w.ID, w.Name, w.UpdatedAt)
+		`UPDATE workspaces SET name = $3, agent_settings = $4, updated_at = $5 WHERE tenant_id = $1 AND id = $2`,
+		w.TenantID, w.ID, w.Name, settings, w.UpdatedAt)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -51,11 +61,15 @@ func (r *WorkspaceRepo) Update(ctx context.Context, w domain.Workspace) error {
 
 func (r *WorkspaceRepo) get(ctx context.Context, tenantID, id, lock string) (domain.Workspace, error) {
 	var w domain.Workspace
+	var settings []byte
 	err := r.db.q(ctx).QueryRow(ctx,
-		`SELECT tenant_id, id, name, created_at, updated_at FROM workspaces WHERE tenant_id = $1 AND id = $2`+lock,
-		tenantID, id).Scan(&w.TenantID, &w.ID, &w.Name, &w.CreatedAt, &w.UpdatedAt)
+		`SELECT tenant_id, id, name, agent_settings, created_at, updated_at FROM workspaces WHERE tenant_id = $1 AND id = $2`+lock,
+		tenantID, id).Scan(&w.TenantID, &w.ID, &w.Name, &settings, &w.CreatedAt, &w.UpdatedAt)
 	if err != nil {
 		return domain.Workspace{}, mapErr(err)
+	}
+	if w.AgentSettings, err = domain.ParseAgentSettings(settings); err != nil {
+		return domain.Workspace{}, fmt.Errorf("workspace %s: stored %w", id, err)
 	}
 	w.CreatedAt, w.UpdatedAt = w.CreatedAt.UTC(), w.UpdatedAt.UTC()
 	return w, nil

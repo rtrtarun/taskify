@@ -286,7 +286,7 @@ type schedFixture struct {
 func newSchedFixture(t *testing.T, b repotest.Backend) *schedFixture {
 	t.Helper()
 	svc := service.NewTaskService(
-		service.Deps{Tx: b.Tx, Tasks: b.Tasks, Workspaces: b.Workspaces, Comments: b.Comments, Outbox: b.Outbox},
+		service.Deps{Tx: b.Tx, Tasks: b.Tasks, Workspaces: b.Workspaces, Comments: b.Comments, Outbox: b.Outbox, Dependencies: b.Deps, AgentJobs: b.AgentJobs},
 		service.Config{PublicBaseURL: "https://taskify.test"},
 		service.WithClock(func() time.Time { return t0 }),
 	)

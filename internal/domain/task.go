@@ -46,6 +46,11 @@ type Task struct {
 	StatusBeforeBlocked *Status
 	BlockedReason       *BlockedReason
 
+	// ParentID is the task this one was split from, if any. It is set when
+	// a task is created and never changed by an update; deleting the parent
+	// clears it (departure D15).
+	ParentID *uuid.UUID
+
 	Version   int
 	CreatedAt time.Time
 	UpdatedAt time.Time
