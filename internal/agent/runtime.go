@@ -11,10 +11,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/rtrtarun/taskify/internal/agent/llm"
 	"github.com/rtrtarun/taskify/internal/agent/tools"
 	"github.com/rtrtarun/taskify/internal/domain"
+	"github.com/rtrtarun/taskify/internal/observability"
 	"github.com/rtrtarun/taskify/internal/repository"
 )
 
@@ -61,6 +65,8 @@ type Config struct {
 	FreeConflicts int
 	Now           func() time.Time
 	Logger        *slog.Logger
+	// Metrics may be nil.
+	Metrics *observability.Metrics
 }
 
 func (c *Config) defaults() {
@@ -244,15 +250,37 @@ func permanent(format string, a ...any) error {
 	return &permanentError{msg: fmt.Sprintf(format, a...)}
 }
 
-// Execute runs one claimed job to its next status.
+// Execute runs one claimed job to its next status. The run continues the
+// trace of the request whose change queued the job.
 func (r *Runtime) Execute(ctx context.Context, job *domain.AgentJob) {
+	start := time.Now()
+	var in struct {
+		TraceContext map[string]string `json:"trace_context"`
+	}
+	_ = json.Unmarshal(job.InputContext, &in)
+	ctx = observability.ExtractTraceContext(ctx, in.TraceContext)
+	ctx, span := observability.Tracer().Start(ctx, "agent.job", trace.WithAttributes(
+		attribute.String("agent.type", job.AgentType), attribute.String("agent.job_id", job.ID.String())))
+	defer span.End()
+
 	log := r.cfg.Logger.With("job_id", job.ID, "tenant_id", job.TenantID, "agent_type", job.AgentType)
 	if job.TaskID != nil {
 		log = log.With("task_id", *job.TaskID)
 	}
+	if id := observability.TraceID(ctx); id != "" {
+		log = log.With("trace_id", id)
+	}
 	ru := &run{rt: r, job: job, lease: job.UpdatedAt, log: log}
 	err := ru.do(ctx)
-	r.finish(ctx, ru, err)
+	outcome := r.finish(ctx, ru, err)
+	if outcome == "" {
+		return // the run was dropped
+	}
+	r.cfg.Metrics.ObserveAgentJob(job.AgentType, outcome, time.Since(start))
+	span.SetAttributes(attribute.String("agent.outcome", outcome), attribute.Int("agent.turns", ru.turns))
+	if outcome == observability.JobOutcomeFailed {
+		span.SetStatus(codes.Error, job.ErrorMessage)
+	}
 }
 
 // run is one execution of a job.
@@ -371,6 +399,7 @@ func (ru *run) turn(ctx context.Context, messages *[]llm.Message, schemas []llm.
 		ru.record(ctx, llm.Response{}, latency, OutcomeLLMError, nil, nil)
 		return false, fmt.Errorf("model call: %w", err)
 	}
+	r.cfg.Metrics.AgentTokens(ru.job.AgentType, resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
 	*messages = append(*messages, resp.Message)
 	calls := resp.Message.ToolCalls
 	if len(calls) == 0 {
@@ -521,7 +550,7 @@ type executionResult struct {
 // so a shutdown still returns the job to pending. Every outcome records what
 // the run did, including Tier 1 calls that ran before a failure, since each
 // of those committed on its own.
-func (r *Runtime) finish(ctx context.Context, ru *run, runErr error) {
+func (r *Runtime) finish(ctx context.Context, ru *run, runErr error) (outcome string) {
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	job, log, now := ru.job, ru.log, r.now()
@@ -535,7 +564,7 @@ func (r *Runtime) finish(ctx context.Context, ru *run, runErr error) {
 	switch {
 	case errors.Is(runErr, repository.ErrJobMoved):
 		log.Warn("agent runtime: job was taken over; dropping this run", "error", runErr)
-		return
+		return ""
 	case runErr == nil:
 		job.ErrorMessage = ""
 		next := domain.JobCompleted
@@ -596,15 +625,38 @@ func (r *Runtime) finish(ctx context.Context, ru *run, runErr error) {
 	if err := r.deps.Jobs.Update(wctx, job, domain.JobRunning, ru.lease); err != nil {
 		if errors.Is(err, repository.ErrJobMoved) || errors.Is(err, domain.ErrNotFound) {
 			log.Warn("agent runtime: job was taken over or deleted; result dropped")
-			return
+			return ""
 		}
 		log.Error("agent runtime: could not save job", "error", err)
-		return
+		return ""
+	}
+	if job.Status == domain.JobAwaitingApproval {
+		r.cfg.Metrics.AgentProposals(job.AgentType, observability.DecisionProposed, len(ru.proposals))
 	}
 	attrs := []any{"status", job.Status, "turns", ru.turns, "attempts", job.Attempts}
 	if job.Status == domain.JobFailed || job.Status == domain.JobPending {
 		log.Warn("agent runtime: job did not complete", append(attrs, "error", job.ErrorMessage)...)
-		return
+	} else {
+		log.Info("agent runtime: job finished", attrs...)
 	}
-	log.Info("agent runtime: job finished", attrs...)
+	return outcomeOf(job.Status, ru.stopped)
+}
+
+// outcomeOf is the metric outcome of a run that ended with the job in status.
+func outcomeOf(status domain.JobStatus, stopped string) string {
+	switch status {
+	case domain.JobCompleted:
+		return observability.JobOutcomeCompleted
+	case domain.JobAwaitingApproval:
+		return observability.JobOutcomeAwaiting
+	case domain.JobFailed:
+		return observability.JobOutcomeFailed
+	}
+	switch stopped {
+	case stoppedConflict:
+		return observability.JobOutcomeConflict
+	case stoppedInterrupted:
+		return observability.JobOutcomeInterrupted
+	}
+	return observability.JobOutcomeRetry
 }

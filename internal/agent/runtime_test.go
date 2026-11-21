@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -14,10 +15,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/rtrtarun/taskify/internal/agent/agenttest"
 	"github.com/rtrtarun/taskify/internal/agent/llm"
 	"github.com/rtrtarun/taskify/internal/agent/tools"
 	"github.com/rtrtarun/taskify/internal/domain"
+	"github.com/rtrtarun/taskify/internal/observability"
 	"github.com/rtrtarun/taskify/internal/repository/repotest"
 	"github.com/rtrtarun/taskify/internal/service"
 )
@@ -33,40 +37,6 @@ type clock struct{ offset atomic.Int64 }
 
 func (c *clock) now() time.Time          { return time.Now().Add(time.Duration(c.offset.Load())) }
 func (c *clock) advance(d time.Duration) { c.offset.Add(int64(d)) }
-
-// describeTool is a Tier 1 tool that sets a task's description through
-// TaskService, with the scope's expected version and the agent as actor.
-type describeTool struct{ svc *service.TaskService }
-
-type describeOutput struct {
-	Version int `json:"version"`
-}
-
-func (o describeOutput) TaskVersion() int { return o.Version }
-
-func (describeTool) Name() string        { return "Describe" }
-func (describeTool) Description() string { return "Set the task description." }
-func (describeTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type": "object", "properties": {
-		"task_id": {"type": "string", "format": "uuid"},
-		"description": {"type": "string", "minLength": 1}},
-		"required": ["task_id", "description"], "additionalProperties": false}`)
-}
-func (describeTool) Tier(json.RawMessage) domain.SafetyTier { return domain.Tier1 }
-func (d describeTool) Execute(ctx context.Context, s tools.Scope, args json.RawMessage) (any, error) {
-	var a struct {
-		TaskID      uuid.UUID `json:"task_id"`
-		Description string    `json:"description"`
-	}
-	if err := json.Unmarshal(args, &a); err != nil {
-		return nil, err
-	}
-	task, err := d.svc.UpdateTask(ctx, s.Actor(), s.TenantID, a.TaskID, s.BaseVersion, domain.Patch{Description: &a.Description})
-	if err != nil {
-		return nil, err
-	}
-	return describeOutput{Version: task.Version}, nil
-}
 
 // testAgent is a triage agent whose context names the task's title and
 // version, and which records every context it built.
@@ -131,7 +101,7 @@ func newFixture(t *testing.T, b repotest.Backend, hitl bool) *fixture {
 		t.Fatal(err)
 	}
 	f.reg = tools.NewRegistry(b.Tasks)
-	if err := f.reg.Register(describeTool{f.svc}); err != nil {
+	if err := f.reg.Register(agenttest.DescribeTool{Tasks: f.svc}); err != nil {
 		t.Fatal(err)
 	}
 	f.agent = &testAgent{tasks: b.Tasks, builds: map[uuid.UUID]int{}}
@@ -645,4 +615,106 @@ func TestFailedRunRecordsWhatRan(t *testing.T) {
 			t.Errorf("description = %q", stored.Description)
 		}
 	})
+}
+
+func TestReferenceAgentEndToEnd(t *testing.T) {
+	each(t, func(t *testing.T, b repotest.Backend) {
+		f := newFixture(t, b, false)
+		// The person's request carries a trace; the agent's run must join it.
+		traceID, _ := oteltrace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+		spanID, _ := oteltrace.SpanIDFromHex("00f067aa0ba902b7")
+		reqCtx := oteltrace.ContextWithSpanContext(ctx, oteltrace.NewSpanContext(oteltrace.SpanContextConfig{
+			TraceID: traceID, SpanID: spanID, TraceFlags: oteltrace.FlagsSampled}))
+		task, err := f.svc.CreateTask(reqCtx, alice, domain.NewTaskInput{TenantID: "tenant_acme", WorkspaceID: "ws", Title: "Bare task"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		jobs, _ := b.AgentJobs.ListForTask(ctx, "tenant_acme", task.ID)
+		if len(jobs) != 1 || !strings.Contains(string(jobs[0].InputContext), traceID.String()) {
+			t.Fatalf("input_context = %s", jobs[0].InputContext)
+		}
+
+		var seenTrace atomic.Value
+		ref := tracingAgent{Agent: agenttest.Agent{Tasks: b.Tasks}, seen: &seenTrace}
+		metrics := observability.NewMetrics(nil)
+		f.mock.Then(llm.Reply(llm.Response{
+			Message:      llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "c1", Name: "Describe", Arguments: `{"task_id":"` + task.ID.String() + `","description":"Written by the agent"}`}}},
+			FinishReason: "tool_calls", Usage: llm.Usage{PromptTokens: 100, CompletionTokens: 20}, Model: "mock"}),
+			llm.Reply(llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: "Done."}, Usage: llm.Usage{PromptTokens: 150, CompletionTokens: 5}}))
+		rt, err := New(Deps{Jobs: b.AgentJobs, Tasks: b.Tasks, Workspaces: b.Workspaces, LLM: f.mock, Tools: f.reg},
+			Config{Logger: quiet, Now: f.clock.now, Metrics: metrics}, ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n, err := rt.RunOnce(ctx); err != nil || n != 1 {
+			t.Fatalf("RunOnce = %d, %v", n, err)
+		}
+
+		// The Tier 1 call changed the task and is in the history.
+		stored, _ := b.Tasks.Get(ctx, "tenant_acme", task.ID)
+		if stored.Description != "Written by the agent" {
+			t.Errorf("description = %q", stored.Description)
+		}
+		runs, _ := b.AgentJobs.ListRuns(ctx, jobs[0].ID)
+		if len(runs) != 2 || runs[0].ToolName != "Describe" || runs[0].PromptTokens != 100 || runs[1].Outcome != OutcomeFinal {
+			t.Errorf("history = %+v", runs)
+		}
+		if got := seenTrace.Load(); got != traceID.String() {
+			t.Errorf("the run's trace = %v, want the request's %s", got, traceID)
+		}
+
+		// Metrics.
+		body := scrape(t, metrics)
+		for _, want := range []string{
+			`taskify_agent_job_duration_seconds_count{agent_type="triage",outcome="completed"} 1`,
+			`taskify_agent_llm_tokens_total{agent_type="triage",direction="prompt"} 250`,
+			`taskify_agent_llm_tokens_total{agent_type="triage",direction="completion"} 25`,
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("metrics missing %q", want)
+			}
+		}
+	})
+}
+
+func TestProposalsAreCounted(t *testing.T) {
+	f := newFixture(t, repotest.Memory(), true)
+	task, _ := f.task(t, "T")
+	metrics := observability.NewMetrics(nil)
+	f.mock.Then(llm.Call("c1", "Describe", describe(task.ID, "a")), llm.Call("c2", "Describe", describe(task.ID, "b")), llm.Text("ok"))
+	rt, err := New(Deps{Jobs: f.b.AgentJobs, Tasks: f.b.Tasks, Workspaces: f.b.Workspaces, LLM: f.mock, Tools: f.reg},
+		Config{Logger: quiet, Now: f.clock.now, Metrics: metrics}, f.agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	body := scrape(t, metrics)
+	for _, want := range []string{
+		`taskify_agent_proposals_total{agent_type="triage",decision="proposed"} 2`,
+		`taskify_agent_job_duration_seconds_count{agent_type="triage",outcome="awaiting_approval"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics missing %q", want)
+		}
+	}
+}
+
+// tracingAgent records the trace ID its context was built under.
+type tracingAgent struct {
+	agenttest.Agent
+	seen *atomic.Value
+}
+
+func (a tracingAgent) BuildContext(ctx context.Context, job *domain.AgentJob) ([]llm.Message, error) {
+	a.seen.Store(observability.TraceID(ctx))
+	return a.Agent.BuildContext(ctx, job)
+}
+
+func scrape(t *testing.T, m *observability.Metrics) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	return rec.Body.String()
 }

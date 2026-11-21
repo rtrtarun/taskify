@@ -18,6 +18,8 @@ type skippedJob struct{ agent, reason string }
 type jobInput struct {
 	Trigger string `json:"trigger"`
 	ActorID string `json:"actor_id"`
+	// TraceContext carries the request's trace, so the agent's run joins it.
+	TraceContext map[string]string `json:"trace_context,omitempty"`
 }
 
 // queueAgentJobs writes a pending job for each trigger the workspace's
@@ -36,7 +38,8 @@ func (s *TaskService) queueAgentJobs(ctx context.Context, task *domain.Task, set
 			skipped = append(skipped, skippedJob{tr.AgentType, observability.SkipAgentOff})
 			continue
 		}
-		input, err := json.Marshal(jobInput{Trigger: tr.Event, ActorID: actor.ID})
+		input, err := json.Marshal(jobInput{Trigger: tr.Event, ActorID: actor.ID,
+			TraceContext: observability.InjectTraceContext(ctx)})
 		if err != nil {
 			return nil, err
 		}

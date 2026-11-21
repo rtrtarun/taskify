@@ -146,7 +146,7 @@ Update this table as milestones close.
 | M2 Outbox and workers | 10 | Done. All exit criteria have tests, passing with `-race` on memory and PostgreSQL |
 | M3 REST API and bridges | 10 | Done. Unit, API, and end-to-end tests pass with `-race` on PostgreSQL |
 | M4 Observability (R1) | 6 | Done. Benchmarks meet every target on a Linux network; see docs/benchmarks.md. R1 complete apart from M0-07 |
-| M5 Agent runtime | 11 | In progress. M5-01 to M5-09 done |
+| M5 Agent runtime | 11 | In progress. M5-01 to M5-10 done |
 | M6 HITL bridge | 4 | Not started |
 | M7 Triage | 4 | Not started |
 | M8 Decomposer | 4 | Not started |

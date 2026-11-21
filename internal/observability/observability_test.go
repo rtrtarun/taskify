@@ -25,6 +25,16 @@ func TestMetricsExposition(t *testing.T) {
 	m.ObserveDispatch("task.blocked", OutcomeRetry, 10*time.Millisecond)
 	m.FeedbackForwarded("acted")
 	m.FeedbackForwarded("acted")
+	m.AgentJobSkipped("triage", SkipAgentsOff)
+	m.ObserveAgentJob("triage", JobOutcomeCompleted, 2*time.Second)
+	m.AgentTokens("triage", 120, 18)
+	m.AgentTokens("triage", 80, 2)
+	m.AgentProposals("triage", DecisionProposed, 2)
+	m.AgentProposals("triage", DecisionApproved, 0) // nothing to count
+	var none *Metrics
+	none.ObserveAgentJob("triage", JobOutcomeFailed, time.Second)
+	none.AgentTokens("triage", 1, 1)
+	none.AgentProposals("triage", DecisionRejected, 1)
 
 	if got := testutil.ToFloat64(m.deadLetters.WithLabelValues("task.created")); got != 1 {
 		t.Errorf("dlq{task.created} = %v, want 1", got)
@@ -46,6 +56,11 @@ func TestMetricsExposition(t *testing.T) {
 		`taskify_outbox_dlq_total{event_type="task.created"} 1`,
 		`taskify_feedback_forwarded_total{signal="acted"} 2`,
 		`taskify_outbox_pending_rows 7`,
+		`taskify_agent_jobs_skipped_total{agent_type="triage",reason="agents_disabled"} 1`,
+		`taskify_agent_job_duration_seconds_count{agent_type="triage",outcome="completed"} 1`,
+		`taskify_agent_llm_tokens_total{agent_type="triage",direction="prompt"} 200`,
+		`taskify_agent_llm_tokens_total{agent_type="triage",direction="completion"} 20`,
+		`taskify_agent_proposals_total{agent_type="triage",decision="proposed"} 2`,
 		`go_goroutines`,
 	} {
 		if !strings.Contains(body, want) {

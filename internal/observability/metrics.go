@@ -23,6 +23,24 @@ const (
 	OutcomeCircuitOpen = "circuit_open"
 )
 
+// Agent job outcomes, the outcome label of the job duration histogram.
+const (
+	JobOutcomeCompleted   = "completed"
+	JobOutcomeAwaiting    = "awaiting_approval"
+	JobOutcomeFailed      = "failed"
+	JobOutcomeRetry       = "retry"
+	JobOutcomeConflict    = "conflict"
+	JobOutcomeInterrupted = "interrupted"
+)
+
+// Proposal decisions, the decision label of the proposals counter.
+const (
+	DecisionProposed = "proposed" // a Tier 2 call was stored for approval
+	DecisionApproved = "approved"
+	DecisionRejected = "rejected"
+	DecisionStale    = "stale" // approval came after the task had changed
+)
+
 // Reasons an agent job a change asked for was not queued, the reason label
 // of the skipped-jobs counter.
 const (
@@ -39,6 +57,9 @@ type Metrics struct {
 	deadLetters      *prometheus.CounterVec
 	feedback         *prometheus.CounterVec
 	jobsSkipped      *prometheus.CounterVec
+	jobDuration      *prometheus.HistogramVec
+	llmTokens        *prometheus.CounterVec
+	proposals        *prometheus.CounterVec
 }
 
 // PendingCounter reports how many outbox rows are pending.
@@ -73,8 +94,22 @@ func NewMetrics(pending PendingCounter) *Metrics {
 			Name: "taskify_agent_jobs_skipped_total",
 			Help: "Agent jobs a task change asked for but that were not queued, by agent type and reason.",
 		}, []string{"agent_type", "reason"}),
+		jobDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "taskify_agent_job_duration_seconds",
+			Help:    "Time to run one agent job, by agent type and outcome.",
+			Buckets: []float64{.1, .25, .5, 1, 2.5, 5, 10, 20, 40, 60, 120, 300},
+		}, []string{"agent_type", "outcome"}),
+		llmTokens: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "taskify_agent_llm_tokens_total",
+			Help: "Model tokens used by agents, by agent type and direction (prompt or completion).",
+		}, []string{"agent_type", "direction"}),
+		proposals: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "taskify_agent_proposals_total",
+			Help: "Agent proposals, by agent type and decision.",
+		}, []string{"agent_type", "decision"}),
 	}
 	reg.MustRegister(m.httpDuration, m.dispatchDuration, m.deadLetters, m.feedback, m.jobsSkipped,
+		m.jobDuration, m.llmTokens, m.proposals,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	if pending != nil {
 		reg.MustRegister(&pendingCollector{count: pending})
@@ -126,6 +161,31 @@ func (m *Metrics) AgentJobSkipped(agentType, reason string) {
 		return
 	}
 	m.jobsSkipped.WithLabelValues(agentType, reason).Inc()
+}
+
+// ObserveAgentJob records one run of an agent job.
+func (m *Metrics) ObserveAgentJob(agentType, outcome string, d time.Duration) {
+	if m == nil {
+		return
+	}
+	m.jobDuration.WithLabelValues(agentType, outcome).Observe(d.Seconds())
+}
+
+// AgentTokens counts the tokens of one model call.
+func (m *Metrics) AgentTokens(agentType string, prompt, completion int) {
+	if m == nil {
+		return
+	}
+	m.llmTokens.WithLabelValues(agentType, "prompt").Add(float64(prompt))
+	m.llmTokens.WithLabelValues(agentType, "completion").Add(float64(completion))
+}
+
+// AgentProposals counts n proposals reaching a decision.
+func (m *Metrics) AgentProposals(agentType, decision string, n int) {
+	if m == nil || n <= 0 {
+		return
+	}
+	m.proposals.WithLabelValues(agentType, decision).Add(float64(n))
 }
 
 func statusLabel(code int) string {

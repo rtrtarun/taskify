@@ -122,7 +122,7 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 		return nil, err
 	}
 
-	runtime, err := newAgentRuntime(cfg, db, tasks, logger)
+	runtime, err := newAgentRuntime(cfg, db, tasks, logger, metrics)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +147,8 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 
 // newAgentRuntime builds the agent runtime, or returns nil when
 // AGENTS_ENABLED is false: then no job is ever claimed.
-func newAgentRuntime(cfg config.Config, db *postgres.DB, tasks *postgres.TaskRepo, logger *slog.Logger) (*agent.Runtime, error) {
+func newAgentRuntime(cfg config.Config, db *postgres.DB, tasks *postgres.TaskRepo, logger *slog.Logger,
+	metrics *observability.Metrics) (*agent.Runtime, error) {
 	if !cfg.AgentsEnabled {
 		return nil, nil
 	}
@@ -170,6 +171,7 @@ func newAgentRuntime(cfg config.Config, db *postgres.DB, tasks *postgres.TaskRep
 		MaxTurns:    cfg.AgentMaxTurns,
 		MaxAttempts: cfg.AgentMaxAttempts,
 		Logger:      logger,
+		Metrics:     metrics,
 	})
 }
 

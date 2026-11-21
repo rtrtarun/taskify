@@ -120,7 +120,7 @@ func TestPersonQueuesJobs(t *testing.T) {
 			t.Fatalf("jobs after create = %+v", jobs)
 		}
 		var input jobInput
-		if err := json.Unmarshal(jobs[0].InputContext, &input); err != nil || input != (jobInput{Trigger: domain.EventTaskCreated, ActorID: alice.ID}) {
+		if err := json.Unmarshal(jobs[0].InputContext, &input); err != nil || input.Trigger != domain.EventTaskCreated || input.ActorID != alice.ID {
 			t.Errorf("input_context = %s, %v", jobs[0].InputContext, err)
 		}
 
