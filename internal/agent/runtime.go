@@ -67,6 +67,13 @@ type Config struct {
 	Logger        *slog.Logger
 	// Metrics may be nil.
 	Metrics *observability.Metrics
+	// PublicBaseURL and OutboxMaxAttempts shape approval notifications, as
+	// for TaskService.
+	PublicBaseURL     string
+	OutboxMaxAttempts int
+	// Wake is called after an approval request is committed, so the relay
+	// sends it at once. Nil does nothing.
+	Wake func()
 }
 
 func (c *Config) defaults() {
@@ -97,6 +104,12 @@ func (c *Config) defaults() {
 	if c.FreeConflicts <= 0 {
 		c.FreeConflicts = 5
 	}
+	if c.OutboxMaxAttempts <= 0 {
+		c.OutboxMaxAttempts = 10
+	}
+	if c.Wake == nil {
+		c.Wake = func() {}
+	}
 	if c.Now == nil {
 		c.Now = time.Now
 	}
@@ -112,6 +125,9 @@ func (c *Config) backoff(n int) time.Duration {
 
 // Deps are what the runtime uses.
 type Deps struct {
+	// Tx and Outbox write a job's approval request with the job's update.
+	Tx         repository.TxManager
+	Outbox     repository.OutboxRepository
 	Jobs       repository.AgentJobRepository
 	Tasks      repository.TaskRepository
 	Workspaces repository.WorkspaceRepository
@@ -134,6 +150,10 @@ type Runtime struct {
 // given here are left pending for a runtime that has them.
 func New(deps Deps, cfg Config, agents ...Agent) (*Runtime, error) {
 	cfg.defaults()
+	if deps.Tx == nil || deps.Outbox == nil || deps.Jobs == nil || deps.Tasks == nil ||
+		deps.Workspaces == nil || deps.LLM == nil || deps.Tools == nil {
+		return nil, errors.New("agent: every dependency is required")
+	}
 	r := &Runtime{cfg: cfg, deps: deps, agents: map[string]Agent{}}
 	for _, a := range agents {
 		t := a.Type()
@@ -622,7 +642,7 @@ func (r *Runtime) finish(ctx context.Context, ru *run, runErr error) (outcome st
 	}
 	job.ExecutionResult, _ = json.Marshal(result)
 
-	if err := r.deps.Jobs.Update(wctx, job, domain.JobRunning, ru.lease); err != nil {
+	if err := r.save(wctx, ctx, ru); err != nil {
 		if errors.Is(err, repository.ErrJobMoved) || errors.Is(err, domain.ErrNotFound) {
 			log.Warn("agent runtime: job was taken over or deleted; result dropped")
 			return ""
@@ -632,6 +652,7 @@ func (r *Runtime) finish(ctx context.Context, ru *run, runErr error) (outcome st
 	}
 	if job.Status == domain.JobAwaitingApproval {
 		r.cfg.Metrics.AgentProposals(job.AgentType, observability.DecisionProposed, len(ru.proposals))
+		r.cfg.Wake()
 	}
 	attrs := []any{"status", job.Status, "turns", ru.turns, "attempts", job.Attempts}
 	if job.Status == domain.JobFailed || job.Status == domain.JobPending {
@@ -640,6 +661,43 @@ func (r *Runtime) finish(ctx context.Context, ru *run, runErr error) (outcome st
 		log.Info("agent runtime: job finished", attrs...)
 	}
 	return outcomeOf(job.Status, ru.stopped)
+}
+
+// save writes the job's next status. A job that now awaits approval also
+// gets its agent.approval_requested outbox row in the same transaction, so
+// the request is sent exactly when the proposals are stored. traceCtx carries
+// the run's trace for that row.
+func (r *Runtime) save(ctx, traceCtx context.Context, ru *run) error {
+	job := ru.job
+	return r.deps.Tx.WithTx(ctx, func(ctx context.Context) error {
+		if err := r.deps.Jobs.Update(ctx, job, domain.JobRunning, ru.lease); err != nil {
+			return err
+		}
+		if job.Status != domain.JobAwaitingApproval || job.TaskID == nil {
+			// A job without a task has nobody to ask yet; its proposals wait
+			// in the job, visible through the API.
+			return nil
+		}
+		task, err := r.deps.Tasks.Get(ctx, job.TenantID, *job.TaskID)
+		if err != nil {
+			return err
+		}
+		names := make([]string, len(ru.proposals))
+		for i, p := range ru.proposals {
+			names[i] = p.Tool
+		}
+		event := domain.NewApprovalRequestedEvent(task, job, names, job.UpdatedAt)
+		entries, err := domain.NewOutboxEntries([]domain.Event{event}, r.cfg.PublicBaseURL, r.cfg.OutboxMaxAttempts, job.UpdatedAt)
+		if err != nil {
+			return err
+		}
+		trace := observability.InjectTraceContext(traceCtx)
+		for i := range entries {
+			entries[i].TraceContext = trace
+		}
+		_, err = r.deps.Outbox.Insert(ctx, entries)
+		return err
+	})
 }
 
 // outcomeOf is the metric outcome of a run that ended with the job in status.

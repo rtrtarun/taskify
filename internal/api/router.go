@@ -20,7 +20,9 @@ type Deps struct {
 	Workspaces *service.WorkspaceService
 	Feedback   *service.FeedbackService
 	Webhooks   *service.WebhookService
-	Learning   LearningClient
+	// AgentJobs serves /agent-jobs. Nil leaves those routes out.
+	AgentJobs *service.AgentJobService
+	Learning  LearningClient
 
 	Auth          AuthConfig
 	WebhookSecret string
@@ -40,6 +42,7 @@ type handlers struct {
 	workspaces    *service.WorkspaceService
 	feedback      *service.FeedbackService
 	webhooks      *service.WebhookService
+	agentJobs     *service.AgentJobService
 	learning      LearningClient
 	webhookSecret string
 	version       string
@@ -70,7 +73,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 	}
 	limiter := newRateLimiter(d.RateLimit)
 	h := &handlers{
-		tasks: d.Tasks, workspaces: d.Workspaces, feedback: d.Feedback, webhooks: d.Webhooks,
+		tasks: d.Tasks, workspaces: d.Workspaces, feedback: d.Feedback, webhooks: d.Webhooks, agentJobs: d.AgentJobs,
 		learning: d.Learning, webhookSecret: d.WebhookSecret, version: d.Version, logger: d.Logger, now: d.Now,
 	}
 
@@ -102,6 +105,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.Group(func(r chi.Router) {
 			authenticated(r)
 			r.Route("/tasks", h.taskRoutes)
+			if h.agentJobs != nil {
+				r.Route("/agent-jobs", h.agentJobRoutes)
+			}
 			r.Group(h.adminRoutes)
 		})
 	})

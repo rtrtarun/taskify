@@ -59,7 +59,7 @@ func TestLLMSmoke(t *testing.T) {
 	if err := reg.Register(agenttest.DescribeTool{Tasks: svc}); err != nil {
 		t.Fatal(err)
 	}
-	rt, err := agent.New(agent.Deps{Jobs: b.AgentJobs, Tasks: b.Tasks, Workspaces: b.Workspaces, LLM: client, Tools: reg},
+	rt, err := agent.New(agent.Deps{Tx: b.Tx, Outbox: b.Outbox, Jobs: b.AgentJobs, Tasks: b.Tasks, Workspaces: b.Workspaces, LLM: client, Tools: reg},
 		agent.Config{Workers: 1, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, agenttest.Agent{Tasks: b.Tasks})
 	if err != nil {
 		t.Fatal(err)

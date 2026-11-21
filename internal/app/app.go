@@ -97,12 +97,18 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 		OutboxMaxAttempts: cfg.OutboxMaxAttempts,
 	}, service.WithWake(relay.Wake), service.WithMetrics(metrics))
 	feedback := service.NewFeedbackService(tasks, client, metrics)
+	// One registry for the runtime and for applying approved proposals, so a
+	// proposal is applied by the same tool that proposed it. Tools are
+	// registered here as agents are built (M7 on).
+	registry := tools.NewRegistry(tasks)
+	agentJobs := service.NewAgentJobService(db, postgres.NewAgentJobRepo(db), tasks, registry, metrics, nil)
 
 	handler, err := api.NewRouter(api.Deps{
 		Tasks:      taskSvc,
 		Workspaces: service.NewWorkspaceService(db, postgres.NewWorkspaceRepo(db), postgres.NewRuleRepo(db), client, nil),
 		Feedback:   feedback,
-		Webhooks:   service.NewWebhookService(db, deliveries, taskSvc, feedback, logger, nil),
+		Webhooks:   service.NewWebhookService(db, deliveries, taskSvc, feedback, logger, nil).WithAgentJobs(agentJobs),
+		AgentJobs:  agentJobs,
 		Learning:   client,
 		Auth: api.AuthConfig{
 			Development:         cfg.IsDevelopment(),
@@ -122,7 +128,7 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 		return nil, err
 	}
 
-	runtime, err := newAgentRuntime(cfg, db, tasks, logger, metrics)
+	runtime, err := newAgentRuntime(cfg, db, tasks, registry, logger, metrics, relay.Wake)
 	if err != nil {
 		return nil, err
 	}
@@ -147,8 +153,8 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 
 // newAgentRuntime builds the agent runtime, or returns nil when
 // AGENTS_ENABLED is false: then no job is ever claimed.
-func newAgentRuntime(cfg config.Config, db *postgres.DB, tasks *postgres.TaskRepo, logger *slog.Logger,
-	metrics *observability.Metrics) (*agent.Runtime, error) {
+func newAgentRuntime(cfg config.Config, db *postgres.DB, tasks *postgres.TaskRepo, registry *tools.Registry, logger *slog.Logger,
+	metrics *observability.Metrics, wake func()) (*agent.Runtime, error) {
 	if !cfg.AgentsEnabled {
 		return nil, nil
 	}
@@ -158,20 +164,26 @@ func newAgentRuntime(cfg config.Config, db *postgres.DB, tasks *postgres.TaskRep
 	if err != nil {
 		return nil, err
 	}
-	// Agents and their tools are registered here as they are built (M7 on).
-	// Until then the runtime claims nothing and only recovers stuck jobs.
+	// Agents are registered here as they are built (M7 on). Until then the
+	// runtime claims nothing and only recovers stuck jobs.
 	return agent.New(agent.Deps{
+		Tx:         db,
+		Outbox:     postgres.NewOutboxRepo(db),
 		Jobs:       postgres.NewAgentJobRepo(db),
 		Tasks:      tasks,
 		Workspaces: postgres.NewWorkspaceRepo(db),
 		LLM:        client,
-		Tools:      tools.NewRegistry(tasks),
+		Tools:      registry,
 	}, agent.Config{
 		Workers:     cfg.AgentWorkers,
 		MaxTurns:    cfg.AgentMaxTurns,
 		MaxAttempts: cfg.AgentMaxAttempts,
 		Logger:      logger,
 		Metrics:     metrics,
+
+		PublicBaseURL:     cfg.PublicBaseURL,
+		OutboxMaxAttempts: cfg.OutboxMaxAttempts,
+		Wake:              wake,
 	})
 }
 
