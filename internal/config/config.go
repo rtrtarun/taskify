@@ -50,6 +50,20 @@ type Config struct {
 
 	RateLimitRPS   float64
 	RateLimitBurst int
+
+	// AgentsEnabled is the process-level switch for the agent runtime.
+	// Per-workspace control is in agent_settings.
+	AgentsEnabled    bool
+	AgentWorkers     int
+	AgentMaxTurns    int
+	AgentMaxAttempts int
+
+	// LLMBaseURL and LLMModel are required when AgentsEnabled is true.
+	// LLMAPIKey is empty for local Ollama.
+	LLMBaseURL string
+	LLMAPIKey  string
+	LLMModel   string
+	LLMTimeout time.Duration
 }
 
 // IsDevelopment reports whether the header identity fallback and other
@@ -58,8 +72,8 @@ func (c Config) IsDevelopment() bool { return c.Env == EnvDevelopment }
 
 // String never includes secrets, so a Config is safe to log.
 func (c Config) String() string {
-	return fmt.Sprintf("env=%s port=%d agentpulse=%s jwt_alg=%s outbox_workers=%d",
-		c.Env, c.Port, c.AgentPulseBaseURL, c.JWTAlgorithm, c.OutboxWorkers)
+	return fmt.Sprintf("env=%s port=%d agentpulse=%s jwt_alg=%s outbox_workers=%d agents=%t llm=%s model=%s",
+		c.Env, c.Port, c.AgentPulseBaseURL, c.JWTAlgorithm, c.OutboxWorkers, c.AgentsEnabled, c.LLMBaseURL, c.LLMModel)
 }
 
 // Load reads configuration from the process environment. When ENV is
@@ -103,6 +117,26 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 
 		RateLimitRPS:   r.positiveFloat("RATE_LIMIT_RPS", 20),
 		RateLimitBurst: r.intRange("RATE_LIMIT_BURST", 40, 1, 1_000_000),
+
+		AgentsEnabled:    r.boolean("AGENTS_ENABLED", false),
+		AgentWorkers:     r.intRange("AGENT_WORKERS", 4, 1, 256),
+		AgentMaxTurns:    r.intRange("AGENT_MAX_TURNS", 6, 1, 50),
+		AgentMaxAttempts: r.intRange("AGENT_MAX_ATTEMPTS", 3, 1, 20),
+
+		LLMBaseURL: strings.TrimRight(r.optionalURL("LLM_BASE_URL"), "/"),
+		LLMAPIKey:  r.optional("LLM_API_KEY"),
+		LLMModel:   r.optional("LLM_MODEL"),
+		LLMTimeout: r.duration("LLM_TIMEOUT", 30*time.Second),
+	}
+
+	// A runtime with no model would fail every job; refuse to start instead.
+	if c.AgentsEnabled {
+		if c.LLMBaseURL == "" {
+			r.fail("LLM_BASE_URL", "is required when AGENTS_ENABLED=true")
+		}
+		if c.LLMModel == "" {
+			r.fail("LLM_MODEL", "is required when AGENTS_ENABLED=true")
+		}
 	}
 
 	// A verification key is mandatory in production. In development the header
@@ -147,6 +181,31 @@ func (r *reader) required(name string) string {
 		r.fail(name, "is required")
 	}
 	return v
+}
+
+func (r *reader) optionalURL(name string) string {
+	v := r.optional(name)
+	if v == "" {
+		return ""
+	}
+	u, err := url.Parse(v)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		r.fail(name, "must be an absolute http or https URL")
+	}
+	return v
+}
+
+func (r *reader) boolean(name string, def bool) bool {
+	v := r.optional(name)
+	if v == "" {
+		return def
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		r.fail(name, "must be true or false")
+		return def
+	}
+	return b
 }
 
 func (r *reader) requiredURL(name string) string {

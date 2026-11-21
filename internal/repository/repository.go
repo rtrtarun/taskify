@@ -108,8 +108,8 @@ type WebhookDeliveryRepository interface {
 }
 
 // ErrJobMoved is returned by AgentJobRepository.Update when the job is no
-// longer in the status the caller read, because another worker or a recovery
-// sweep changed it.
+// longer as the caller read it, because another worker or a recovery sweep
+// changed it.
 var ErrJobMoved = errors.New("repository: agent job is no longer in the expected status")
 
 // AgentJobRepository stores agent_jobs and agent_run_history rows.
@@ -120,13 +120,21 @@ type AgentJobRepository interface {
 	Get(ctx context.Context, tenantID string, id uuid.UUID) (*domain.AgentJob, error)
 	// GetForUpdate requires a transaction.
 	GetForUpdate(ctx context.Context, tenantID string, id uuid.UUID) (*domain.AgentJob, error)
-	// Claim marks up to limit pending jobs running, oldest first, skipping
-	// jobs another claimer holds. It spans tenants: the runtime serves all.
-	Claim(ctx context.Context, now time.Time, limit int) ([]*domain.AgentJob, error)
-	// Update saves the job's status, results, error, attempts, decision, and
-	// updated_at, provided its stored status is still from. Otherwise it
-	// returns ErrJobMoved, or domain.ErrNotFound when the job is gone.
-	Update(ctx context.Context, j *domain.AgentJob, from domain.JobStatus) error
+	// Claim marks up to limit pending jobs of the given agent types running,
+	// oldest first, skipping jobs another claimer holds, and sets their
+	// updated_at to now. It spans tenants: the runtime serves all.
+	Claim(ctx context.Context, now time.Time, limit int, agentTypes []string) ([]*domain.AgentJob, error)
+	// Update saves the job's status, base version, results, error, attempts,
+	// decision, and updated_at, provided the stored job still has status from
+	// and updated_at fromUpdatedAt. updated_at is the job's lease: a worker
+	// whose job was recovered and claimed again cannot overwrite it.
+	// Otherwise Update returns ErrJobMoved, or domain.ErrNotFound when the job
+	// is gone.
+	Update(ctx context.Context, j *domain.AgentJob, from domain.JobStatus, fromUpdatedAt time.Time) error
+	// RecoverStuck handles jobs left running since before olderThan by a
+	// worker that died (default G11): each gets one more attempt and returns
+	// to pending, or fails once it reaches maxAttempts.
+	RecoverStuck(ctx context.Context, olderThan, now time.Time, maxAttempts int) (requeued, failed int, err error)
 	// ListForTask returns the task's jobs, oldest first.
 	ListForTask(ctx context.Context, tenantID string, taskID uuid.UUID) ([]*domain.AgentJob, error)
 	InsertRun(ctx context.Context, r domain.AgentRun) error

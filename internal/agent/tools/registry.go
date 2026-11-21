@@ -80,6 +80,14 @@ type Tool interface {
 	Execute(ctx context.Context, scope Scope, args json.RawMessage) (any, error)
 }
 
+// VersionedOutput is implemented by a Tier 1 tool's output when the call
+// changed the job's own task. The runtime then expects the new version on
+// later calls in the same run, so the agent does not conflict with its own
+// write while a person's edit still does.
+type VersionedOutput interface {
+	TaskVersion() int
+}
+
 // TaskLookup loads a task within a tenant. repository.TaskRepository
 // satisfies it.
 type TaskLookup interface {

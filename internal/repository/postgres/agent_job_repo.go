@@ -52,28 +52,33 @@ func (r *AgentJobRepo) GetForUpdate(ctx context.Context, tenantID string, id uui
 	return r.one(ctx, `SELECT `+jobColumns+` FROM agent_jobs WHERE id = $1 AND tenant_id = $2 FOR UPDATE`, id, tenantID)
 }
 
-func (r *AgentJobRepo) Claim(ctx context.Context, now time.Time, limit int) ([]*domain.AgentJob, error) {
+func (r *AgentJobRepo) Claim(ctx context.Context, now time.Time, limit int, agentTypes []string) ([]*domain.AgentJob, error) {
+	if len(agentTypes) == 0 {
+		return []*domain.AgentJob{}, nil
+	}
 	// One statement, as for the outbox: the subquery locks pending rows,
 	// skipping those another claimer holds, and the update marks them.
 	return r.query(ctx, `
 		UPDATE agent_jobs SET status = 'running', updated_at = $1
 		WHERE id IN (
 			SELECT id FROM agent_jobs
-			WHERE status = 'pending'
+			WHERE status = 'pending' AND agent_type = ANY($3)
 			ORDER BY created_at, id
 			LIMIT $2
 			FOR UPDATE SKIP LOCKED)
-		RETURNING `+jobColumns, now.UTC().Truncate(time.Microsecond), limit)
+		RETURNING `+jobColumns, now.UTC().Truncate(time.Microsecond), limit, agentTypes)
 }
 
-func (r *AgentJobRepo) Update(ctx context.Context, j *domain.AgentJob, from domain.JobStatus) error {
+func (r *AgentJobRepo) Update(ctx context.Context, j *domain.AgentJob, from domain.JobStatus, fromUpdatedAt time.Time) error {
 	tag, err := r.db.q(ctx).Exec(ctx, `
 		UPDATE agent_jobs
 		SET status = $4::text::agent_job_status, proposed_actions = $5, execution_result = $6,
-			error_message = $7, attempts = $8, decided_by = $9, decided_at = $10, updated_at = $11
-		WHERE id = $1 AND tenant_id = $2 AND status = $3::text::agent_job_status`,
+			error_message = $7, attempts = $8, decided_by = $9, decided_at = $10, updated_at = $11,
+			base_task_version = $13
+		WHERE id = $1 AND tenant_id = $2 AND status = $3::text::agent_job_status AND updated_at = $12`,
 		j.ID, j.TenantID, string(from), string(j.Status), jsonOrNull(j.ProposedActions), jsonOrNull(j.ExecutionResult),
-		nullString(truncateErr(j.ErrorMessage)), j.Attempts, nullString(j.DecidedBy), j.DecidedAt, j.UpdatedAt)
+		nullString(truncateErr(j.ErrorMessage)), j.Attempts, nullString(j.DecidedBy), j.DecidedAt,
+		j.UpdatedAt.UTC().Truncate(time.Microsecond), fromUpdatedAt.UTC().Truncate(time.Microsecond), j.BaseTaskVersion)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -84,6 +89,31 @@ func (r *AgentJobRepo) Update(ctx context.Context, j *domain.AgentJob, from doma
 		return err
 	}
 	return repository.ErrJobMoved
+}
+
+func (r *AgentJobRepo) RecoverStuck(ctx context.Context, olderThan, now time.Time, maxAttempts int) (requeued, failed int, err error) {
+	err = r.db.WithTx(ctx, func(ctx context.Context) error {
+		q := r.db.q(ctx)
+		now := now.UTC().Truncate(time.Microsecond)
+		tag, err := q.Exec(ctx, `
+			UPDATE agent_jobs
+			SET status = 'failed', attempts = attempts + 1, updated_at = $2,
+				error_message = 'abandoned while running; attempt limit reached'
+			WHERE status = 'running' AND updated_at < $1 AND attempts + 1 >= $3`, olderThan, now, maxAttempts)
+		if err != nil {
+			return mapErr(err)
+		}
+		failed = int(tag.RowsAffected())
+		tag, err = q.Exec(ctx, `
+			UPDATE agent_jobs SET status = 'pending', attempts = attempts + 1, updated_at = $2
+			WHERE status = 'running' AND updated_at < $1`, olderThan, now)
+		if err != nil {
+			return mapErr(err)
+		}
+		requeued = int(tag.RowsAffected())
+		return nil
+	})
+	return requeued, failed, err
 }
 
 func (r *AgentJobRepo) ListForTask(ctx context.Context, tenantID string, taskID uuid.UUID) ([]*domain.AgentJob, error) {

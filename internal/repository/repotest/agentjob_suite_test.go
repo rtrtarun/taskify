@@ -118,7 +118,7 @@ func TestAgentJobClaim(t *testing.T) {
 		insertJob(t, b, waiting)
 
 		now := t0.Add(time.Hour)
-		claimed, err := b.AgentJobs.Claim(ctx, now, 2)
+		claimed, err := b.AgentJobs.Claim(ctx, now, 2, domain.AgentTypes)
 		if err != nil || len(claimed) != 2 {
 			t.Fatalf("Claim = %d jobs, %v", len(claimed), err)
 		}
@@ -131,10 +131,10 @@ func TestAgentJobClaim(t *testing.T) {
 				t.Errorf("claimed job = %s at %v", j.Status, j.UpdatedAt)
 			}
 		}
-		if rest, _ := b.AgentJobs.Claim(ctx, now, 5); len(rest) != 1 || rest[0].ID != ids[0] {
+		if rest, _ := b.AgentJobs.Claim(ctx, now, 5, domain.AgentTypes); len(rest) != 1 || rest[0].ID != ids[0] {
 			t.Errorf("second claim = %+v", rest)
 		}
-		if none, _ := b.AgentJobs.Claim(ctx, now, 5); len(none) != 0 {
+		if none, _ := b.AgentJobs.Claim(ctx, now, 5, domain.AgentTypes); len(none) != 0 {
 			t.Errorf("a job awaiting approval or running was claimed: %+v", none)
 		}
 	})
@@ -158,7 +158,7 @@ func TestAgentJobClaimRace(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				for {
-					got, err := b.AgentJobs.Claim(ctx, t0, 3)
+					got, err := b.AgentJobs.Claim(ctx, t0, 3, domain.AgentTypes)
 					mu.Lock()
 					if err != nil && first == nil {
 						first = err
@@ -194,7 +194,7 @@ func TestAgentJobUpdate(t *testing.T) {
 		task := newTask(t, tenant, nil)
 		create(t, b, task)
 		insertJob(t, b, newJob(t, task, domain.AgentTriage, t0))
-		claimed, err := b.AgentJobs.Claim(ctx, t0, 1)
+		claimed, err := b.AgentJobs.Claim(ctx, t0, 1, domain.AgentTypes)
 		if err != nil || len(claimed) != 1 {
 			t.Fatal(claimed, err)
 		}
@@ -204,20 +204,39 @@ func TestAgentJobUpdate(t *testing.T) {
 			t.Errorf("GetForUpdate outside a transaction: %v", err)
 		}
 
+		leased := j.UpdatedAt // the claim's lease
+		if !leased.Equal(t0) {
+			t.Fatalf("claimed at %v", leased)
+		}
+
+		// A heartbeat keeps the status and moves the lease.
+		beat := *j
+		beat.UpdatedAt = t0.Add(30 * time.Second)
+		if err := b.AgentJobs.Update(ctx, &beat, domain.JobRunning, leased); err != nil {
+			t.Fatal(err)
+		}
+		// The old lease no longer matches, although the status does: a
+		// worker whose job was recovered and claimed again loses.
+		if err := b.AgentJobs.Update(ctx, j, domain.JobRunning, leased); !errors.Is(err, repository.ErrJobMoved) {
+			t.Errorf("update with an old lease: %v", err)
+		}
+		leased = beat.UpdatedAt
+
 		at := t0.Add(time.Minute)
 		if err := j.TransitionTo(domain.JobAwaitingApproval, at); err != nil {
 			t.Fatal(err)
 		}
 		j.ProposedActions = json.RawMessage(`[{"tool": "UpdateTaskAttributes", "args": {"priority": "high"}}]`)
 		j.Attempts = 1
-		if err := b.AgentJobs.Update(ctx, j, domain.JobRunning); err != nil {
+		j.BaseTaskVersion = ptr(3)
+		if err := b.AgentJobs.Update(ctx, j, domain.JobRunning, leased); err != nil {
 			t.Fatal(err)
 		}
 
 		// A second writer that still thinks the job is running loses.
 		stale := *j
 		stale.Status = domain.JobFailed
-		if err := b.AgentJobs.Update(ctx, &stale, domain.JobRunning); !errors.Is(err, repository.ErrJobMoved) {
+		if err := b.AgentJobs.Update(ctx, &stale, domain.JobRunning, leased); !errors.Is(err, repository.ErrJobMoved) {
 			t.Errorf("update from a stale status: %v", err)
 		}
 
@@ -226,13 +245,13 @@ func TestAgentJobUpdate(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			decided := at.Add(time.Minute)
+			decided, prev := at.Add(time.Minute), locked.UpdatedAt
 			if err := locked.TransitionTo(domain.JobCompleted, decided); err != nil {
 				return err
 			}
 			locked.DecidedBy, locked.DecidedAt = "usr_bob", &decided
 			locked.ExecutionResult = json.RawMessage(`{"applied": 1}`)
-			return b.AgentJobs.Update(ctx, locked, domain.JobAwaitingApproval)
+			return b.AgentJobs.Update(ctx, locked, domain.JobAwaitingApproval, prev)
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -241,7 +260,7 @@ func TestAgentJobUpdate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Status != domain.JobCompleted || got.Attempts != 1 || got.DecidedBy != "usr_bob" ||
+		if got.Status != domain.JobCompleted || got.Attempts != 1 || got.DecidedBy != "usr_bob" || *got.BaseTaskVersion != 3 ||
 			!got.DecidedAt.Equal(at.Add(time.Minute)) || !got.UpdatedAt.Equal(at.Add(time.Minute)) ||
 			!jsonEq(got.ProposedActions, j.ProposedActions) || !jsonEq(got.ExecutionResult, json.RawMessage(`{"applied":1}`)) {
 			t.Errorf("updated job = %+v", got)
@@ -250,18 +269,18 @@ func TestAgentJobUpdate(t *testing.T) {
 		// A decision needs both who and when, as the schema requires.
 		half := *got
 		half.DecidedAt = nil
-		if err := b.AgentJobs.Update(ctx, &half, domain.JobCompleted); !errors.Is(err, domain.ErrValidation) {
+		if err := b.AgentJobs.Update(ctx, &half, domain.JobCompleted, got.UpdatedAt); !errors.Is(err, domain.ErrValidation) {
 			t.Errorf("half a decision: %v", err)
 		}
 
 		gone := *got
 		gone.ID = uuid.New()
-		if err := b.AgentJobs.Update(ctx, &gone, domain.JobCompleted); !errors.Is(err, domain.ErrNotFound) {
+		if err := b.AgentJobs.Update(ctx, &gone, domain.JobCompleted, got.UpdatedAt); !errors.Is(err, domain.ErrNotFound) {
 			t.Errorf("update of a missing job: %v", err)
 		}
 		other := *got
 		other.TenantID = "tenant_other"
-		if err := b.AgentJobs.Update(ctx, &other, domain.JobCompleted); !errors.Is(err, domain.ErrNotFound) {
+		if err := b.AgentJobs.Update(ctx, &other, domain.JobCompleted, got.UpdatedAt); !errors.Is(err, domain.ErrNotFound) {
 			t.Errorf("update from another tenant: %v", err)
 		}
 	})
@@ -364,5 +383,76 @@ func TestTaskParent(t *testing.T) {
 		if after, err := b.Tasks.Get(ctx, tenant, child.ID); err != nil || after.ParentID != nil {
 			t.Errorf("child after the parent was deleted = %+v, %v", after, err)
 		}
+	})
+}
+
+func TestAgentJobClaimByType(t *testing.T) {
+	each(t, func(t *testing.T, b Backend) {
+		seedWorkspace(t, b, tenant)
+		triage := newJob(t, nil, domain.AgentTriage, t0)
+		blocker := newJob(t, nil, domain.AgentBlocker, t0.Add(-time.Minute)) // older
+		insertJob(t, b, triage)
+		insertJob(t, b, blocker)
+		if none, err := b.AgentJobs.Claim(ctx, t0, 5, nil); err != nil || len(none) != 0 {
+			t.Errorf("claim with no agent types = %+v, %v", none, err)
+		}
+		got, err := b.AgentJobs.Claim(ctx, t0, 5, []string{domain.AgentTriage})
+		if err != nil || len(got) != 1 || got[0].ID != triage.ID {
+			t.Fatalf("claim triage only = %+v, %v", got, err)
+		}
+		// The blocker job waits for a runtime that has that agent.
+		if j, _ := b.AgentJobs.Get(ctx, tenant, blocker.ID); j.Status != domain.JobPending {
+			t.Errorf("blocker job = %s", j.Status)
+		}
+	})
+}
+
+func TestAgentJobRecoverStuck(t *testing.T) {
+	each(t, func(t *testing.T, b Backend) {
+		seedWorkspace(t, b, tenant)
+		jobs := map[string]domain.AgentJob{}
+		for _, name := range []string{"stuck", "stuck-last-try", "fresh", "pending"} {
+			j := newJob(t, nil, domain.AgentTriage, t0)
+			insertJob(t, b, j)
+			jobs[name] = j
+		}
+		// Claim three at different times; "pending" stays pending.
+		claimAt := map[string]time.Time{"stuck": t0, "stuck-last-try": t0.Add(time.Second), "fresh": t0.Add(10 * time.Minute)}
+		for _, name := range []string{"stuck", "stuck-last-try", "fresh"} {
+			j := jobs[name]
+			got, err := b.AgentJobs.Get(ctx, tenant, j.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			running, prev := *got, got.UpdatedAt
+			running.Status, running.UpdatedAt = domain.JobRunning, claimAt[name]
+			if name == "stuck-last-try" {
+				running.Attempts = 2
+			}
+			// Pending -> running directly, as Claim does.
+			if err := b.AgentJobs.Update(ctx, &running, domain.JobPending, prev); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		now := t0.Add(11 * time.Minute)
+		requeued, failed, err := b.AgentJobs.RecoverStuck(ctx, now.Add(-5*time.Minute), now, 3)
+		if err != nil || requeued != 1 || failed != 1 {
+			t.Fatalf("RecoverStuck = %d requeued, %d failed, %v", requeued, failed, err)
+		}
+		check := func(name string, status domain.JobStatus, attempts int) {
+			t.Helper()
+			got, _ := b.AgentJobs.Get(ctx, tenant, jobs[name].ID)
+			if got.Status != status || got.Attempts != attempts {
+				t.Errorf("%s = %s with %d attempts, want %s with %d", name, got.Status, got.Attempts, status, attempts)
+			}
+			if status == domain.JobFailed && got.ErrorMessage == "" {
+				t.Errorf("%s failed without a message", name)
+			}
+		}
+		check("stuck", domain.JobPending, 1)
+		check("stuck-last-try", domain.JobFailed, 3)
+		check("fresh", domain.JobRunning, 0)
+		check("pending", domain.JobPending, 0)
 	})
 }

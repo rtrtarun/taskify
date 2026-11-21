@@ -86,11 +86,12 @@ func (r *AgentJobRepo) GetForUpdate(ctx context.Context, tenantID string, id uui
 	return r.Get(ctx, tenantID, id)
 }
 
-func (r *AgentJobRepo) Claim(ctx context.Context, now time.Time, limit int) (out []*domain.AgentJob, err error) {
+func (r *AgentJobRepo) Claim(ctx context.Context, now time.Time, limit int, agentTypes []string) (out []*domain.AgentJob, err error) {
+	out = []*domain.AgentJob{}
 	err = r.st.do(ctx, func(s *state) error {
 		var pending []*domain.AgentJob
 		for _, j := range s.jobs {
-			if j.Status == domain.JobPending {
+			if j.Status == domain.JobPending && slices.Contains(agentTypes, j.AgentType) {
 				pending = append(pending, j)
 			}
 		}
@@ -104,13 +105,13 @@ func (r *AgentJobRepo) Claim(ctx context.Context, now time.Time, limit int) (out
 	return out, err
 }
 
-func (r *AgentJobRepo) Update(ctx context.Context, j *domain.AgentJob, from domain.JobStatus) error {
+func (r *AgentJobRepo) Update(ctx context.Context, j *domain.AgentJob, from domain.JobStatus, fromUpdatedAt time.Time) error {
 	return r.st.do(ctx, func(s *state) error {
 		stored, ok := s.jobs[j.ID]
 		if !ok || stored.TenantID != j.TenantID {
 			return domain.ErrNotFound
 		}
-		if stored.Status != from {
+		if stored.Status != from || !stored.UpdatedAt.Equal(micro(fromUpdatedAt)) {
 			return repository.ErrJobMoved
 		}
 		if j.Attempts < 0 || !j.Status.Valid() || (j.DecidedBy == "") != (j.DecidedAt == nil) {
@@ -120,8 +121,30 @@ func (r *AgentJobRepo) Update(ctx context.Context, j *domain.AgentJob, from doma
 		stored.Status, stored.ProposedActions, stored.ExecutionResult = c.Status, c.ProposedActions, c.ExecutionResult
 		stored.ErrorMessage, stored.Attempts = c.ErrorMessage, c.Attempts
 		stored.DecidedBy, stored.DecidedAt, stored.UpdatedAt = c.DecidedBy, c.DecidedAt, micro(c.UpdatedAt)
+		stored.BaseTaskVersion = c.BaseTaskVersion
 		return nil
 	})
+}
+
+func (r *AgentJobRepo) RecoverStuck(ctx context.Context, olderThan, now time.Time, maxAttempts int) (requeued, failed int, err error) {
+	err = r.st.do(ctx, func(s *state) error {
+		for _, j := range s.jobs {
+			if j.Status != domain.JobRunning || !j.UpdatedAt.Before(olderThan) {
+				continue
+			}
+			j.Attempts++
+			j.UpdatedAt = micro(now)
+			if j.Attempts >= maxAttempts {
+				j.Status, j.ErrorMessage = domain.JobFailed, "abandoned while running; attempt limit reached"
+				failed++
+			} else {
+				j.Status = domain.JobPending
+				requeued++
+			}
+		}
+		return nil
+	})
+	return requeued, failed, err
 }
 
 func (r *AgentJobRepo) ListForTask(ctx context.Context, tenantID string, taskID uuid.UUID) ([]*domain.AgentJob, error) {
