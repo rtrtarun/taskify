@@ -767,3 +767,90 @@ func TestProposalRequestsApprovalOnce(t *testing.T) {
 		}
 	})
 }
+
+// toolsAgent is a testAgent offering other tools.
+type toolsAgent struct {
+	*testAgent
+	tools []string
+}
+
+func (a toolsAgent) AllowedTools() []string { return a.tools }
+
+func (f *fixture) linkRuntime(t *testing.T) *Runtime {
+	t.Helper()
+	if err := f.reg.Register(tools.LinkDependencies{Tasks: f.svc}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := New(Deps{Tx: f.b.Tx, Outbox: f.b.Outbox, Jobs: f.b.AgentJobs, Tasks: f.b.Tasks, Workspaces: f.b.Workspaces, LLM: f.mock, Tools: f.reg},
+		Config{Logger: quiet, Now: f.clock.now}, toolsAgent{f.agent, []string{tools.LinkDependenciesName, "Describe"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func TestCycleIsReturnedToTheModel(t *testing.T) {
+	each(t, func(t *testing.T, b repotest.Backend) {
+		f := newFixture(t, b, false)
+		task, job := f.task(t, "Ship the release")
+		blocker := f.otherTask(t, "Write release notes")
+		// The blocker already waits for the task: linking back closes a cycle.
+		if _, err := f.svc.AddDependency(ctx, "tenant_acme", blocker.ID, task.ID); err != nil {
+			t.Fatal(err)
+		}
+		f.mock.Then(
+			llm.Call("c1", tools.LinkDependenciesName, map[string]any{"task_id": task.ID, "depends_on_task_ids": []uuid.UUID{blocker.ID}}),
+			llm.Text("The link would create a cycle, so I left it."))
+		if _, err := f.linkRuntime(t).RunOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		got := f.job(t, job.ID)
+		if got.Status != domain.JobCompleted || got.Attempts != 0 {
+			t.Fatalf("job = %s, %d attempts (%s)", got.Status, got.Attempts, got.ErrorMessage)
+		}
+		if want := []string{OutcomeRuleRejected, OutcomeFinal}; !slices.Equal(f.outcomes(t, job.ID), want) {
+			t.Errorf("history = %v", f.outcomes(t, job.ID))
+		}
+		msgs := f.mock.Requests()[1].Messages
+		if last := msgs[len(msgs)-1]; last.Role != llm.RoleTool || !strings.Contains(last.Content, "cycle") {
+			t.Errorf("tool result = %+v", last)
+		}
+		if blockers, _ := b.Deps.ListBlockers(ctx, "tenant_acme", task.ID); len(blockers) != 0 {
+			t.Errorf("the cyclic link was made: %v", blockers)
+		}
+	})
+}
+
+func TestLinkThenDescribeInOneRun(t *testing.T) {
+	each(t, func(t *testing.T, b repotest.Backend) {
+		f := newFixture(t, b, false)
+		task, job := f.task(t, "Integrate the vendor API")
+		blocker := f.otherTask(t, "Get the vendor key")
+		// Linking dependency-blocks the todo task (a system change that moves
+		// its version); the next call must expect the new version.
+		f.mock.Then(
+			llm.Call("c1", tools.LinkDependenciesName, map[string]any{"task_id": task.ID, "depends_on_task_ids": []uuid.UUID{blocker.ID}}),
+			llm.Call("c2", "Describe", describe(task.ID, "Waits for the vendor key.")),
+			llm.Text("Linked and described."))
+		if _, err := f.linkRuntime(t).RunOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.job(t, job.ID); got.Status != domain.JobCompleted {
+			t.Fatalf("job = %s (%s)", got.Status, got.ErrorMessage)
+		}
+		stored, _ := b.Tasks.Get(ctx, "tenant_acme", task.ID)
+		if stored.Status != domain.StatusBlocked || stored.Description != "Waits for the vendor key." {
+			t.Errorf("task = %s %q", stored.Status, stored.Description)
+		}
+	})
+}
+
+// otherTask creates a task as the system would, so it queues no job.
+func (f *fixture) otherTask(t *testing.T, title string) *domain.Task {
+	t.Helper()
+	task, err := f.svc.CreateTask(ctx, domain.System, domain.NewTaskInput{TenantID: "tenant_acme", WorkspaceID: "ws", Title: title})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return task
+}

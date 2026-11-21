@@ -98,9 +98,17 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 	}, service.WithWake(relay.Wake), service.WithMetrics(metrics))
 	feedback := service.NewFeedbackService(tasks, client, metrics)
 	// One registry for the runtime and for applying approved proposals, so a
-	// proposal is applied by the same tool that proposed it. Tools are
-	// registered here as agents are built (M7 on).
+	// proposal is applied by the same tool that proposed it. The tools are
+	// registered even with agents off, so earlier proposals can be approved.
 	registry := tools.NewRegistry(tasks)
+	for _, tool := range []tools.Tool{
+		tools.UpdateTaskAttributes{Tasks: taskSvc},
+		tools.LinkDependencies{Tasks: taskSvc},
+	} {
+		if err := registry.Register(tool); err != nil {
+			return nil, err
+		}
+	}
 	agentJobs := service.NewAgentJobService(db, postgres.NewAgentJobRepo(db), tasks, registry, metrics, nil)
 
 	handler, err := api.NewRouter(api.Deps{
@@ -164,8 +172,7 @@ func newAgentRuntime(cfg config.Config, db *postgres.DB, tasks *postgres.TaskRep
 	if err != nil {
 		return nil, err
 	}
-	// Agents are registered here as they are built (M7 on). Until then the
-	// runtime claims nothing and only recovers stuck jobs.
+	triage := agent.Triage{Tasks: tasks, Comments: postgres.NewCommentRepo(db)}
 	return agent.New(agent.Deps{
 		Tx:         db,
 		Outbox:     postgres.NewOutboxRepo(db),
@@ -184,7 +191,7 @@ func newAgentRuntime(cfg config.Config, db *postgres.DB, tasks *postgres.TaskRep
 		PublicBaseURL:     cfg.PublicBaseURL,
 		OutboxMaxAttempts: cfg.OutboxMaxAttempts,
 		Wake:              wake,
-	})
+	}, triage)
 }
 
 // AgentsRunning reports whether the agent runtime is part of this instance.

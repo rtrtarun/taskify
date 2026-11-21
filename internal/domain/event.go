@@ -227,11 +227,17 @@ func (e Event) blockedReason() BlockedReason {
 func (e Event) priorityHint() string {
 	// A manual block is at least high, whatever the task's own priority.
 	// A revived blocker on started work is sent as at least high (section 5.6).
+	// An agent's priority recommendation, proposed for approval, is the hint
+	// for the task's later notifications (M7-04).
 	manualBlock := e.Type == EventTaskBlocked && e.blockedReason() == BlockedManual
-	if (manualBlock || e.Type == EventTaskDependencyReopened) && e.Task.Priority != PriorityCritical {
-		return PriorityHigh.Hint()
+	p := e.Task.Priority
+	if rec := e.Task.AgentMetadata.PriorityRecommendation; rec != nil && rec.Value.Valid() {
+		p = rec.Value
 	}
-	return e.Task.Priority.Hint()
+	if (manualBlock || e.Type == EventTaskDependencyReopened) && PriorityHigh.HigherThan(p) {
+		p = PriorityHigh
+	}
+	return p.Hint()
 }
 
 func (e Event) payload(publicBaseURL string) map[string]any {

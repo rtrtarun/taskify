@@ -137,6 +137,11 @@ func copyTask(t *domain.Task) *domain.Task {
 		p := *t.ParentID
 		c.ParentID = &p
 	}
+	if t.EstimatedMinutes != nil {
+		v := *t.EstimatedMinutes
+		c.EstimatedMinutes = &v
+	}
+	c.AgentMetadata = t.AgentMetadata.Clone()
 	if c.Labels == nil {
 		c.Labels = []string{}
 	}
