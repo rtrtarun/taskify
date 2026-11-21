@@ -408,12 +408,16 @@ func isUUID(s string) bool {
 				return false
 			}
 		default:
-			if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F') {
+			if !isHex(c) {
 				return false
 			}
 		}
 	}
 	return true
+}
+
+func isHex(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
 }
 
 func pointer(at string) string {

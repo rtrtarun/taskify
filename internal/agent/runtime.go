@@ -396,7 +396,7 @@ func (ru *run) turn(ctx context.Context, messages *[]llm.Message, schemas []llm.
 	resp, err := r.deps.LLM.Complete(ctx, llm.Request{Messages: *messages, Tools: schemas})
 	latency := time.Since(start)
 	if err != nil {
-		ru.record(ctx, llm.Response{}, latency, OutcomeLLMError, nil, nil)
+		_ = ru.record(ctx, llm.Response{}, latency, OutcomeLLMError, nil, nil) // the model error is what matters
 		return false, fmt.Errorf("model call: %w", err)
 	}
 	r.cfg.Metrics.AgentTokens(ru.job.AgentType, resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
@@ -419,10 +419,10 @@ func (ru *run) turn(ctx context.Context, messages *[]llm.Message, schemas []llm.
 			malformed = true
 			content = map[string]string{"error": rejected.Code, "message": rejected.Message}
 		case errors.Is(err, domain.ErrVersionConflict):
-			ru.record(ctx, resp, latency, OutcomeVersionConflict, calls, results)
+			_ = ru.record(ctx, resp, latency, OutcomeVersionConflict, calls, results) // the conflict is what matters
 			return false, err
 		case err != nil:
-			ru.record(ctx, resp, latency, OutcomeToolError, calls, results)
+			_ = ru.record(ctx, resp, latency, OutcomeToolError, calls, results) // the tool error is what matters
 			return false, fmt.Errorf("tool %s: %w", call.Name, err)
 		case !res.Executed():
 			ru.proposals = append(ru.proposals, *res.Proposal)
