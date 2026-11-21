@@ -1,6 +1,6 @@
 # Taskify Architecture
 
-Companion documents: [features.md](features.md) (what and why), [milestones.md](milestones.md) (delivery order), and [implementation/README.md](implementation/README.md) (task-level plan). Source material: [initial.md](initial.md) and [agentic.md](agentic.md).
+Companion documents: [features.md](features.md) (what and why), [milestones.md](milestones.md) (delivery order), and [implementation/README.md](implementation/README.md) (task-level plan). Source material, now archived: [initial.md](archive/initial.md) and [agentic.md](archive/agentic.md).
 
 Diagrams are written in Mermaid. They render on GitHub and in VS Code with a Mermaid preview extension.
 
@@ -24,9 +24,9 @@ Sections 2 to 6 describe the Go service. Section 9 describes what is built aroun
 
 **Target:** a multi-tenant Go task service that emits task lifecycle events to AgentPulse through a transactional outbox, and runs background LLM agents that enrich, decompose, and unblock tasks under human-in-the-loop controls. Around it sit a language-neutral contract, a CLI, a web frontend, and a Python client SDK (section 9). There is one server, in Go.
 
-**Today:** `main.go` prints a greeting and reads `PORT`. `internal/router/routes.go` references undefined handlers and does not compile. `go.mod` declares module `taskify` with `chi` and `godotenv`. There is no persistence. Everything below is to be built.
+**Today (2026-11-21):** release R1 is built and released (v0.1.0 to v0.3.0): the task service, transactional outbox, relay, scheduler, REST API, webhooks, and observability in sections 2 to 6. Of R2, the agent runtime (M5), the human-in-the-loop bridge (M6), and the triage agent (M7) are built, with the departures listed in [implementation/README.md](implementation/README.md) section 8. The decomposer, blocker, digest, and learning agents (M8 to M11) and everything in section 9 (R3) are still to be built. Progress per milestone is in [milestones.md](milestones.md).
 
-**Not verified:** the AgentPulse repository is not in this workspace. The AgentPulse field names and endpoints in this document come from [initial.md](initial.md) and from the project owner's answers recorded in section 8.1. None has been read from AgentPulse code, so milestone M0 checks them against the real contract.
+**Not verified:** the AgentPulse repository is not in this workspace. The AgentPulse field names and endpoints in this document come from [initial.md](archive/initial.md) and from the project owner's answers recorded in section 8.1. None has been read from AgentPulse code yet: task M0-07 checks them against the real contract once access is given (owner action O1).
 
 ---
 
@@ -528,13 +528,13 @@ erDiagram
 
 | Table | Migration | Notes |
 | --- | --- | --- |
-| `tasks` | `000001`, extended by `000004` | Full DDL for the base columns is in [initial.md](initial.md) section 4.B. IDs are UUIDv7 generated in Go so they sort by creation time. |
+| `tasks` | `000001`, extended by `000004` | Full DDL for the base columns is in [initial.md](archive/initial.md) section 4.B. IDs are UUIDv7 generated in Go so they sort by creation time. |
 | `task_watchers` | `000001` | Composite primary key `(task_id, user_id)`. |
 | `task_comments` | `000001` | `mentions` is extracted from `@username` tokens at insert time. |
 | `notification_outbox` | `000002` | One row per event per recipient. `idempotency_key` is unique. `aggregate_id` has no foreign key so outbox rows survive task deletion. |
 | `task_dependencies` | `000004` | Replaces the `blocked_by UUID[]` column (decision 4). One row means `task_id` cannot start until `depends_on_task_id` is complete. Both foreign keys cascade on delete, which only fires on a permanent delete. A `CHECK (task_id <> depends_on_task_id)` blocks self-dependency. The foreign keys do not prove both tasks share a tenant, so the service checks that before insert. |
 | `workspaces` | `000001`; `agent_settings` added in `000004` | Primary key `(tenant_id, id)`, with `name`. `tasks (tenant_id, workspace_id)` has a foreign key to it (decision 19). The table is created in `000001`, not `000004`, so the foreign key exists from the first task: adding it later would need a backfill of every workspace ID already used, and task creation would start failing for unknown workspaces. `agent_settings` defaults to agents off, approval required for everything, and a cap of 5 subtasks. The foreign key is `ON DELETE RESTRICT` (decision 24): a workspace cannot be deleted while any task references it, so an accidental delete cannot bypass soft archive, outbox scrubbing, or agent job cleanup. There is deliberately no workspace purge endpoint. If a workspace ever has to be decommissioned, it is done with an administrative script that verifies soft archives, drains the outbox, and cleans dependencies before touching the workspace row. |
-| `agent_jobs` | `000004` | Base DDL in [agentic.md](agentic.md) section 4.A, with the changes listed in section 7 below. |
+| `agent_jobs` | `000004` | Base DDL in [agentic.md](archive/agentic.md) section 4.A, with the changes listed in section 7 below. |
 | `notification_acks` | `000005` (R3) | `(tenant_id, user_id, notification_id)` primary key, `signal`, `acked_at`. Local read state for the in-app feed (section 9.6). Not shown in the diagram above; it references AgentPulse notification IDs, not Taskify rows. |
 | `workspace_rules` | `000003` | `(tenant_id, workspace_id, rule_key)` primary key, `agentpulse_rule_id`. Records which default AgentPulse rules a workspace has, so `bootstrap-rules` can be repeated without creating duplicates. |
 | `webhook_deliveries` | `000003` | Signature of each accepted AgentPulse callback, kept for an hour, so a replayed callback changes nothing. |
@@ -1046,7 +1046,7 @@ Error mapping:
 
 ### 5.5 AgentPulse contract used by Taskify
 
-The details below were supplied by the project owner (decisions 1, 5, 6). They have not been read from the AgentPulse repository, which is still not in this workspace, so M0 checks them against the SDK, the M37 `/notify` handler, and `14-learning-suggestions.json`. An example `/notify` body is in [initial.md](initial.md) section 4.C.2.
+The details below were supplied by the project owner (decisions 1, 5, 6). They have not been read from the AgentPulse repository, which is still not in this workspace, so M0 checks them against the SDK, the M37 `/notify` handler, and `14-learning-suggestions.json`. An example `/notify` body is in [initial.md](archive/initial.md) section 4.C.2.
 
 `/notify` fields, all camelCase:
 
@@ -1124,7 +1124,7 @@ The actor is excluded from recipients: nobody is notified of their own action.
 | `ArchiveTask` | none by default | `task_id`, `reasoning` | Tier 2 |
 | `ProposeNotificationRule` | Learning | rule definition, evidence | Tier 2, decided by an admin |
 
-[agentic.md](agentic.md) is inconsistent on due dates: section 1 requires approval only for shifts over 24 hours, section 4.C for any postponement. This document takes the stricter reading.
+[agentic.md](archive/agentic.md) is inconsistent on due dates: section 1 requires approval only for shifts over 24 hours, section 4.C for any postponement. This document takes the stricter reading.
 
 **Workspace agent controls (decision 10).** `workspaces.agent_settings`:
 
@@ -1222,7 +1222,7 @@ Backoff: `next_attempt_at = now + random(0, min(60s, 500ms × 2^attempts))`. Ret
 | Task read | P95 under 8 ms | Composite index, keyset pagination on `(updated_at, id)` |
 | Outbox dispatch | P95 under 150 ms, P99 under 400 ms | In-process wake-up plus 200 ms ticker; HTTP transport with `MaxIdleConnsPerHost: 64`, `IdleConnTimeout: 90s` |
 
-These are targets from [initial.md](initial.md). Nothing has been measured.
+These are targets from [initial.md](archive/initial.md). Nothing has been measured.
 
 The in-process wake-up only reaches the relay in the same replica. Other replicas pick the row up on their next 200 ms tick. Postgres `LISTEN/NOTIFY` is the option if cross-replica latency matters.
 

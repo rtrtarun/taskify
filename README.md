@@ -4,6 +4,8 @@ A multi-tenant task service in Go that hands every notification decision to **Ag
 
 Task changes are written with their notifications in a single PostgreSQL transaction (a transactional outbox), and a background relay delivers them. The API never waits on AgentPulse, and an AgentPulse outage delays notifications without losing them.
 
+Optional AI agents work on tasks in the background: the triage agent labels, describes, estimates, and links new tasks, and proposes priority changes for a person to approve. Agents are off unless enabled (see [Agents and local models](#agents-and-local-models)).
+
 | Document | Covers |
 | --- | --- |
 | [docs/features.md](docs/features.md) | What Taskify does and why |
@@ -30,6 +32,7 @@ flowchart LR
 - **Relay:** claims rows with `FOR UPDATE SKIP LOCKED`, sends them, and retries with backoff; after 10 failures a row is parked as a dead letter. Each notification carries a deterministic idempotency key, so a resend is never delivered twice.
 - **Scheduler:** writes `task.due_soon` and `task.overdue` reminders. Any number of replicas can run.
 - **Webhook:** AgentPulse calls back when someone acts on a notification, and Taskify applies the action.
+- **Agents:** a person's change queues agent jobs in the same transaction. The agent runtime runs each job with a model, and every action the model asks for is checked by a tool registry. Changes that need approval wait as proposals, decided through the API or a notification.
 
 ## Run it locally
 
@@ -133,10 +136,13 @@ All routes are under `/api/v1` and need authentication, except the webhook. Fiel
 | `POST /tasks/{id}/comments` | Comment; `@username` mentions are notified |
 | `POST /tasks/{id}/feedback` | Forward `acted`, `dismissed`, `snoozed` (with `duration`), or `muted` to AgentPulse |
 | `POST /workspaces` | Create a workspace and register its default AgentPulse rules (admin) |
-| `GET`, `PATCH /workspaces/{id}/settings` | Read or rename a workspace (admin) |
+| `GET`, `PATCH /workspaces/{id}/settings` | Read or change a workspace's name and `agent_settings` (admin) |
 | `POST /workspaces/{id}/bootstrap-rules` | Register missing default rules; safe to repeat (admin) |
 | `GET /admin/learning/suggestions` | AgentPulse scoring suggestions (admin) |
 | `POST /admin/learning/suggestions/{id}/decision` | `{"decision": "approve" \| "reject"}` (admin) |
+| `GET /agent-jobs/{id}` | An agent job: status, proposed actions, result |
+| `POST /agent-jobs/{id}/apply` | Approve a job's proposals (the task's assignee, its creator, or an admin). `409` if the task changed since (`stale_version`) or the job was decided the other way |
+| `POST /agent-jobs/{id}/dismiss` | Reject a job's proposals; nothing changes |
 | `POST /webhooks/agentpulse` | AgentPulse callbacks, authenticated by signature |
 
 The original `/tasks/` routes still work and serve the same handlers.
@@ -145,7 +151,7 @@ The original `/tasks/` routes still work and serve the same handlers.
 
 **Errors** share one shape: `{"error": {"code": "…", "message": "…", "details": {…}}}`. Unparseable input is `400`, a rule violation `422`, a missing task (including one in another tenant) `404`.
 
-**Webhook signing.** AgentPulse sends `X-AgentPulse-Timestamp` (Unix seconds) and `X-AgentPulse-Signature`, the hex HMAC-SHA256 of `<timestamp>.<raw body>` keyed with `AGENTPULSE_WEBHOOK_SECRET`. Timestamps more than 5 minutes from now are rejected, and a replayed callback changes nothing. The body names the `action` (`complete` or `snooze`), `tenantId`, `userId`, `taskId`, and optionally `notificationId` and `duration`.
+**Webhook signing.** AgentPulse sends `X-AgentPulse-Timestamp` (Unix seconds) and `X-AgentPulse-Signature`, the hex HMAC-SHA256 of `<timestamp>.<raw body>` keyed with `AGENTPULSE_WEBHOOK_SECRET`. Timestamps more than 5 minutes from now are rejected, and a replayed callback changes nothing. The body names the `action` (`complete`, `snooze`, `approve`, or `reject`), `tenantId`, `userId`, the `taskId` (complete, snooze) or `jobId` (approve, reject), and optionally `notificationId` and `duration`.
 
 ## Operations
 

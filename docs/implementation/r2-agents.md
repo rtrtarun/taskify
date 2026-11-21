@@ -14,7 +14,7 @@ Tests use the mock LLM. No test in CI needs a real model.
 
 ---
 
-## M5. Agent runtime and schema
+## M5. Agent runtime and schema (done)
 
 Goal: a generic engine that can run any agent, plus the dependency model that agents and people both use.
 
@@ -34,7 +34,7 @@ Goal: a generic engine that can run any agent, plus the dependency model that ag
 
 ---
 
-## M6. Human-in-the-loop bridge
+## M6. Human-in-the-loop bridge (done)
 
 Goal: high-impact proposals wait for a person, who can decide from a notification, the CLI, or the frontend.
 
@@ -47,7 +47,7 @@ Goal: high-impact proposals wait for a person, who can decide from a notificatio
 
 ---
 
-## M7. Triage agent
+## M7. Triage agent (done)
 
 Goal: new tasks are enriched automatically (feature A1).
 

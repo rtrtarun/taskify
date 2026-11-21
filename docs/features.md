@@ -1,16 +1,18 @@
 # Taskify: What We Are Building and Why
 
-Companion documents: [architecture.md](architecture.md) (how it is built) and [milestones.md](milestones.md) (in what order). Source material: [initial.md](initial.md) and [agentic.md](agentic.md).
+Companion documents: [architecture.md](architecture.md) (how it is built) and [milestones.md](milestones.md) (in what order). Source material: [initial.md](archive/initial.md) and [agentic.md](archive/agentic.md).
 
 ## The product in one paragraph
 
-Taskify today is a starter Go project: a `main.go` that prints a greeting and a half-written router. We are turning it into a multi-tenant task service that does two things ordinary task managers do not. First, it hands every notification decision to **AgentPulse** (the `agentic-notification` platform), so users get one alert for the thing that matters instead of twenty alerts for everything. Second, it runs **background AI agents** that tidy, split, and unblock tasks on their own, asking a human only before changes that are hard to undo.
+Taskify began as a starter Go project: a `main.go` that printed a greeting and a half-written router. We are turning it into a multi-tenant task service that does two things ordinary task managers do not. First, it hands every notification decision to **AgentPulse** (the `agentic-notification` platform), so users get one alert for the thing that matters instead of twenty alerts for everything. Second, it runs **background AI agents** that tidy, split, and unblock tasks on their own, asking a human only before changes that are hard to undo.
 
 People reach it through three front doors: the REST API, a **command-line tool**, and a **web frontend**. All three are generated from one **language-neutral contract**. A **Python client SDK** is generated from the same contract, and SDKs for other languages can follow the same way. There is one server, written in Go.
 
 ## Before and after
 
-| Area | Today | After Layer 1 (attention-aware) | After Layer 2 (agentic) |
+**Status (2026-11-21):** Layer 1 is built and released. Of Layer 2, the agent engine, human approval, and triage (A1) are built; blocker chasing (A2), decomposition (A3), digests (A4), and learning (A5) are next. Layer 3 has not started. See [milestones.md](milestones.md).
+
+| Area | Before | After Layer 1 (attention-aware) | After Layer 2 (agentic) |
 | --- | --- | --- | --- |
 | Task data | Nothing persisted | Tenant-scoped tasks with status, priority, assignee, watchers, comments, due dates | Adds subtasks, dependencies, effort estimates, agent notes |
 | Notifications | None | Every task change becomes an event routed by AgentPulse: deduplicated, budgeted, digested | Agents add priority hints and defer low-value alerts when a user is overloaded |
@@ -22,7 +24,7 @@ Layer 3 (clients and portability) does not change what the service does. It adds
 
 ## Layer 1: Attention-aware task service
 
-These features come from [initial.md](initial.md). Together they make Taskify a reliable producer of task events and let AgentPulse decide who is told what, when, and on which channel.
+These features come from [initial.md](archive/initial.md). Together they make Taskify a reliable producer of task events and let AgentPulse decide who is told what, when, and on which channel.
 
 ### F1. Rich task model
 
@@ -69,7 +71,7 @@ These features come from [initial.md](initial.md). Together they make Taskify a 
 
 ## Layer 2: Agentic task plane
 
-These features come from [agentic.md](agentic.md). Agents react to task events, ask a language model what to do, and act only through a fixed list of typed Go tools.
+These features come from [agentic.md](archive/agentic.md). Agents react to task events, ask a language model what to do, and act only through a fixed list of typed Go tools.
 
 ### How agents are kept safe
 
