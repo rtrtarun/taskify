@@ -9,7 +9,7 @@
 ![Prometheus](https://img.shields.io/badge/Prometheus-metrics-E6522C?logo=prometheus&logoColor=white)
 ![Ollama](https://img.shields.io/badge/LLM-Ollama%20or%20OpenAI--compatible-000000?logo=ollama&logoColor=white)
 ![Coverage gate](https://img.shields.io/badge/coverage%20gate-90%25-brightgreen)
-![License](https://img.shields.io/badge/license-not%20chosen%20yet-lightgrey)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 
 > **Tasks change all day. People should hear about the ones that matter.** Taskify is a multi-tenant task service that hands every notification decision to **AgentPulse**, and runs optional AI agents that tidy tasks while a person stays in control.
 
@@ -397,7 +397,14 @@ Commit messages follow [Conventional Commits](https://www.conventionalcommits.or
 
 ## License
 
-**No license has been chosen yet**, so by default all rights are reserved and nobody else may legally use, copy, or modify the code. Before accepting outside contributions, add a `LICENSE` file (MIT or Apache 2.0 are the usual choices) and update the badge above.
+Taskify is dual-licensed under either of
+
+- the [MIT License](LICENSE-MIT), or
+- the [Apache License, Version 2.0](LICENSE-APACHE),
+
+at your option. Apache 2.0 adds an explicit patent grant; MIT is shorter. Both licence files ship in every release archive.
+
+Unless you say otherwise, any contribution you submit for inclusion in Taskify is dual-licensed in the same way, without any additional terms or conditions.
 
 ---
 
