@@ -71,7 +71,7 @@ func (LinkDependencies) Tier(json.RawMessage) domain.SafetyTier { return domain.
 func (l LinkDependencies) Execute(ctx context.Context, s Scope, args json.RawMessage) (any, error) {
 	var a LinkDependenciesArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return nil, fmt.Errorf("%w: %v", domain.ErrValidation, err)
+		return nil, fmt.Errorf("%w: %s", domain.ErrValidation, err.Error())
 	}
 	task, err := l.Tasks.AddDependencies(ctx, s.TenantID, a.TaskID, a.DependsOnTaskIDs)
 	if err != nil {

@@ -78,7 +78,7 @@ func (UpdateTaskAttributes) Parameters() json.RawMessage {
 func parseUpdate(args json.RawMessage) (UpdateTaskAttributesArgs, error) {
 	var a UpdateTaskAttributesArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return a, fmt.Errorf("%w: %v", domain.ErrValidation, err)
+		return a, fmt.Errorf("%w: %s", domain.ErrValidation, err.Error())
 	}
 	if a.Labels == nil && a.Description == nil && a.EstimatedMinutes == nil && a.Priority == nil {
 		return a, fmt.Errorf("%w: give at least one of labels, description, estimated_minutes, or priority", domain.ErrValidation)
