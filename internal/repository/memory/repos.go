@@ -204,6 +204,9 @@ func (r *TaskRepo) Create(ctx context.Context, t *domain.Task) error {
 		if err := checkBlocked(t); err != nil {
 			return err
 		}
+		if p := t.ParentID; p != nil && (*p == t.ID || s.tasks[*p] == nil) {
+			return fmt.Errorf("%w: parent task does not exist", domain.ErrValidation)
+		}
 		c := copyTask(t)
 		normalizeTimes(c)
 		s.tasks[t.ID] = c
@@ -245,6 +248,7 @@ func (r *TaskRepo) Update(ctx context.Context, t *domain.Task, expectedVersion i
 		c := copyTask(t)
 		// Immutable columns keep their stored values, as in the SQL update.
 		c.WorkspaceID, c.CreatorID, c.CreatedAt = stored.WorkspaceID, stored.CreatorID, stored.CreatedAt
+		c.ParentID = stored.ParentID
 		normalizeTimes(c)
 		s.tasks[t.ID] = c
 		return nil
@@ -308,6 +312,12 @@ func (r *TaskRepo) Delete(ctx context.Context, tenantID string, id uuid.UUID) er
 		// ON DELETE CASCADE.
 		s.comments = slices.DeleteFunc(s.comments, func(c domain.Comment) bool { return c.TaskID == id })
 		s.deleteJobsForTask(id)
+		// Children keep existing, as with ON DELETE SET NULL.
+		for _, child := range s.tasks {
+			if child.ParentID != nil && *child.ParentID == id {
+				child.ParentID = nil
+			}
+		}
 		for k := range s.deps {
 			if k.task == id || k.dependsOn == id {
 				delete(s.deps, k)

@@ -133,6 +133,10 @@ func copyTask(t *domain.Task) *domain.Task {
 	c.Labels = slices.Clone(t.Labels)
 	c.Watchers = slices.Clone(t.Watchers)
 	c.Metadata = maps.Clone(t.Metadata)
+	if t.ParentID != nil {
+		p := *t.ParentID
+		c.ParentID = &p
+	}
 	if c.Labels == nil {
 		c.Labels = []string{}
 	}

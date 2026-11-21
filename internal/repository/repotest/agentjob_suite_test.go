@@ -321,3 +321,48 @@ func TestAgentRunsAndCascade(t *testing.T) {
 		}
 	})
 }
+
+func TestTaskParent(t *testing.T) {
+	each(t, func(t *testing.T, b Backend) {
+		seedWorkspace(t, b, tenant)
+		parent := newTask(t, tenant, nil)
+		create(t, b, parent)
+		child := newTask(t, tenant, nil)
+		child.ParentID = &parent.ID
+		create(t, b, child)
+
+		got, err := b.Tasks.Get(ctx, tenant, child.ID)
+		if err != nil || got.ParentID == nil || *got.ParentID != parent.ID {
+			t.Fatalf("child = %+v, %v", got, err)
+		}
+		if p, _ := b.Tasks.Get(ctx, tenant, parent.ID); p.ParentID != nil {
+			t.Errorf("parent has a parent: %v", p.ParentID)
+		}
+
+		// An update never moves a task to another parent.
+		other := uuid.New()
+		got.ParentID, got.Title = &other, "Renamed"
+		got.Version++
+		if err := b.Tasks.Update(ctx, got, got.Version-1); err != nil {
+			t.Fatal(err)
+		}
+		if again, _ := b.Tasks.Get(ctx, tenant, child.ID); again.ParentID == nil || *again.ParentID != parent.ID {
+			t.Errorf("parent after update = %v", again.ParentID)
+		}
+
+		orphan := newTask(t, tenant, nil)
+		missing := uuid.New()
+		orphan.ParentID = &missing
+		if err := b.Tasks.Create(ctx, orphan); !errors.Is(err, domain.ErrValidation) {
+			t.Errorf("missing parent: %v", err)
+		}
+
+		// Deleting the parent keeps the child and clears its link.
+		if err := b.Tasks.Delete(ctx, tenant, parent.ID); err != nil {
+			t.Fatal(err)
+		}
+		if after, err := b.Tasks.Get(ctx, tenant, child.ID); err != nil || after.ParentID != nil {
+			t.Errorf("child after the parent was deleted = %+v, %v", after, err)
+		}
+	})
+}

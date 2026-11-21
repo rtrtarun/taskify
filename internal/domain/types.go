@@ -102,6 +102,10 @@ type Actor struct {
 // User returns an Actor for a person.
 func User(id string) Actor { return Actor{ID: id, Kind: ActorUser} }
 
+// Agent returns the Actor for an agent of the given type, such as
+// "agent:triage". Its changes notify people but never queue agent work.
+func Agent(agentType string) Actor { return Actor{ID: "agent:" + agentType, Kind: ActorAgent} }
+
 // System is the actor for changes made by Taskify itself, such as scheduler
 // reminders.
 var System = Actor{ID: "system", Kind: ActorSystem}

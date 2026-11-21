@@ -24,7 +24,7 @@ var _ repository.TaskRepository = (*TaskRepo)(nil)
 const taskColumns = `id, tenant_id, workspace_id, title, description, status::text, priority::text,
 	creator_id, assignee_id, labels, metadata, due_at, remind_at, completed_at, archived_at,
 	last_due_soon_notified_at, last_overdue_notified_at, status_before_blocked::text, blocked_reason,
-	version, created_at, updated_at`
+	version, created_at, updated_at, parent_id`
 
 // openTasks is the predicate of the partial index idx_tasks_due_scan.
 const openTasks = `status NOT IN ('completed', 'archived')`
@@ -36,14 +36,14 @@ func (r *TaskRepo) Create(ctx context.Context, t *domain.Task) error {
 			INSERT INTO tasks (id, tenant_id, workspace_id, title, description, status, priority,
 				creator_id, assignee_id, labels, metadata, due_at, remind_at, completed_at, archived_at,
 				last_due_soon_notified_at, last_overdue_notified_at, status_before_blocked, blocked_reason,
-				version, created_at, updated_at)
+				version, created_at, updated_at, parent_id)
 			VALUES ($1, $2, $3, $4, $5, $6::text::task_status, $7::text::task_priority,
-				$8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::text::task_status, $19, $20, $21, $22)`,
+				$8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::text::task_status, $19, $20, $21, $22, $23)`,
 			t.ID, t.TenantID, t.WorkspaceID, t.Title, t.Description, string(t.Status), string(t.Priority),
 			t.CreatorID, nullString(t.AssigneeID), labels(t.Labels), metadata(t.Metadata),
 			t.DueAt, t.RemindAt, t.CompletedAt, t.ArchivedAt,
 			t.LastDueSoonNotifiedAt, t.LastOverdueNotifiedAt, statusPtr(t.StatusBeforeBlocked), reasonPtr(t.BlockedReason),
-			t.Version, t.CreatedAt, t.UpdatedAt)
+			t.Version, t.CreatedAt, t.UpdatedAt, t.ParentID)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -292,7 +292,7 @@ func scanTask(row pgx.Row) (*domain.Task, error) {
 	)
 	err := row.Scan(&t.ID, &t.TenantID, &t.WorkspaceID, &t.Title, &t.Description, &status, &priority,
 		&t.CreatorID, &assignee, &t.Labels, &t.Metadata, &due, &remind, &completed, &archived,
-		&dueSoon, &overdu, &before, &reason, &t.Version, &t.CreatedAt, &t.UpdatedAt)
+		&dueSoon, &overdu, &before, &reason, &t.Version, &t.CreatedAt, &t.UpdatedAt, &t.ParentID)
 	if err != nil {
 		return nil, err
 	}
