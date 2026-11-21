@@ -22,6 +22,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 
+	"github.com/rtrtarun/taskify/internal/agent/agenttest"
+	"github.com/rtrtarun/taskify/internal/agent/tools"
 	"github.com/rtrtarun/taskify/internal/agentpulse"
 	"github.com/rtrtarun/taskify/internal/domain"
 	"github.com/rtrtarun/taskify/internal/observability"
@@ -44,6 +46,7 @@ type env struct {
 	b       repotest.Backend
 	mock    *mockagentpulse.Server
 	now     time.Time
+	tasks   *service.TaskService
 }
 
 type option func(*Deps)
@@ -61,7 +64,13 @@ func newEnv(t *testing.T, opts ...option) *env {
 	tasks := service.NewTaskService(service.Deps{Tx: b.Tx, Tasks: b.Tasks, Workspaces: b.Workspaces, Comments: b.Comments, Outbox: b.Outbox, Dependencies: b.Deps, AgentJobs: b.AgentJobs},
 		service.Config{PublicBaseURL: "https://taskify.test"}, service.WithClock(clock))
 	feedback := service.NewFeedbackService(b.Tasks, client, nil)
+	e.tasks = tasks
+	registry := tools.NewRegistry(b.Tasks)
+	if err := registry.Register(agenttest.DescribeTool{Tasks: tasks, Tier2: true}); err != nil {
+		t.Fatal(err)
+	}
 	d := Deps{
+		AgentJobs:     service.NewAgentJobService(b.Tx, b.AgentJobs, b.Tasks, registry, nil, clock),
 		Tasks:         tasks,
 		Workspaces:    service.NewWorkspaceService(b.Tx, b.Workspaces, b.Rules, client, clock),
 		Feedback:      feedback,
