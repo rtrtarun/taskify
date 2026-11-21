@@ -41,6 +41,13 @@ type Scope struct {
 	AllowedTools []string
 	// RequireHITL makes every call a Tier 2 proposal (require_hitl_for_all).
 	RequireHITL bool
+	// MaxSubtasks is the workspace's max_subtasks_per_decomposition, or 0
+	// when the settings are not known, as when applying an approved
+	// proposal; the service then checks the current setting itself.
+	MaxSubtasks int
+	// RequestedBy is the person whose action queued the job, from its input
+	// context, or empty when no person did.
+	RequestedBy string
 }
 
 // NewScope builds the scope of a job from its row and its workspace's
@@ -52,6 +59,13 @@ func NewScope(job *domain.AgentJob, settings domain.AgentSettings, allowed []str
 		AgentType:    job.AgentType,
 		AllowedTools: slices.Clone(allowed),
 		RequireHITL:  settings.RequireHITLForAll,
+		MaxSubtasks:  settings.MaxSubtasksPerDecomposition,
+	}
+	var in struct {
+		ActorID string `json:"actor_id"`
+	}
+	if json.Unmarshal(job.InputContext, &in) == nil {
+		s.RequestedBy = in.ActorID
 	}
 	if job.TaskID != nil {
 		id := *job.TaskID
@@ -93,6 +107,15 @@ type VersionedOutput interface {
 // must not move the task's version, or the proposal would be stale at once.
 type Proposer interface {
 	Proposed(ctx context.Context, scope Scope, args json.RawMessage) error
+}
+
+// Checker is implemented by a tool whose arguments need checks a JSON Schema
+// cannot express, such as a limit from the workspace settings or rules
+// between items. Check runs before the tier is decided, so a call it refuses
+// is neither run nor proposed: it goes back to the model as invalid
+// arguments, using the run's one repair turn. The message is for the model.
+type Checker interface {
+	Check(scope Scope, args json.RawMessage) error
 }
 
 // TaskLookup loads a task within a tenant. repository.TaskRepository
@@ -260,6 +283,11 @@ func (r *Registry) check(ctx context.Context, scope Scope, name, arguments strin
 			ce.Tool = name
 		}
 		return entry{}, nil, err
+	}
+	if c, ok := e.tool.(Checker); ok {
+		if err := c.Check(scope, args); err != nil {
+			return reject(CodeInvalidArguments, "%s", err.Error())
+		}
 	}
 	return e, args, nil
 }

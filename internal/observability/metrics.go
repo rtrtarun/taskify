@@ -46,7 +46,7 @@ const (
 const (
 	SkipAgentsOff = "agents_disabled" // the workspace has agents off
 	SkipAgentOff  = "agent_disabled"  // this agent is in disabled_agents
-	SkipDuplicate = "duplicate"       // a job with the same dedup key exists
+	SkipDuplicate = "duplicate"       // the same job is already queued or open
 )
 
 // Metrics are the service's Prometheus metrics, on their own registry.

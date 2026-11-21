@@ -24,6 +24,7 @@ func (h *handlers) taskRoutes(r chi.Router) {
 		r.Post("/restore", h.restoreTask)
 		r.Post("/comments", h.addComment)
 		r.Post("/feedback", h.recordFeedback)
+		r.Post("/decompose", h.decomposeTask)
 	})
 }
 
@@ -346,4 +347,23 @@ func (h *handlers) recordFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "forwarded"})
+}
+
+// decomposeTask queues a decomposer job and answers 202 with it. While an
+// earlier decomposition of the task is still open, that job is returned
+// instead. A workspace with the decomposer off answers 409 agent_disabled.
+func (h *handlers) decomposeTask(w http.ResponseWriter, r *http.Request) {
+	id, err := taskID(r)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	who := identity(r)
+	job, _, err := h.tasks.RequestDecomposition(r.Context(), domain.User(who.UserID), who.TenantID, id)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	w.Header().Set("Location", "/api/v1/agent-jobs/"+job.ID.String())
+	writeJSON(w, http.StatusAccepted, toAgentJobJSON(job))
 }

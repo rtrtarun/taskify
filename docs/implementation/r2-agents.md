@@ -60,7 +60,7 @@ Goal: new tasks are enriched automatically (feature A1).
 
 ---
 
-## M8. Decomposer agent
+## M8. Decomposer agent (done)
 
 Goal: a high-level task becomes a set of linked subtasks (feature A3).
 

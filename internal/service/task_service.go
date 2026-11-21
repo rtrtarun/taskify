@@ -274,14 +274,22 @@ func (s *TaskService) mutate(ctx context.Context, tenantID string, id uuid.UUID,
 }
 
 // AddComment adds a comment to a task. It does not change the task's version.
+// A person's comment that is the /decompose command also queues a decomposer
+// job, if the workspace allows it (section 5.6).
 func (s *TaskService) AddComment(ctx context.Context, actor domain.Actor, tenantID string, taskID uuid.UUID, body string) (domain.Comment, error) {
 	now := s.clock()
 	var (
 		comment domain.Comment
 		events  []domain.Event
+		skipped []skippedJob
 	)
+	command := actor.Kind == domain.ActorUser && domain.IsDecomposeCommand(body)
 	err := s.deps.Tx.WithTx(ctx, func(ctx context.Context) error {
-		task, err := s.deps.Tasks.Get(ctx, tenantID, taskID)
+		get := s.deps.Tasks.Get
+		if command {
+			get = s.deps.Tasks.GetForUpdate // serialises with RequestDecomposition
+		}
+		task, err := get(ctx, tenantID, taskID)
 		if err != nil {
 			return err
 		}
@@ -291,12 +299,19 @@ func (s *TaskService) AddComment(ctx context.Context, actor domain.Actor, tenant
 		if err := s.deps.Comments.Create(ctx, comment); err != nil {
 			return err
 		}
-		return s.emit(ctx, events, now)
+		if err := s.emit(ctx, events, now); err != nil {
+			return err
+		}
+		if command {
+			skipped, err = s.decomposeFromComment(ctx, task, actor, now)
+		}
+		return err
 	})
 	if err != nil {
 		return domain.Comment{}, err
 	}
 	s.signal(events)
+	s.countSkipped(skipped)
 	return comment, nil
 }
 

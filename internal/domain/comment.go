@@ -70,3 +70,9 @@ func ExtractMentions(body string) []string {
 	}
 	return out
 }
+
+// IsDecomposeCommand reports whether a comment body is the /decompose
+// command: the command and nothing else, in any case.
+func IsDecomposeCommand(body string) bool {
+	return strings.EqualFold(strings.TrimSpace(body), "/decompose")
+}
