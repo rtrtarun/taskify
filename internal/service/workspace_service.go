@@ -143,7 +143,7 @@ type DefaultRule struct {
 	Rule agentpulse.Rule
 }
 
-// DefaultRules returns the three rules from docs/initial.md section 4.C.3,
+// DefaultRules returns the three rules from docs/archive/initial.md section 4.C.3,
 // scoped to one workspace through payload.workspaceId.
 //
 // One change from the source: the immediate-escalation rule matches manual

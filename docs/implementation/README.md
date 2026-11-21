@@ -12,9 +12,11 @@ This folder breaks the milestones in [milestones.md](../milestones.md) into task
 
 Task lists:
 
-- [r1-task-service.md](r1-task-service.md): M0 to M4, 40 tasks
-- [r2-agents.md](r2-agents.md): M5 to M11, 33 tasks
-- [r3-clients.md](r3-clients.md): M12 to M15, 32 tasks
+- [r2-agents.md](r2-agents.md): M5 to M11, 33 tasks. M5 to M7 are done.
+- [r3-clients.md](r3-clients.md): M12 to M15, 32 tasks. Not started.
+- R1 (M0 to M4, 40 tasks) is complete; its task list is archived in [archive/r1-task-service.md](../archive/r1-task-service.md). Its one open task, M0-07, is owner action O1 below.
+
+Finished and superseded documents are kept in [docs/archive](../archive/README.md).
 
 ## 1. How the work is classified
 
@@ -178,7 +180,7 @@ Recorded as they come up, so the architecture can be corrected or the code chang
 | D12 | M3-05 | Permanent delete returns `204`; `?permanent=` accepts only `true` or `false`. | Nothing remains to return, and an unexpected value must not fall through to an archive. |
 | D13 | M4-02 | Traces are exported only when an OTLP endpoint is configured. Without one, spans are still created, so trace IDs still reach logs, the outbox, and AgentPulse. | Tracing must not need a collector to be useful, and must not fail start-up when none exists. |
 | D14 | M4-01 | `/metrics` and `/readyz` are unauthenticated, like `/healthz`. | Prometheus and orchestrator probes do not carry tokens; access is restricted at the network edge, as the README says. |
-| D15 | M5-01 | `tasks.parent_id` is `ON DELETE SET NULL`, not `CASCADE` as in [agentic.md](../agentic.md) section 4.A. | A cascade would delete children inside a parent's permanent delete without their outbox scrubbing, agent job cleanup, or dependency resolution. |
+| D15 | M5-01 | `tasks.parent_id` is `ON DELETE SET NULL`, not `CASCADE` as in [agentic.md](../archive/agentic.md) section 4.A. | A cascade would delete children inside a parent's permanent delete without their outbox scrubbing, agent job cleanup, or dependency resolution. |
 | D16 | M5-03 | Dependency inserts take a per-tenant advisory lock (`pg_advisory_xact_lock`), then lock the blocker row before the dependent row, instead of locking the two tasks in ID order. | Locking only the two linked tasks lets inserts on disjoint pairs each pass the cycle check and together close a cycle through existing links (with Y→U and V→X present, X→Y and U→V lock different rows). Blocker-before-dependent is the order in which completing a blocker locks its dependents, so the two paths cannot deadlock. |
 | D17 | M5-04 | Keys for `task.dependency_added`, `task.dependency_resolved`, and `task.dependency_reopened` are `...:{event_type}:{blocker_id}:v{blocker_version}`. | These notices leave the dependent's version unchanged, so the section 4.4 format would give two notices about different blockers the same key. |
 | D18 | M5-04 | On permanent delete, dependents are re-checked after the task row is deleted, in the same transaction, not before. Their events name the blocker with status `deleted`. No `task.dependency_resolved` goes to a completed or archived dependent. | Before the delete the task still counts as an open blocker, so the check would find nothing to release. A finished dependent cannot act on the news. |

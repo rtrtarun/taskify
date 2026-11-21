@@ -144,7 +144,7 @@ func TestIdempotencyKeys(t *testing.T) {
 }
 
 // TestBlockedNotificationMatchesContract compares a p1_critical blocked
-// notification against the example in docs/initial.md section 4.C.2.
+// notification against the example in docs/archive/initial.md section 4.C.2.
 func TestBlockedNotificationMatchesContract(t *testing.T) {
 	due := time.Date(2026, 11, 12, 14, 0, 0, 0, time.UTC)
 	task, _, err := NewTask(NewTaskInput{
