@@ -88,6 +88,13 @@ type VersionedOutput interface {
 	TaskVersion() int
 }
 
+// Proposer is implemented by a tool that records something when one of its
+// calls becomes a proposal, such as a priority recommendation. The record
+// must not move the task's version, or the proposal would be stale at once.
+type Proposer interface {
+	Proposed(ctx context.Context, scope Scope, args json.RawMessage) error
+}
+
 // TaskLookup loads a task within a tenant. repository.TaskRepository
 // satisfies it.
 type TaskLookup interface {
@@ -211,6 +218,11 @@ func (r *Registry) Dispatch(ctx context.Context, scope Scope, call llm.ToolCall)
 	tier := e.tool.Tier(args)
 	if scope.RequireHITL || tier != domain.Tier1 {
 		// Anything but an explicit Tier 1 waits for a person.
+		if p, ok := e.tool.(Proposer); ok {
+			if err := p.Proposed(ctx, scope, args); err != nil {
+				return Result{}, err
+			}
+		}
 		return Result{Tier: domain.Tier2, Proposal: &Proposal{Tool: call.Name, Arguments: args, CallID: call.ID}}, nil
 	}
 	out, err := e.tool.Execute(ctx, scope, args)
