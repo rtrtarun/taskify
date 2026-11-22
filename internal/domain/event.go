@@ -82,9 +82,16 @@ const (
 	// ChannelDigest, alone in channels, delivers a notification only in the
 	// recipient's digest.
 	ChannelDigest = "digest"
-	// DeferredDigestSummary is the digest line of a deferred notification.
+	// DeferredDigestSummary ends the digest line of a deferred notification,
+	// which DeferredDigestLine builds.
 	DeferredDigestSummary = "Deferred to avoid context switching"
 )
+
+// DeferredDigestLine is what the digest shows for an assignment held there
+// (AP-07): "Assigned to you: {title}. Deferred to avoid context switching".
+func DeferredDigestLine(title string) string {
+	return "Assigned to you: " + title + ". " + DeferredDigestSummary
+}
 
 // Deferrable reports whether the load gatekeeper may hold this event's
 // notification for the digest: an assignment (task.created with an
@@ -264,7 +271,7 @@ func (e Event) Notifications(publicBaseURL string) []Notification {
 			n.Channels = slices.Clone(immediateChannels)
 		case e.Deferred && e.Deferrable():
 			n.Channels = []string{ChannelDigest}
-			payload["digestSummary"] = DeferredDigestSummary
+			payload["digestSummary"] = DeferredDigestLine(e.Task.Title)
 		}
 		out = append(out, n)
 	}

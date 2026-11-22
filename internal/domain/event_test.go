@@ -346,7 +346,7 @@ func TestDeferredAssignment(t *testing.T) {
 		plain := e.Notifications(baseURL)[0]
 		e.Deferred = true
 		n := e.Notifications(baseURL)[0]
-		if !slices.Equal(n.Channels, []string{"digest"}) || n.Payload["digestSummary"] != "Deferred to avoid context switching" {
+		if !slices.Equal(n.Channels, []string{"digest"}) || n.Payload["digestSummary"] != "Assigned to you: x. Deferred to avoid context switching" {
 			t.Errorf("channels %v digestSummary %v", n.Channels, n.Payload["digestSummary"])
 		}
 		if n.Payload["bypassDigest"] != nil || n.PriorityHint != "high" {
