@@ -4,13 +4,14 @@ Companion documents: [features.md](features.md) (what and why) and [architecture
 
 Each milestone is broken into individual tasks, with a delegation level and acceptance tests, in [implementation/README.md](implementation/README.md).
 
-## Status (2026-11-21)
+## Status (2026-11-22)
 
 | Milestones | State |
 | --- | --- |
 | M0 to M4 (**R1**) | Done and released as v0.1.0 to v0.3.0, except M0-07, which waits on AgentPulse access (owner action O1) |
 | M5 to M7 | Done and released: M5 in v0.4.0, M6 and M7 in v0.5.0 |
-| M8 to M11 | Not started |
+| M8 to M10, AP | Done; AP aligns Taskify with the AgentPulse `/v1/` contract ([blockers.md](blockers.md)) |
+| M11 (**R2 complete**) | Done. Every M5 to M11 exit criterion has a passing test. Final sign-off of M10, M11, and the other AgentPulse parts waits on M0-07 (owner action O1) |
 | M12 to M15 (**R3**) | Not started |
 
 Task-level progress and every departure from the plan are in [implementation/README.md](implementation/README.md). The work began from a `main.go` that printed a greeting and an uncompilable router stub.
@@ -361,7 +362,9 @@ Exit criteria:
 - Patterns below AgentPulse's thresholds (5 signals, 2 users, 30-day window) yield no proposal (test).
 - No proposal takes effect without an admin decision (test).
 
-Mechanism (decision 6): proposals are posted to AgentPulse `POST /learning/suggestions` with `proposedAdjustment` within ±20 and a `signalCount` meeting the threshold. AgentPulse holds them as `PENDING_APPROVAL`. M0 verifies the body against `14-learning-suggestions.json`.
+Mechanism (decision 6): proposals are posted to AgentPulse `POST /v1/learning/suggestions` with `proposedAdjustment` within ±20 and a `signalCount` meeting the threshold. AgentPulse holds them as `PENDING_APPROVAL`. M0-07 verifies the body against a real AgentPulse.
+
+As built: a weekly job per tenant reads `GET /v1/analytics/feedback` (R7, G16); Go code finds the patterns; the model proposes through `ProposeNotificationRule`, which submits through the outbox; the admin decides at AgentPulse through the existing endpoints (departures D54 to D58).
 
 ---
 

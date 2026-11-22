@@ -119,9 +119,11 @@ Goal: Taskify's AgentPulse integration matches the API AgentPulse is building in
 
 ---
 
-## M11. Learning agent
+## M11. Learning agent (done)
 
 Goal: dismissal patterns become reviewable rule proposals (feature A5). This completes R2.
+
+G16 is resolved by R7 in [blockers.md](../blockers.md): `GET /v1/analytics/feedback?tenantId=&since=`. Section 5.7 lists `ProposeNotificationRule` as Tier 2, decided by an admin; that decision is the admin's, at AgentPulse, through the endpoints from M3-09, and the tool itself runs at Tier 1 (D54).
 
 | ID | Task | Files | Done when | Level, size | After |
 | --- | --- | --- | --- | --- | --- |
@@ -129,4 +131,4 @@ Goal: dismissal patterns become reviewable rule proposals (feature A5). This com
 | M11-02 | **Pattern aggregation.** Deterministic Go code that computes dismiss and mute ratios by event type and label, and discards patterns below AgentPulse's thresholds: 5 signals, 2 users, 30-day window. | `internal/agent/learning.go` and test | Tests: a consistently dismissed label is found; a pattern below any threshold is dropped | Routine, M | M11-01 |
 | M11-03 | **Learning agent.** A tenant-scoped scheduled job. The model turns each surviving pattern into a proposal through the `ProposeNotificationRule` tool, with `proposedAdjustment` within ±20. Proposals are posted to AgentPulse, where they stay `PENDING_APPROVAL`, and appear through the existing admin endpoints from M3-09. | `internal/agent/learning.go`, `internal/agent/tools/propose_notification_rule.go`, tests | Tests: a synthetic history yields a proposal naming the label; an out-of-range adjustment is rejected; nothing takes effect without an admin decision | Routine, M | M11-02, M5-10 |
 
-R2 is complete when every exit criterion for M5 to M11 in [milestones.md](../milestones.md) passes and all R1 tests still pass.
+R2 is complete when every exit criterion for M5 to M11 in [milestones.md](../milestones.md) passes and all R1 tests still pass. **It is (2026-11-22):** every M5 to M11 exit criterion has a passing test, with `-race` on memory and PostgreSQL, and the R1 tests pass. Final sign-off of the AgentPulse parts waits on M0-07.

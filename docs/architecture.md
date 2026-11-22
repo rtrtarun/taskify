@@ -24,7 +24,7 @@ Sections 2 to 6 describe the Go service. Section 9 describes what is built aroun
 
 **Target:** a multi-tenant Go task service that emits task lifecycle events to AgentPulse through a transactional outbox, and runs background LLM agents that enrich, decompose, and unblock tasks under human-in-the-loop controls. Around it sit a language-neutral contract, a CLI, a web frontend, and a Python client SDK (section 9). There is one server, in Go.
 
-**Today (2026-11-21):** release R1 is built and released (v0.1.0 to v0.3.0): the task service, transactional outbox, relay, scheduler, REST API, webhooks, and observability in sections 2 to 6. Of R2, the agent runtime (M5), the human-in-the-loop bridge (M6), and the triage agent (M7) are built and released (v0.4.0 and v0.5.0), with the departures listed in [implementation/README.md](implementation/README.md) section 8. The decomposer, blocker, digest, and learning agents (M8 to M11) and everything in section 9 (R3) are still to be built. Progress per milestone is in [milestones.md](milestones.md).
+**Today (2026-11-22):** release R1 is built and released (v0.1.0 to v0.3.0): the task service, transactional outbox, relay, scheduler, REST API, webhooks, and observability in sections 2 to 6. R2 is built: the agent runtime (M5), the human-in-the-loop bridge (M6), and the triage agent (M7), released in v0.4.0 and v0.5.0, then the decomposer, blocker, digest, and learning agents (M8 to M11) and the AgentPulse `/v1/` alignment (AP), with the departures listed in [implementation/README.md](implementation/README.md) section 8. Everything in section 9 (R3) is still to be built. Progress per milestone is in [milestones.md](milestones.md).
 
 **Not verified:** the AgentPulse repository is not in this workspace. The AgentPulse field names and endpoints in this document come from [initial.md](archive/initial.md) and from the project owner's answers recorded in section 8.1. None has been read from AgentPulse code yet: task M0-07 checks them against the real contract once access is given (owner action O1).
 
@@ -541,6 +541,7 @@ erDiagram
 | `webhook_callbacks` | `000007` | `(tenant_id, callback_id)` primary key, `received_at`. Each applied callback's `callbackId`, kept for 7 days, so a retry of one click, signed again, changes nothing (AP-06). |
 | `user_contacts` | `000007` | `(tenant_id, user_id)` primary key, nullable `email`, `slack_user_id`, `phone`, `updated_at`. The person's contact, forwarded to AgentPulse (AP-05). |
 | `agent_run_history` | `000004` | One row per model turn. Named in the AG-102 backlog item but not defined in the source; this definition is proposed here. |
+| `learning_suggestions` | `000008` | The learning suggestions Taskify submitted to AgentPulse (M11): tenant, learning job (foreign key, cascading), `event_type`, nullable `label`, current and proposed adjustments (each -20 to 20), `signal_count` (at least 5), `rationale`, `created_at`. Unique on job, event type, and label, so a job submits a pattern once; the learning agent leaves a pattern alone for 30 days after one was submitted (D57). |
 
 Indexes:
 
@@ -700,7 +701,8 @@ stateDiagram-v2
 | Overdue | `taskify:{tenant_id}:{task_id}:overdue:{YYYY-MM-DD}` |
 | Approval request | `taskify:{tenant_id}:{job_id}:agent.approval_requested` |
 | Contact forward (one row per person, reused for every change; D46) | `taskify:{tenant_id}:contact.update:{user_id}` |
-| Agent job dedup | `{agent_type}:{task_id}:v{version}` for event-triggered jobs; `{agent_type}:{task_id}:stale:{YYYY-MM-DD}` for stale scans |
+| Agent job dedup | `{agent_type}:{task_id}:v{version}` for event-triggered jobs; `{agent_type}:{task_id}:stale:{YYYY-MM-DD}` for stale scans; `digest:{tenant_id}:{user_id}:brief:{YYYY-MM-DD}` for morning briefs (D40); `learning:{tenant_id}:week:{YYYY-Www}` for the weekly learning job (D55) |
+| Learning suggestion (Taskify's own; AgentPulse takes no key for suggestions) | `taskify:{tenant_id}:{job_id}:learning.suggestion:{hash of event type and label}` |
 
 Changing `due_at` should reset `last_due_soon_notified_at`, and the due-soon key should then include the new due timestamp, otherwise a rescheduled task would never be reminded again. This is not covered in the source documents.
 
@@ -1070,9 +1072,10 @@ This is the `/v1/` API that AgentPulse builds in its milestone 40 (slices 40a to
 | `CreateRule` | `POST /v1/rules` | `{tenantId, name, attentionClass?, matchAny: [{eventTypes?, payloadMatch?}], channels, bypassDigest?}`, answered with `201 {"id"}` |
 | `ListRules` | `GET /v1/rules?tenantId=` | `{"rules": [...]}` |
 | `ListLearningSuggestions` | `GET /v1/learning/suggestions?tenantId=` | `{"suggestions": [{id, status, suggestion}]}` |
-| `SubmitLearningSuggestion` (M11) | `POST /v1/learning/suggestions` | `tenantId`, `ruleId` or `eventPattern`, `currentAdjustment`, `proposedAdjustment` (within ±20, AgentPulse's heuristic score shift for that scope), `signalCount` (at least 5 signals from at least 2 users), `rationale`. Stored as `PENDING_APPROVAL`; nothing changes until an admin decides. |
+| `SubmitLearningSuggestion` (M11, outbox relay) | `POST /v1/learning/suggestions` | `tenantId`, `ruleId` or `eventPattern` (`{eventType, label}`, `label` null for no label), `currentAdjustment`, `proposedAdjustment` (within ±20, AgentPulse's heuristic score shift for that scope), `signalCount` (at least 5 signals from at least 2 users), `rationale`. Stored as `PENDING_APPROVAL`; nothing changes until an admin decides. Taskify sends it from a `learning.suggestion` outbox row (D57). |
+| `LearningSuggestions` (M11) | `GET /v1/learning/suggestions?tenantId=` | The same list, decoded, for the learning agent: pending suggestions and the latest approved adjustment per pattern |
 | `ReviewLearningSuggestion` | `POST /v1/learning/suggestions/{id}/decision` | `{tenantId, decision: approve or reject, decidedBy}`; `404` for another tenant's suggestion (AP-12), `409` if already decided |
-| Feedback analytics (M11) | `GET /v1/analytics/feedback?tenantId=&since=` | Counts per event type and payload label |
+| `FeedbackAnalytics` (M11) | `GET /v1/analytics/feedback?tenantId=&since=` | `{since, groups: [{eventType, label, delivered, acted, dismissed, muted, snoozed, distinctUsers}]}`, one group per event type and payload label, `label` null for notifications without one (R7, G16) |
 | `InAppFeed` (M14-06) | `GET /v1/tenants/{t}/users/{u}/in-app-feed?limit=&cursor=` | `{"notifications": [...], "nextCursor"}`, newest first; Taskify keeps read state |
 | Inbound | `POST /api/v1/webhooks/agentpulse` | See "Callbacks" below |
 
@@ -1161,7 +1164,7 @@ The actor is excluded from recipients: nobody is notified of their own action.
 | `ReassignTask` | Blocker | `task_id`, `assignee_id`, `reasoning` | Tier 2 |
 | `ShiftDueDate` | Blocker, Digest | `task_id`, `due_at`, `reasoning` | Tier 2 |
 | `ArchiveTask` | none by default | `task_id`, `reasoning` | Tier 2 |
-| `ProposeNotificationRule` | Learning | rule definition, evidence | Tier 2, decided by an admin |
+| `ProposeNotificationRule` | Learning | `pattern_id`, `proposed_adjustment` (-20 to 20), `rationale`; the scope and evidence come from Go code | Tier 2, decided by an admin at AgentPulse: the call itself runs at Tier 1, even under `require_hitl_for_all`, and only submits the suggestion, which AgentPulse holds as `PENDING_APPROVAL` until an admin decides through `/admin/learning/suggestions` (D54) |
 
 [agentic.md](archive/agentic.md) is inconsistent on due dates: section 1 requires approval only for shifts over 24 hours, section 4.C for any postponement. This document takes the stricter reading.
 
@@ -1180,7 +1183,7 @@ The actor is excluded from recipients: nobody is notified of their own action.
 | --- | --- | --- |
 | `agents_enabled` | At job enqueue, inside the task transaction | When false, no `agent_jobs` row is written. A skipped-job counter is incremented. |
 | `disabled_agents` | At job enqueue | Jobs for the listed agent types are not written. An explicit `POST /tasks/{id}/decompose` for a disabled agent returns an error instead of `202`. |
-| `require_hitl_for_all` | In the tool registry | Every tool call is treated as Tier 2, including ones a user requested explicitly. |
+| `require_hitl_for_all` | In the tool registry | Every tool call is treated as Tier 2, including ones a user requested explicitly, except `ProposeNotificationRule`, whose call only submits a suggestion that already waits for an admin (D54). |
 | `max_subtasks_per_decomposition` | In `CreateSubtaskDAG` | A larger proposal is rejected and the model is asked once to reduce it. |
 
 Defaults for a new workspace (decision 19): `agents_enabled: false`, `disabled_agents: []`, `require_hitl_for_all: true`, `max_subtasks_per_decomposition: 5`. Agents are opt-in so that no tenant incurs model costs or agent notifications without an admin choosing to. Note the second default: after an admin turns agents on, every agent action, including adding a label, still waits for approval until `require_hitl_for_all` is also turned off. The runtime checks the settings again when it claims a job, so a job queued before agents were switched off does not run.
