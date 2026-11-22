@@ -388,6 +388,11 @@ func (ru *run) do(ctx context.Context) error {
 	case err != nil:
 		return fmt.Errorf("build context: %w", err)
 	}
+	if ru.report != nil {
+		// A Reporter's tools check their calls against its facts, as
+		// ProposeNotificationRule does against the run's patterns.
+		ru.scope.Facts = ru.report
+	}
 
 	for ru.turns < r.cfg.MaxTurns {
 		ru.turns++
@@ -779,8 +784,10 @@ type Finisher interface {
 }
 
 // Reporter is an agent whose model writes a report from facts that Go code
-// gathers, such as the morning brief, rather than acting through tools. The
-// runtime calls Gather in place of BuildContext.
+// gathers, such as the morning brief. The runtime calls Gather in place of
+// BuildContext. The model may also call the agent's tools, which find the
+// Report in tools.Scope.Facts and can check their calls against it, as the
+// learning agent's ProposeNotificationRule does.
 type Reporter interface {
 	Agent
 	// Gather loads what this run reports on. A nil Report, or a Skip error,

@@ -111,3 +111,27 @@ func (r *CommentRepo) ListRecent(ctx context.Context, taskID uuid.UUID, limit in
 		return c, err
 	})
 }
+
+// ListLearningTenants builds the job key as domain.LearningJobDedupKey
+// does. Byte order (COLLATE "C") keeps the order and the chosen workspace
+// independent of the database's locale.
+func (r *WorkspaceRepo) ListLearningTenants(ctx context.Context, week string, limit int) ([]domain.LearningTenant, error) {
+	rows, err := r.db.q(ctx).Query(ctx, `
+		SELECT w.tenant_id, min(w.id COLLATE "C") FROM workspaces w
+		WHERE COALESCE((w.agent_settings->>'agents_enabled')::boolean, false)
+		  AND NOT COALESCE(w.agent_settings->'disabled_agents' ? $1::text, false)
+		  AND NOT EXISTS (SELECT 1 FROM agent_jobs d
+		                  WHERE d.dedup_key = $1::text || ':' || w.tenant_id || ':week:' || $2::text)
+		GROUP BY w.tenant_id
+		ORDER BY w.tenant_id COLLATE "C"
+		LIMIT $3`, domain.AgentLearning, week, limit)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (domain.LearningTenant, error) {
+		var lt domain.LearningTenant
+		err := row.Scan(&lt.TenantID, &lt.WorkspaceID)
+		return lt, err
+	})
+	return out, mapErr(err)
+}

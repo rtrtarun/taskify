@@ -29,6 +29,9 @@ type Notifier interface {
 	Notify(ctx context.Context, body json.RawMessage) error
 	// PutContact replaces a user's contact (contact.update rows).
 	PutContact(ctx context.Context, tenantID, userID string, c agentpulse.Contact) error
+	// SubmitLearningSuggestion submits a learning suggestion
+	// (learning.suggestion rows).
+	SubmitLearningSuggestion(ctx context.Context, s agentpulse.LearningSuggestion) (string, error)
 }
 
 // RelayConfig tunes the relay. Zero values take the documented defaults.
@@ -237,18 +240,30 @@ func (r *Relay) dispatch(ctx context.Context, e domain.OutboxEntry) {
 	}
 }
 
-// send delivers one row: a contact.update replaces the person's contact,
-// and every other row is a /v1/notify body.
+// send delivers one row: a contact.update replaces the person's contact, a
+// learning.suggestion submits a learning suggestion, and every other row is
+// a /v1/notify body.
 func (r *Relay) send(ctx context.Context, e domain.OutboxEntry) error {
-	if e.EventType != domain.EventContactUpdate {
+	switch e.EventType {
+	case domain.EventContactUpdate:
+		var u domain.ContactUpdate
+		if err := json.Unmarshal(e.Payload, &u); err != nil || u.UserID == "" {
+			return errMalformedRow
+		}
+		return r.notifier.PutContact(ctx, e.TenantID, u.UserID,
+			agentpulse.Contact{Email: u.Email, SlackUserID: u.SlackUserID, Phone: u.Phone})
+	case domain.EventLearningSuggestion:
+		// The payload is the request body; the row's tenant must be the
+		// one it names.
+		var s agentpulse.LearningSuggestion
+		if err := json.Unmarshal(e.Payload, &s); err != nil || s.TenantID != e.TenantID {
+			return errMalformedRow
+		}
+		_, err := r.notifier.SubmitLearningSuggestion(ctx, s)
+		return err
+	default:
 		return r.notifier.Notify(ctx, e.Payload)
 	}
-	var u domain.ContactUpdate
-	if err := json.Unmarshal(e.Payload, &u); err != nil || u.UserID == "" {
-		return errMalformedRow
-	}
-	return r.notifier.PutContact(ctx, e.TenantID, u.UserID,
-		agentpulse.Contact{Email: u.Email, SlackUserID: u.SlackUserID, Phone: u.Phone})
 }
 
 // errMalformedRow is a row the relay cannot send. Retrying cannot help, so

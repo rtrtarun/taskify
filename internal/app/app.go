@@ -99,6 +99,8 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 		DigestLoadThreshold: cfg.DigestLoadThreshold,
 	}, service.WithWake(relay.Wake), service.WithMetrics(metrics))
 	feedback := service.NewFeedbackService(tasks, client, metrics)
+	learningRepo := postgres.NewLearningRepo(db)
+	learning := service.NewLearningService(db, learningRepo, outbox, cfg.OutboxMaxAttempts, nil, relay.Wake)
 	// One registry for the runtime and for applying approved proposals, so a
 	// proposal is applied by the same tool that proposed it. The tools are
 	// registered even with agents off, so earlier proposals can be approved.
@@ -111,6 +113,7 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 		tools.ReassignTask{Tasks: taskSvc},
 		tools.ShiftDueDate{Tasks: taskSvc},
 		tools.ArchiveTask{Tasks: taskSvc},
+		tools.ProposeNotificationRule{Suggestions: learning},
 	} {
 		if err := registry.Register(tool); err != nil {
 			return nil, err
@@ -144,7 +147,8 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 		return nil, err
 	}
 
-	runtime, err := newAgentRuntime(cfg, db, tasks, registry, logger, metrics, relay.Wake)
+	runtime, err := newAgentRuntime(cfg, db, tasks, registry, logger, metrics, relay.Wake,
+		agent.Learning{Source: agent.AgentPulseLearning{Client: client}, Record: learningRepo})
 	if err != nil {
 		return nil, err
 	}
@@ -166,6 +170,8 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 			Jobs:              postgres.NewAgentJobRepo(db),
 			Briefs:            true,
 			BriefHourUTC:      cfg.DigestBriefHourUTC,
+			Learning:          true,
+			Workspaces:        postgres.NewWorkspaceRepo(db),
 		}),
 		cleanup: worker.NewCleanup(outbox, worker.CleanupConfig{Deliveries: deliveries, Logger: logger}),
 	}, nil
@@ -174,7 +180,7 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 // newAgentRuntime builds the agent runtime, or returns nil when
 // AGENTS_ENABLED is false: then no job is ever claimed.
 func newAgentRuntime(cfg config.Config, db *postgres.DB, tasks *postgres.TaskRepo, registry *tools.Registry, logger *slog.Logger,
-	metrics *observability.Metrics, wake func()) (*agent.Runtime, error) {
+	metrics *observability.Metrics, wake func(), learning agent.Learning) (*agent.Runtime, error) {
 	if !cfg.AgentsEnabled {
 		return nil, nil
 	}
@@ -209,7 +215,7 @@ func newAgentRuntime(cfg config.Config, db *postgres.DB, tasks *postgres.TaskRep
 		AppBaseURL:        cfg.AppBaseURL,
 		OutboxMaxAttempts: cfg.OutboxMaxAttempts,
 		Wake:              wake,
-	}, triage, decomposer, blocker, digest)
+	}, triage, decomposer, blocker, digest, learning)
 }
 
 // AgentsRunning reports whether the agent runtime is part of this instance.

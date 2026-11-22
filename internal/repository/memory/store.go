@@ -43,6 +43,7 @@ type state struct {
 	runs       []domain.AgentRun
 	contacts   map[contactKey]domain.Contact
 	callbacks  map[callbackKey]time.Time
+	learning   []domain.LearningSuggestion
 }
 
 type ruleKey struct{ tenant, workspace, key string }
@@ -118,6 +119,7 @@ func (s state) clone() state {
 		runs:       slices.Clone(s.runs),
 		contacts:   maps.Clone(s.contacts),
 		callbacks:  maps.Clone(s.callbacks),
+		learning:   slices.Clone(s.learning),
 	}
 	for id, j := range s.jobs {
 		c.jobs[id] = copyJob(j)
