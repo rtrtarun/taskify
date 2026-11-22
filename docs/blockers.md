@@ -176,6 +176,19 @@ Confirmed by AgentPulse later on 2026-11-22 (Taskify's AP-12):
   - `phone`: `^\+[1-9][0-9]{1,14}$`.
   - One bad field refuses the whole PUT with a `400` naming it. Taskify's relay treats that as permanent: the row goes to dead letter with the reason, without a retry.
 
+## Learning and analytics as Taskify's mock serves them (M11, for 40c)
+
+R6 and R7 leave some details open. Taskify's M11 fixed them in the mock as follows; AgentPulse should confirm them, or say what differs, before 40c ships.
+
+- **`eventPattern`** is `{"eventType", "label"}`, the same scope as an R7 group: one event type and one value of `payload.labels`, with `"label": null` for notifications that carry no label.
+- **R6 validation.** A submitted suggestion needs a valid `tenantId`; `ruleId` or `eventPattern`; `currentAdjustment` and `proposedAdjustment`, numbers within -20 and 20; a `signalCount` of at least 5; and a `rationale`. Anything else is a `400` naming the field. The `201` body is the stored suggestion, `{"id", "status": "PENDING_APPROVAL", "suggestion"}`.
+- **R7 counting.** `since` is RFC 3339 and the response echoes it. `delivered` counts the tenant's notifications accepted at or after `since`, once under each of their labels. A feedback signal received at or after `since` counts under the notification it names, or, without one, the user's latest notification about its task (AP-12), once under each of that notification's labels. `distinctUsers` is how many users the group's counted signals came from. A group with deliveries and no signals is listed.
+
+Requests to AgentPulse:
+
+- **An idempotency key for R6.** `POST /v1/learning/suggestions` has none. Taskify submits through its outbox, which retries after a timeout, so a lost response stores the suggestion twice. Taskify asks for an `idempotencyKey`, unique per tenant, as on `/v1/notify`. Until then, a duplicate pending suggestion is possible, and an admin rejects one of the two.
+- **The current adjustment.** Taskify has no read of the adjustment in force for a scope. It sends as `currentAdjustment` the `proposedAdjustment` of the latest approved suggestion for the same `eventPattern` in `GET /v1/learning/suggestions`, or 0. AgentPulse should either expose the current adjustment per scope, for example in R7's groups, or confirm that it ignores `currentAdjustment` and applies `proposedAdjustment` as the new value.
+
 ## What happens in Taskify meanwhile
 
 - Work continues against the mock. AP brings the mock in line with the agreed contract, and any later change to the contract changes the mock in the same commit.

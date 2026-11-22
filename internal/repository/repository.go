@@ -123,6 +123,23 @@ type WorkspaceRepository interface {
 	GetForUpdate(ctx context.Context, tenantID, id string) (domain.Workspace, error)
 	// Update writes the name, agent settings, and updated_at.
 	Update(ctx context.Context, w domain.Workspace) error
+	// ListLearningTenants returns up to limit tenants, across all of them,
+	// with a workspace whose settings allow the learning agent and no
+	// learning job for week (domain.LearningJobDedupKey), ordered by tenant.
+	// Each names its first such workspace by ID. It takes no locks: the
+	// job's unique dedup key stops a second job if two scans overlap.
+	ListLearningTenants(ctx context.Context, week string, limit int) ([]domain.LearningTenant, error)
+}
+
+// LearningSuggestionRepository records the learning suggestions Taskify
+// submits to AgentPulse (M11-03).
+type LearningSuggestionRepository interface {
+	// Insert records s and reports whether it was new: false when its job
+	// already recorded a suggestion for the same pattern.
+	Insert(ctx context.Context, s domain.LearningSuggestion) (bool, error)
+	// PatternsSince returns the patterns of the tenant's suggestions recorded
+	// at or after since, each once.
+	PatternsSince(ctx context.Context, tenantID string, since time.Time) ([]domain.EventPattern, error)
 }
 
 // WorkspaceRuleRepository records the AgentPulse rules each workspace has.

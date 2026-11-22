@@ -123,6 +123,7 @@ func New() *Server {
 	s.mux.HandleFunc("GET /v1/learning/suggestions", s.handleListSuggestions)
 	s.mux.HandleFunc("POST /v1/learning/suggestions", s.handleCreateSuggestion)
 	s.mux.HandleFunc("POST /v1/learning/suggestions/{id}/decision", s.handleDecision)
+	s.mux.HandleFunc("GET /v1/analytics/feedback", s.handleAnalytics)
 	s.mux.HandleFunc("GET /v1/tenants/{tenantId}/users/{userId}/in-app-feed", s.handleFeed)
 	s.mux.HandleFunc("PUT /v1/tenants/{tenantId}/users/{userId}/contact", s.handlePutContact)
 	return s
@@ -717,20 +718,177 @@ func (s *Server) handleCreateSuggestion(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	tenant, _ := body["tenantId"].(string)
-	if err := CheckTenant(tenant); err != nil {
+	if err := CheckSuggestion(body); err != nil {
 		badRequest(w, err)
-		return
-	}
-	// AgentPulse bounds learned adjustments to plus or minus 20.
-	if adj, isNum := body["proposedAdjustment"].(float64); !isNum || adj < -20 || adj > 20 {
-		badRequest(w, fmt.Errorf("proposedAdjustment must be a number within -20 and 20"))
 		return
 	}
 	s.mu.Lock()
 	sg := *s.addSuggestionLocked(body)
 	s.mu.Unlock()
 	writeJSON(w, http.StatusCreated, sg)
+}
+
+// Learning limits (R6): AgentPulse bounds learned adjustments to plus or
+// minus 20, and a suggestion rests on at least 5 signals.
+const (
+	MaxAdjustment  = 20
+	MinSignalCount = 5
+)
+
+// CheckSuggestion returns why AgentPulse would refuse a submitted learning
+// suggestion (R6), or nil: a valid tenant; a ruleId or an eventPattern
+// {eventType, label}, label a string or null; currentAdjustment and
+// proposedAdjustment numbers within -20 and 20; a signalCount of at least
+// 5; and a rationale.
+func CheckSuggestion(body map[string]any) error {
+	tenant, _ := body["tenantId"].(string)
+	if err := CheckTenant(tenant); err != nil {
+		return err
+	}
+	rule, _ := body["ruleId"].(string)
+	pattern, hasPattern := body["eventPattern"].(map[string]any)
+	switch {
+	case rule == "" && !hasPattern:
+		return fmt.Errorf("ruleId or eventPattern is required")
+	case hasPattern:
+		if eventType, _ := pattern["eventType"].(string); eventType == "" {
+			return fmt.Errorf("eventPattern.eventType is required")
+		}
+		switch pattern["label"].(type) {
+		case nil, string:
+		default:
+			return fmt.Errorf("eventPattern.label must be a string or null")
+		}
+	}
+	for _, field := range []string{"currentAdjustment", "proposedAdjustment"} {
+		if adj, isNum := body[field].(float64); !isNum || adj < -MaxAdjustment || adj > MaxAdjustment {
+			return fmt.Errorf("%s must be a number within -%d and %d", field, MaxAdjustment, MaxAdjustment)
+		}
+	}
+	if n, isNum := body["signalCount"].(float64); !isNum || n < MinSignalCount {
+		return fmt.Errorf("signalCount must be a number of at least %d", MinSignalCount)
+	}
+	if rationale, _ := body["rationale"].(string); rationale == "" {
+		return fmt.Errorf("rationale is required")
+	}
+	return nil
+}
+
+// feedbackGroup is one row of the feedback analytics (R7).
+type feedbackGroup struct {
+	EventType     string  `json:"eventType"`
+	Label         *string `json:"label"`
+	Delivered     int     `json:"delivered"`
+	Acted         int     `json:"acted"`
+	Dismissed     int     `json:"dismissed"`
+	Muted         int     `json:"muted"`
+	Snoozed       int     `json:"snoozed"`
+	DistinctUsers int     `json:"distinctUsers"`
+	users         map[string]bool
+}
+
+// handleAnalytics serves R7: the tenant's notifications accepted since the
+// given time, and the feedback signals received since then, counted per
+// event type and per payload label. A notification counts once under each of
+// its labels, or under a null label when it has none. A signal counts under
+// the notification it names, or, without one, the user's latest notification
+// about its task (AP-12); a signal linked to no notification is not counted.
+// distinctUsers is how many users the group's counted signals came from.
+// Groups are ordered by event type, then label, null first.
+func (s *Server) handleAnalytics(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	tenant := q.Get("tenantId")
+	if err := CheckTenant(tenant); err != nil {
+		badRequest(w, err)
+		return
+	}
+	since, err := time.Parse(time.RFC3339, q.Get("since"))
+	if err != nil {
+		badRequest(w, fmt.Errorf("since must be an RFC 3339 time"))
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	type key struct {
+		eventType, label string
+		labelled         bool
+	}
+	groups := map[key]*feedbackGroup{}
+	keysOf := func(n Notification) []key {
+		eventType, _ := n.Body["eventType"].(string)
+		payload, _ := n.Body["payload"].(map[string]any)
+		labels, _ := payload["labels"].([]any)
+		var out []key
+		for _, l := range labels {
+			if label, ok := l.(string); ok && !slices.Contains(out, key{eventType, label, true}) {
+				out = append(out, key{eventType, label, true})
+			}
+		}
+		if len(out) == 0 {
+			out = []key{{eventType: eventType}}
+		}
+		return out
+	}
+	group := func(k key) *feedbackGroup {
+		g := groups[k]
+		if g == nil {
+			g = &feedbackGroup{EventType: k.eventType, users: map[string]bool{}}
+			if k.labelled {
+				label := k.label
+				g.Label = &label
+			}
+			groups[k] = g
+		}
+		return g
+	}
+	for _, n := range s.notifications {
+		if t, _ := n.Body["tenantId"].(string); t != tenant || n.At.Before(since) {
+			continue
+		}
+		for _, k := range keysOf(n) {
+			group(k).Delivered++
+		}
+	}
+	for _, sg := range s.signals {
+		if sg.tenant != tenant || sg.notification == "" || sg.at.Before(since) {
+			continue
+		}
+		n := s.notificationLocked(tenant, sg.notification)
+		if n == nil {
+			continue
+		}
+		for _, k := range keysOf(*n) {
+			g := group(k)
+			switch sg.kind {
+			case "acted":
+				g.Acted++
+			case "dismissed":
+				g.Dismissed++
+			case "muted":
+				g.Muted++
+			case "snoozed":
+				g.Snoozed++
+			}
+			g.users[sg.user] = true
+		}
+	}
+	out := make([]*feedbackGroup, 0, len(groups))
+	for _, g := range groups {
+		g.DistinctUsers = len(g.users)
+		out = append(out, g)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.EventType != b.EventType {
+			return a.EventType < b.EventType
+		}
+		if (a.Label == nil) != (b.Label == nil) {
+			return a.Label == nil
+		}
+		return a.Label != nil && *a.Label < *b.Label
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"since": since.UTC().Format(time.RFC3339), "groups": out})
 }
 
 func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {

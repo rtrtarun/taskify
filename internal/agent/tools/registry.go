@@ -39,7 +39,8 @@ type Scope struct {
 	// AllowedTools are the tools offered to this agent. Nil allows every
 	// registered tool.
 	AllowedTools []string
-	// RequireHITL makes every call a Tier 2 proposal (require_hitl_for_all).
+	// RequireHITL makes every call a Tier 2 proposal (require_hitl_for_all),
+	// except a Suggester's, whose calls are proposals already.
 	RequireHITL bool
 	// MaxSubtasks is the workspace's max_subtasks_per_decomposition, or 0
 	// when the settings are not known, as when applying an approved
@@ -48,6 +49,11 @@ type Scope struct {
 	// RequestedBy is the person whose action queued the job, from its input
 	// context, or empty when no person did.
 	RequestedBy string
+	// Facts is what Go code gathered for the run before the model was
+	// called, such as a Reporter's report, for tools that check a call
+	// against it: ProposeNotificationRule only accepts the run's patterns.
+	// Nil when the run gathered none, as when applying an approved proposal.
+	Facts any
 }
 
 // NewScope builds the scope of a job from its row and its workspace's
@@ -107,6 +113,17 @@ type VersionedOutput interface {
 // must not move the task's version, or the proposal would be stale at once.
 type Proposer interface {
 	Proposed(ctx context.Context, scope Scope, args json.RawMessage) error
+}
+
+// Suggester is implemented by a tool whose only effect is a suggestion that
+// an admin approves or rejects outside Taskify, such as
+// ProposeNotificationRule: AgentPulse holds the suggestion as
+// PENDING_APPROVAL and changes nothing until an admin decides (decision 6).
+// Such a call is a proposal already, so Dispatch runs it, when its tier is
+// 1, even when the workspace requires approval for everything; holding it in
+// Taskify too would ask the admin to decide it twice.
+type Suggester interface {
+	DecidedUpstream() bool
 }
 
 // Checker is implemented by a tool whose arguments need checks a JSON Schema
@@ -239,7 +256,7 @@ func (r *Registry) Dispatch(ctx context.Context, scope Scope, call llm.ToolCall)
 		return Result{}, err
 	}
 	tier := e.tool.Tier(args)
-	if scope.RequireHITL || tier != domain.Tier1 {
+	if (scope.RequireHITL && !decidedUpstream(e.tool)) || tier != domain.Tier1 {
 		// Anything but an explicit Tier 1 waits for a person.
 		if p, ok := e.tool.(Proposer); ok {
 			if err := p.Proposed(ctx, scope, args); err != nil {
@@ -253,6 +270,13 @@ func (r *Registry) Dispatch(ctx context.Context, scope Scope, call llm.ToolCall)
 		return Result{}, err
 	}
 	return Result{Tier: domain.Tier1, Output: out}, nil
+}
+
+// decidedUpstream reports whether t only makes suggestions decided outside
+// Taskify (Suggester).
+func decidedUpstream(t Tool) bool {
+	s, ok := t.(Suggester)
+	return ok && s.DecidedUpstream()
 }
 
 // check runs every rule except the tier: the tool exists and is offered,
