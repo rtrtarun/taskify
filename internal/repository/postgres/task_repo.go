@@ -406,6 +406,16 @@ func reasonPtr(r *domain.BlockedReason) *string {
 	return &v
 }
 
+// CountAssigned is served by idx_tasks_tenant_assignee_status.
+func (r *TaskRepo) CountAssigned(ctx context.Context, tenantID, assigneeID string, status domain.Status, priority domain.Priority) (int, error) {
+	var n int
+	err := r.db.q(ctx).QueryRow(ctx, `
+		SELECT count(*) FROM tasks
+		WHERE tenant_id = $1 AND assignee_id = $2 AND status = $3::text::task_status AND priority = $4::text::task_priority`,
+		tenantID, assigneeID, string(status), string(priority)).Scan(&n)
+	return n, mapErr(err)
+}
+
 func (r *TaskRepo) WorkspaceLabels(ctx context.Context, tenantID, workspaceID string, limit int) ([]string, error) {
 	rows, err := r.db.q(ctx).Query(ctx, `
 		SELECT l FROM tasks, unnest(labels) AS l

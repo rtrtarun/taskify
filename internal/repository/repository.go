@@ -87,6 +87,11 @@ type TaskRepository interface {
 	MarkDueSoonNotified(ctx context.Context, tenantID string, id uuid.UUID, at time.Time) error
 	MarkOverdueNotified(ctx context.Context, tenantID string, id uuid.UUID, at time.Time) error
 
+	// CountAssigned counts the tenant's tasks assigned to assigneeID with the
+	// given status and priority, in every workspace: the assignee's load as
+	// the digest gatekeeper measures it (G14). It takes no locks.
+	CountAssigned(ctx context.Context, tenantID, assigneeID string, status domain.Status, priority domain.Priority) (int, error)
+
 	// WorkspaceLabels returns up to limit labels used in the workspace, most
 	// used first, ties by name.
 	WorkspaceLabels(ctx context.Context, tenantID, workspaceID string, limit int) ([]string, error)

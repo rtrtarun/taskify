@@ -93,8 +93,9 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 		Comments: postgres.NewCommentRepo(db), Outbox: outbox, Dependencies: postgres.NewDependencyRepo(db),
 		AgentJobs: postgres.NewAgentJobRepo(db),
 	}, service.Config{
-		PublicBaseURL:     cfg.PublicBaseURL,
-		OutboxMaxAttempts: cfg.OutboxMaxAttempts,
+		PublicBaseURL:       cfg.PublicBaseURL,
+		OutboxMaxAttempts:   cfg.OutboxMaxAttempts,
+		DigestLoadThreshold: cfg.DigestLoadThreshold,
 	}, service.WithWake(relay.Wake), service.WithMetrics(metrics))
 	feedback := service.NewFeedbackService(tasks, client, metrics)
 	// One registry for the runtime and for applying approved proposals, so a

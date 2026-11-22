@@ -634,6 +634,18 @@ func (r *OutboxRepo) CountByStatus(ctx context.Context, status domain.OutboxStat
 	return n, err
 }
 
+func (r *TaskRepo) CountAssigned(ctx context.Context, tenantID, assigneeID string, status domain.Status, priority domain.Priority) (n int, err error) {
+	err = r.st.do(ctx, func(s *state) error {
+		for _, t := range s.tasks {
+			if t.TenantID == tenantID && t.AssigneeID == assigneeID && t.Status == status && t.Priority == priority {
+				n++
+			}
+		}
+		return nil
+	})
+	return n, err
+}
+
 func (r *TaskRepo) WorkspaceLabels(ctx context.Context, tenantID, workspaceID string, limit int) ([]string, error) {
 	counts := map[string]int{}
 	err := r.st.do(ctx, func(s *state) error {

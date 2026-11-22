@@ -294,6 +294,85 @@ func TestNotificationRouting(t *testing.T) {
 	})
 }
 
+// TestDeferredAssignment covers the routing half of the load gatekeeper
+// (M10-01): which events may be deferred, and how a deferred one is sent.
+func TestDeferredAssignment(t *testing.T) {
+	assigned := func(t *testing.T, priority Priority, actor Actor) Event {
+		t.Helper()
+		task, _, err := NewTask(NewTaskInput{TenantID: "t", WorkspaceID: "w", Title: "x", Priority: priority}, alice, t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		events, err := task.Apply(Patch{AssigneeID: ptr(bob.ID)}, actor, t0)
+		if err != nil || len(events) != 1 || events[0].Type != EventTaskAssigned {
+			t.Fatalf("Apply: %v %v", events, err)
+		}
+		return events[0]
+	}
+	created, _, err := NewTask(NewTaskInput{TenantID: "t", WorkspaceID: "w", Title: "x", AssigneeID: bob.ID}, alice, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked := newTask(t)
+	blockEvents, err := blocked.Apply(Patch{Status: ptr(StatusBlocked)}, alice, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, tc := range map[string]struct {
+		event Event
+		want  bool
+	}{
+		"an assignment":                            {assigned(t, PriorityMedium, alice), true},
+		"a creation with an assignee":              {created.event(EventTaskCreated, alice, t0), true},
+		"an assignment by an agent":                {assigned(t, PriorityLow, Agent(AgentBlocker)), true},
+		"a critical assignment":                    {assigned(t, PriorityCritical, alice), false},
+		"a self-assignment, which notifies no one": {assigned(t, PriorityMedium, bob), false},
+		"a manual block":                           {blockEvents[0], false},
+		"an update":                                {newTask(t).event(EventTaskUpdated, alice, t0), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := tc.event.Deferrable(); got != tc.want {
+				t.Errorf("Deferrable = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("a deferred assignment goes to the digest only, with the note", func(t *testing.T) {
+		e := assigned(t, PriorityHigh, alice)
+		plain := e.Notifications(baseURL)[0]
+		e.Deferred = true
+		n := e.Notifications(baseURL)[0]
+		if !slices.Equal(n.Channels, []string{"digest"}) || n.Payload["digestSummary"] != "Deferred to avoid context switching" {
+			t.Errorf("channels %v digestSummary %v", n.Channels, n.Payload["digestSummary"])
+		}
+		if n.Payload["bypassDigest"] != nil || n.PriorityHint != "high" {
+			t.Errorf("bypass %v hint %s", n.Payload["bypassDigest"], n.PriorityHint)
+		}
+		if n.IdempotencyKey != plain.IdempotencyKey || n.Title != plain.Title || n.Body != plain.Body {
+			t.Errorf("deferral changed the notification itself: %+v", n)
+		}
+		raw, _ := json.Marshal(n)
+		if !strings.Contains(string(raw), `"channels":["digest"]`) || !strings.Contains(string(raw), `"digestSummary"`) {
+			t.Errorf("wire format = %s", raw)
+		}
+	})
+
+	t.Run("a critical event keeps bypassDigest even if marked deferred", func(t *testing.T) {
+		e := assigned(t, PriorityCritical, alice)
+		e.Deferred = true
+		n := e.Notifications(baseURL)[0]
+		if n.Payload["bypassDigest"] != true || slices.Contains(n.Channels, "digest") || n.Payload["digestSummary"] != nil {
+			t.Errorf("channels %v payload %v", n.Channels, n.Payload)
+		}
+		b := blockEvents[0]
+		b.Deferred = true
+		if n := b.Notifications(baseURL)[0]; n.Payload["bypassDigest"] != true || n.Payload["digestSummary"] != nil {
+			t.Errorf("a manual block was deferred: %v", n.Payload)
+		}
+	})
+}
+
 func TestNotificationTextForEveryEvent(t *testing.T) {
 	due := t0.Add(time.Hour)
 	task := newTask(t)

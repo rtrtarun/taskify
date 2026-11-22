@@ -209,6 +209,7 @@ All settings are environment variables. In development, a `.env` file is also re
 | `AGENT_WORKERS` | `4` | Concurrent agent jobs per replica |
 | `AGENT_MAX_TURNS` | `6` | Model turns per job run |
 | `AGENT_MAX_ATTEMPTS` | `3` | Failed runs before a job fails |
+| `DIGEST_LOAD_THRESHOLD` | `3` | In-progress `p1_critical` tasks at which a non-critical assignment goes to the assignee's digest instead of interrupting them (workspaces with the digest agent on) |
 | `LLM_BASE_URL` | required with agents | OpenAI-compatible API root, such as `http://localhost:11434/v1` |
 | `LLM_MODEL` | required with agents | Model name, such as `qwen2.5-coder:7b` |
 | `LLM_API_KEY` | empty | Bearer token; leave empty for a local Ollama |

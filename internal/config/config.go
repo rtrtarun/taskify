@@ -58,6 +58,11 @@ type Config struct {
 	AgentMaxTurns    int
 	AgentMaxAttempts int
 
+	// DigestLoadThreshold is how many in-progress critical tasks make an
+	// assignee overloaded: a non-critical assignment then waits for their
+	// digest (G14).
+	DigestLoadThreshold int
+
 	// LLMBaseURL and LLMModel are required when AgentsEnabled is true.
 	// LLMAPIKey is empty for local Ollama.
 	LLMBaseURL string
@@ -122,6 +127,8 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 		AgentWorkers:     r.intRange("AGENT_WORKERS", 4, 1, 256),
 		AgentMaxTurns:    r.intRange("AGENT_MAX_TURNS", 6, 1, 50),
 		AgentMaxAttempts: r.intRange("AGENT_MAX_ATTEMPTS", 3, 1, 20),
+
+		DigestLoadThreshold: r.intRange("DIGEST_LOAD_THRESHOLD", 3, 1, 1000),
 
 		LLMBaseURL: strings.TrimRight(r.optionalURL("LLM_BASE_URL"), "/"),
 		LLMAPIKey:  r.optional("LLM_API_KEY"),
