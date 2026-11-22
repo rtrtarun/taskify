@@ -90,6 +90,26 @@ func (t *Task) RecordAgentRun(r AgentRunRecord) {
 	}
 }
 
+// RunCommentID is the key under which a run's Changes name the comment the
+// agent added.
+const RunCommentID = "comment_id"
+
+// CommentOf returns the comment a job added to the task, if its run recorded
+// one.
+func (t *Task) CommentOf(jobID uuid.UUID) (uuid.UUID, bool) {
+	for _, r := range t.AgentMetadata.Runs {
+		if r.JobID != jobID {
+			continue
+		}
+		if s, ok := r.Changes[RunCommentID].(string); ok {
+			if id, err := uuid.Parse(s); err == nil {
+				return id, true
+			}
+		}
+	}
+	return uuid.Nil, false
+}
+
 // RecommendPriority stores an agent's suggested priority. It changes no
 // field a person edits, so it does not move the task's version.
 func (t *Task) RecommendPriority(rec PriorityRecommendation) error {

@@ -527,3 +527,164 @@ func TestCleanup(t *testing.T) {
 		}
 	})
 }
+
+// --- stale scan ------------------------------------------------------------
+
+// blockerJobs returns the dedup keys of a task's blocker investigations.
+func blockerJobs(t *testing.T, b repotest.Backend, taskID uuid.UUID) []string {
+	t.Helper()
+	jobs, err := b.AgentJobs.ListForTask(ctx, tenant, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	for _, j := range jobs {
+		if j.AgentType != domain.AgentBlocker {
+			continue
+		}
+		var in struct {
+			Trigger string `json:"trigger"`
+		}
+		if err := json.Unmarshal(j.InputContext, &in); err != nil || in.Trigger != domain.TriggerStale ||
+			j.Status != domain.JobPending || j.BaseTaskVersion == nil {
+			t.Errorf("stale job = %+v (input %s)", j, j.InputContext)
+		}
+		keys = append(keys, j.DedupKey)
+	}
+	return keys
+}
+
+// TestStaleScanOnePerTaskPerDay is the M9 exit criterion "a stale task is
+// investigated once per stale period, not on every scan" (M9-02, G12).
+func TestStaleScanOnePerTaskPerDay(t *testing.T) {
+	each(t, func(t *testing.T, b repotest.Backend) {
+		clock := t0
+		svc := service.NewTaskService(
+			service.Deps{Tx: b.Tx, Tasks: b.Tasks, Workspaces: b.Workspaces, Comments: b.Comments, Outbox: b.Outbox, Dependencies: b.Deps, AgentJobs: b.AgentJobs},
+			service.Config{PublicBaseURL: "https://taskify.test"},
+			service.WithClock(func() time.Time { return clock }),
+		)
+		for _, ws := range []struct {
+			id string
+			on bool
+		}{{"ws", true}, {"off", false}} {
+			w, err := svc.CreateWorkspace(ctx, tenant, ws.id, ws.id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			on := ws.on
+			if err := w.UpdateAgentSettings(domain.AgentSettingsPatch{AgentsEnabled: &on}, t0); err != nil {
+				t.Fatal(err)
+			}
+			if err := b.Workspaces.Update(ctx, w); err != nil {
+				t.Fatal(err)
+			}
+		}
+		alice := domain.User("usr_alice")
+		create := func(ws, title string, status domain.Status) *domain.Task {
+			task, err := svc.CreateTask(ctx, alice, domain.NewTaskInput{TenantID: tenant, WorkspaceID: ws, Title: title, AssigneeID: "usr_bob"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status != domain.StatusTodo {
+				if task, err = svc.UpdateTask(ctx, alice, tenant, task.ID, task.Version, domain.Patch{Status: &status}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return task
+		}
+		stale := create("ws", "Stuck", domain.StatusInProgress)
+		commented := create("ws", "Discussed", domain.StatusInProgress)
+		edited := create("ws", "Edited", domain.StatusInProgress)
+		todo := create("ws", "Not started", domain.StatusTodo)
+		off := create("off", "Agents off", domain.StatusInProgress)
+		// An old comment on the stale task does not help it.
+		if _, err := svc.AddComment(ctx, alice, tenant, stale.ID, "Starting now."); err != nil {
+			t.Fatal(err)
+		}
+
+		clock = t0.Add(30 * time.Hour)
+		if _, err := svc.UpdateTask(ctx, alice, tenant, edited.ID, edited.Version, domain.Patch{Title: ptr("Edited again")}); err != nil {
+			t.Fatal(err)
+		}
+		clock = t0.Add(40 * time.Hour)
+		if _, err := svc.AddComment(ctx, alice, tenant, commented.ID, "Still on it."); err != nil {
+			t.Fatal(err)
+		}
+
+		now := t0.Add(49 * time.Hour) // 10:00 two days later
+		sched := func() *Scheduler {
+			return NewScheduler(b.Tx, b.Tasks, b.Outbox, SchedulerConfig{
+				BatchSize: 1, Logger: quiet, Jobs: b.AgentJobs, Now: func() time.Time { return now },
+			})
+		}
+		a, c := sched(), sched()
+		var wg sync.WaitGroup
+		for _, s := range []*Scheduler{a, c, a, c} {
+			wg.Add(1)
+			go func(s *Scheduler) {
+				defer wg.Done()
+				if _, err := s.Tick(ctx); err != nil {
+					t.Error(err)
+				}
+			}(s)
+		}
+		wg.Wait()
+
+		first := blockerJobs(t, b, stale.ID)
+		if len(first) != 1 || first[0] != domain.StaleJobDedupKey(domain.AgentBlocker, stale.ID, now) {
+			t.Fatalf("stale task jobs = %v, want one keyed by today", first)
+		}
+		for name, task := range map[string]*domain.Task{"commented": commented, "edited": edited, "todo": todo, "agents off": off} {
+			if keys := blockerJobs(t, b, task.ID); len(keys) != 0 {
+				t.Errorf("%s task was investigated: %v", name, keys)
+			}
+		}
+
+		// Later the same day: nothing new.
+		now = t0.Add(59 * time.Hour)
+		if _, err := a.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if keys := blockerJobs(t, b, stale.ID); len(keys) != 1 {
+			t.Errorf("same-day scan: %v", keys)
+		}
+		// The next day, still untouched: one more. The task commented at
+		// +40h, 33 hours ago, is not stale yet.
+		now = t0.Add(73 * time.Hour)
+		if _, err := c.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if keys := blockerJobs(t, b, stale.ID); len(keys) != 2 || keys[0] == keys[1] {
+			t.Errorf("next-day scan: %v", keys)
+		}
+		if keys := blockerJobs(t, b, commented.ID); len(keys) != 0 {
+			t.Errorf("task commented 33h ago: %v", keys)
+		}
+	})
+}
+
+func TestStaleScanOffWithoutJobs(t *testing.T) {
+	b := repotest.Memory()
+	f := newSchedFixture(t, b)
+	w, _ := b.Workspaces.Get(ctx, tenant, "ws")
+	on := true
+	_ = w.UpdateAgentSettings(domain.AgentSettingsPatch{AgentsEnabled: &on}, t0)
+	if err := b.Workspaces.Update(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	task := f.task(t, t0.Add(30*24*time.Hour), "usr_bob")
+	status := domain.StatusInProgress
+	if _, err := f.svc.UpdateTask(ctx, domain.User("usr_alice"), tenant, task.ID, task.Version, domain.Patch{Status: &status}); err != nil {
+		t.Fatal(err)
+	}
+	now := t0.Add(72 * time.Hour)
+	if _, err := f.scheduler(&now).Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if keys := blockerJobs(t, b, task.ID); len(keys) != 0 {
+		t.Errorf("a scheduler without Jobs queued %v", keys)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }

@@ -10,7 +10,8 @@ import (
 )
 
 // The nine R1 event types. See docs/architecture.md section 5.6. The R2
-// dependency events are in dependency.go.
+// dependency events are in dependency.go, agent.approval_requested in
+// approval.go, and task.escalated in escalation.go.
 const (
 	EventTaskCreated           = "task.created"
 	EventTaskAssigned          = "task.assigned"
@@ -51,6 +52,8 @@ type Event struct {
 	Blocker *BlockerRef
 	// Job is set for agent.approval_requested.
 	Job *JobRef
+	// Escalation is set for task.escalated.
+	Escalation *Escalation
 }
 
 func (t *Task) event(eventType string, actor Actor, at time.Time) Event {
@@ -93,6 +96,11 @@ func (e Event) Recipients() []string {
 		if e.Comment != nil {
 			candidates = append(candidates, e.Comment.Mentions...)
 		}
+	case EventTaskEscalated:
+		// The owner of the blocking tasks, not the escalated task's people.
+		if e.Escalation != nil {
+			candidates = []string{e.Escalation.Recipient}
+		}
 	}
 	out := []string{}
 	for _, c := range candidates {
@@ -118,6 +126,8 @@ func (e Event) Recipients() []string {
 //     task version and two comments would otherwise share a key.
 //   - dependency notices (added, resolved, reopened) use the blocker's ID and
 //     version, for the same reason: they leave the dependent's version alone.
+//   - escalations use the job ID and always the recipient: a job escalates
+//     to each owner at most once.
 func (e Event) IdempotencyKey(recipient string) string {
 	base := fmt.Sprintf("%s:%s:%s", Source, e.Task.TenantID, e.Task.ID)
 	var key string
@@ -150,6 +160,12 @@ func (e Event) IdempotencyKey(recipient string) string {
 			job = e.Job.ID.String()
 		}
 		key = fmt.Sprintf("%s:%s:%s", base, e.Type, job)
+	case EventTaskEscalated:
+		job := ""
+		if e.Escalation != nil {
+			job = e.Escalation.JobID.String()
+		}
+		return fmt.Sprintf("%s:%s:%s:%s", base, e.Type, job, recipient)
 	default:
 		key = fmt.Sprintf("%s:%s:v%d", base, e.Type, e.Task.Version)
 	}
@@ -208,10 +224,10 @@ func (e Event) Notifications(publicBaseURL string) []Notification {
 	return out
 }
 
-// bypassDigest forces immediate delivery for critical tasks and for manual
-// blocks. A system-applied dependency block is deliberately quiet.
+// bypassDigest forces immediate delivery for critical tasks, manual blocks,
+// and escalations. A system-applied dependency block is deliberately quiet.
 func (e Event) bypassDigest() bool {
-	if e.Task.Priority == PriorityCritical {
+	if e.Task.Priority == PriorityCritical || e.Type == EventTaskEscalated {
 		return true
 	}
 	return e.Type == EventTaskBlocked && e.blockedReason() == BlockedManual
@@ -226,7 +242,8 @@ func (e Event) blockedReason() BlockedReason {
 
 func (e Event) priorityHint() string {
 	// A manual block is at least high, whatever the task's own priority.
-	// A revived blocker on started work is sent as at least high (section 5.6).
+	// A revived blocker on started work is sent as at least high (section 5.6),
+	// and so is an escalation.
 	// An agent's priority recommendation, proposed for approval, is the hint
 	// for the task's later notifications (M7-04).
 	manualBlock := e.Type == EventTaskBlocked && e.blockedReason() == BlockedManual
@@ -234,7 +251,8 @@ func (e Event) priorityHint() string {
 	if rec := e.Task.AgentMetadata.PriorityRecommendation; rec != nil && rec.Value.Valid() {
 		p = rec.Value
 	}
-	if (manualBlock || e.Type == EventTaskDependencyReopened) && PriorityHigh.HigherThan(p) {
+	escalated := manualBlock || e.Type == EventTaskDependencyReopened || e.Type == EventTaskEscalated
+	if escalated && PriorityHigh.HigherThan(p) {
 		p = PriorityHigh
 	}
 	return p.Hint()
@@ -263,7 +281,7 @@ func (e Event) payload(publicBaseURL string) map[string]any {
 	if t.DueAt != nil {
 		p["dueAt"] = t.DueAt.UTC().Format(time.RFC3339)
 	}
-	if e.Type == EventTaskBlocked && e.blockedReason() != "" {
+	if (e.Type == EventTaskBlocked || e.Type == EventTaskEscalated) && e.blockedReason() != "" {
 		p["blockedReason"] = string(e.blockedReason())
 	}
 	if e.Type == EventTaskDueSoon {
@@ -286,6 +304,22 @@ func (e Event) payload(publicBaseURL string) map[string]any {
 			"reject":  jobURL + "/dismiss",
 			"view":    jobURL,
 		}
+	}
+	if x := e.Escalation; x != nil {
+		p["jobId"] = x.JobID.String()
+		p["agentType"] = x.AgentType
+		blocking := make([]map[string]any, len(x.Blockers))
+		for i, b := range x.Blockers {
+			blocking[i] = map[string]any{"taskId": b.ID.String(), "title": b.Title, "status": string(b.Status)}
+		}
+		p["blockingTasks"] = blocking
+		urls := map[string]string{"view": taskURL}
+		if t.Status == StatusBlocked {
+			// The click reaches the webhook as action "unblock" for taskId.
+			urls[ActionUnblock] = taskURL
+			p["actionLabels"] = map[string]string{ActionUnblock: ActionUnblockLabel}
+		}
+		p["actionUrls"] = urls
 	}
 	if e.bypassDigest() {
 		p["bypassDigest"] = true
@@ -330,6 +364,8 @@ func (e Event) title(mentioned bool) string {
 		return "Dependency reopened: " + t
 	case EventAgentApprovalRequested:
 		return "Approval needed: " + t
+	case EventTaskEscalated:
+		return "[ESCALATED] Waiting on you: " + t
 	}
 	return t
 }
@@ -365,6 +401,19 @@ func (e Event) body() string {
 				j.AgentType, plural(len(j.Tools), "change"), ref, strings.Join(j.Tools, ", "), prio)
 		}
 	}
+	if x := e.Escalation; x != nil && e.Type == EventTaskEscalated {
+		names := make([]string, len(x.Blockers))
+		for i, b := range x.Blockers {
+			names[i] = fmt.Sprintf("%q (#%s)", truncate(b.Title, 80), b.ID.String()[:8])
+		}
+		state := "is " + string(e.Task.Status)
+		next := "Please clear it or say what is needed."
+		if e.Task.Status == StatusBlocked {
+			next = "When it can go ahead, use " + ActionUnblockLabel + "."
+		}
+		return fmt.Sprintf("%s %s and waits on your %s %s. The %s agent investigated it. %s %s",
+			ref, state, pluralWord(len(names), "task"), strings.Join(names, ", "), x.AgentType, next, prio)
+	}
 	if b := e.Blocker; b != nil {
 		blocker := fmt.Sprintf("%q (#%s)", truncate(b.Title, 80), b.ID.String()[:8])
 		switch e.Type {
@@ -389,6 +438,13 @@ func plural(n int, noun string) string {
 		return "1 " + noun
 	}
 	return strconv.Itoa(n) + " " + noun + "s"
+}
+
+func pluralWord(n int, noun string) string {
+	if n == 1 {
+		return noun
+	}
+	return noun + "s"
 }
 
 func formatDue(t *time.Time) string {

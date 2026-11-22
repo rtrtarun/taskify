@@ -658,7 +658,8 @@ func (r *Runtime) finish(ctx context.Context, ru *run, runErr error) (outcome st
 	}
 	job.ExecutionResult, _ = json.Marshal(result)
 
-	if err := r.save(wctx, ctx, ru); err != nil {
+	notified, err := r.save(wctx, ctx, ru)
+	if err != nil {
 		if errors.Is(err, repository.ErrJobMoved) || errors.Is(err, domain.ErrNotFound) {
 			log.Warn("agent runtime: job was taken over or deleted; result dropped")
 			return ""
@@ -668,6 +669,8 @@ func (r *Runtime) finish(ctx context.Context, ru *run, runErr error) (outcome st
 	}
 	if job.Status == domain.JobAwaitingApproval {
 		r.cfg.Metrics.AgentProposals(job.AgentType, observability.DecisionProposed, len(ru.proposals))
+	}
+	if notified {
 		r.cfg.Wake()
 	}
 	attrs := []any{"status", job.Status, "turns", ru.turns, "attempts", job.Attempts}
@@ -679,41 +682,68 @@ func (r *Runtime) finish(ctx context.Context, ru *run, runErr error) (outcome st
 	return outcomeOf(job.Status, ru.stopped)
 }
 
-// save writes the job's next status. A job that now awaits approval also
-// gets its agent.approval_requested outbox row in the same transaction, so
-// the request is sent exactly when the proposals are stored. traceCtx carries
-// the run's trace for that row.
-func (r *Runtime) save(ctx, traceCtx context.Context, ru *run) error {
+// Finisher is an Agent that sends notifications of its own when a run ends
+// well. FinishEvents runs inside the transaction that saves the job as
+// completed or awaiting approval, so its events are written exactly when the
+// run's result is, and never for a run that failed or will be retried. It
+// is deterministic Go code: the model has no say in what is sent or to whom.
+type Finisher interface {
+	FinishEvents(ctx context.Context, job *domain.AgentJob, now time.Time) ([]domain.Event, error)
+}
+
+// save writes the job's next status, and reports whether it also wrote
+// outbox rows. A job that now awaits approval gets its
+// agent.approval_requested row in the same transaction, so the request is
+// sent exactly when the proposals are stored; a Finisher's events are
+// written there too. traceCtx carries the run's trace for those rows.
+func (r *Runtime) save(ctx, traceCtx context.Context, ru *run) (notified bool, err error) {
 	job := ru.job
-	return r.deps.Tx.WithTx(ctx, func(ctx context.Context) error {
+	err = r.deps.Tx.WithTx(ctx, func(ctx context.Context) error {
+		notified = false // a retried transaction starts again
 		if err := r.deps.Jobs.Update(ctx, job, domain.JobRunning, ru.lease); err != nil {
 			return err
 		}
-		if job.Status != domain.JobAwaitingApproval || job.TaskID == nil {
+		ended := job.Status == domain.JobCompleted || job.Status == domain.JobAwaitingApproval
+		if !ended || job.TaskID == nil {
 			// A job without a task has nobody to ask yet; its proposals wait
 			// in the job, visible through the API.
 			return nil
 		}
-		task, err := r.deps.Tasks.Get(ctx, job.TenantID, *job.TaskID)
+		var events []domain.Event
+		if job.Status == domain.JobAwaitingApproval {
+			task, err := r.deps.Tasks.Get(ctx, job.TenantID, *job.TaskID)
+			if err != nil {
+				return err
+			}
+			names := make([]string, len(ru.proposals))
+			for i, p := range ru.proposals {
+				names[i] = p.Tool
+			}
+			events = append(events, domain.NewApprovalRequestedEvent(task, job, names, job.UpdatedAt))
+		}
+		if f, ok := r.agents[job.AgentType].(Finisher); ok {
+			more, err := f.FinishEvents(ctx, job, job.UpdatedAt)
+			if err != nil {
+				return fmt.Errorf("finish events: %w", err)
+			}
+			events = append(events, more...)
+		}
+		entries, err := domain.NewOutboxEntries(events, r.cfg.PublicBaseURL, r.cfg.OutboxMaxAttempts, job.UpdatedAt)
 		if err != nil {
 			return err
 		}
-		names := make([]string, len(ru.proposals))
-		for i, p := range ru.proposals {
-			names[i] = p.Tool
-		}
-		event := domain.NewApprovalRequestedEvent(task, job, names, job.UpdatedAt)
-		entries, err := domain.NewOutboxEntries([]domain.Event{event}, r.cfg.PublicBaseURL, r.cfg.OutboxMaxAttempts, job.UpdatedAt)
-		if err != nil {
-			return err
+		if len(entries) == 0 {
+			return nil
 		}
 		trace := observability.InjectTraceContext(traceCtx)
 		for i := range entries {
 			entries[i].TraceContext = trace
 		}
-		_, err = r.deps.Outbox.Insert(ctx, entries)
+		n, err := r.deps.Outbox.Insert(ctx, entries)
+		notified = n > 0
 		return err
 	})
+	return notified, err
 }
 
 // outcomeOf is the metric outcome of a run that ended with the job in status.

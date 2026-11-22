@@ -73,7 +73,7 @@ Goal: a high-level task becomes a set of linked subtasks (feature A3).
 
 ---
 
-## M9. Blocker agent
+## M9. Blocker agent (done)
 
 Goal: blocked and stale tasks are investigated and escalated (feature A2). This completes the R2 core.
 

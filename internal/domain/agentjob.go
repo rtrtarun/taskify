@@ -179,6 +179,29 @@ func StaleJobDedupKey(agentType string, taskID uuid.UUID, day time.Time) string 
 	return fmt.Sprintf("%s:%s:stale:%s", agentType, taskID, day.UTC().Format("2006-01-02"))
 }
 
+// TriggerStale is the trigger in the input context of a job queued by the
+// stale scan, where a change's jobs name its event type.
+const TriggerStale = "stale"
+
+// StaleAfter is how long an in-progress task may go without a comment or an
+// edit before the scheduler queues an investigation (default G12).
+const StaleAfter = 48 * time.Hour
+
+// NewStaleJob returns the blocker investigation of a stale task, keyed so
+// that a task gets at most one per UTC calendar day. The scheduler is the
+// actor, so the input context names no person.
+func NewStaleJob(t *Task, now time.Time) (AgentJob, error) {
+	taskID, version := t.ID, t.Version
+	return NewAgentJob(NewAgentJobInput{
+		TenantID:        t.TenantID,
+		TaskID:          &taskID,
+		AgentType:       AgentBlocker,
+		DedupKey:        StaleJobDedupKey(AgentBlocker, taskID, now),
+		BaseTaskVersion: &version,
+		InputContext:    json.RawMessage(`{"trigger":"` + TriggerStale + `"}`),
+	}, now)
+}
+
 // AgentRun is one model turn of a job, kept for audit (section 6.4).
 type AgentRun struct {
 	ID               uuid.UUID

@@ -75,6 +75,13 @@ type TaskRepository interface {
 	// ClaimOverdue locks open, past-due tasks not yet reminded on now's UTC
 	// date, skipping rows another transaction holds.
 	ClaimOverdue(ctx context.Context, now time.Time, limit int) ([]*domain.Task, error)
+	// ClaimStale locks up to limit in_progress tasks, across tenants, that
+	// have had neither an edit (updated_at) nor a comment since staleBefore,
+	// in workspaces whose settings allow the blocker investigator, and that
+	// have no stale investigation queued for now's UTC date (the job dedup
+	// key of domain.StaleJobDedupKey). Rows another transaction holds are
+	// skipped. Oldest first.
+	ClaimStale(ctx context.Context, staleBefore, now time.Time, limit int) ([]*domain.Task, error)
 	// Reminder bookkeeping. These do not change the version: a reminder is
 	// not an edit and must not cause a client's next save to conflict.
 	MarkDueSoonNotified(ctx context.Context, tenantID string, id uuid.UUID, at time.Time) error
