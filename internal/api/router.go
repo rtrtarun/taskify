@@ -61,6 +61,19 @@ type handlers struct {
 // The router deliberately has no middleware that rewrites RemoteAddr from
 // X-Forwarded-For: the trusted-gateway check depends on the real peer.
 func NewRouter(d Deps) (http.Handler, error) {
+	r, err := newMux(d)
+	if err != nil {
+		return nil, err
+	}
+	// The OpenTelemetry handler is outermost: it continues an incoming W3C
+	// trace or starts one, so every log line and outbox row below can carry
+	// the trace ID.
+	return otelhttp.NewHandler(r, "http.request", otelhttp.WithPropagators(observability.Propagator)), nil
+}
+
+// newMux builds the routes. contract/openapi.yaml documents each of them
+// (TestRoutesMatchContract).
+func newMux(d Deps) (*chi.Mux, error) {
 	if d.WebhookSecret == "" {
 		return nil, errors.New("api: a webhook secret is required")
 	}
@@ -126,10 +139,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.Route("/tasks", h.taskRoutes)
 	})
 
-	// The OpenTelemetry handler is outermost: it continues an incoming W3C
-	// trace or starts one, so every log line and outbox row below can carry
-	// the trace ID.
-	return otelhttp.NewHandler(r, "http.request", otelhttp.WithPropagators(observability.Propagator)), nil
+	return r, nil
 }
 
 // readiness answers 503 while a dependency the service cannot work without

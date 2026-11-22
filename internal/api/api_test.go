@@ -47,6 +47,7 @@ type env struct {
 	mock    *mockagentpulse.Server
 	now     time.Time
 	tasks   *service.TaskService
+	deps    Deps
 }
 
 type option func(*Deps)
@@ -92,7 +93,7 @@ func newEnv(t *testing.T, opts ...option) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.handler = h
+	e.handler, e.deps = h, d
 	if _, err := tasks.CreateWorkspace(context.Background(), tenant, "ws_core", "Core"); err != nil {
 		t.Fatal(err)
 	}
