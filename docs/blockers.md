@@ -1,6 +1,6 @@
 # Blockers: the AgentPulse contract (O1)
 
-Status, 2026-11-22: **decided, waiting on AgentPulse.**
+Status, 2026-11-22: **decided and agreed with AgentPulse. Its milestone 40 builds it under `/v1/`. Taskify's side is task group AP in [r2-agents.md](implementation/r2-agents.md).**
 
 ## Background
 
@@ -110,14 +110,59 @@ AgentPulse's own generated suggestions can keep living alongside these.
 
 `GET /healthz`. If AgentPulse keeps `/health`, Taskify changes its probe. Say which.
 
-## Open questions for the AgentPulse side
+## Agreed with AgentPulse (2026-11-22)
 
-1. Is `Authorization: Bearer` acceptable, or does Taskify switch to `X-API-Key`?
-2. `matchAny`, or one rule per condition (R5)?
-3. `/healthz` or `/health` (R9)?
-4. How many milestones does AgentPulse need for R1 to R8? Which come first? Taskify needs R2 to R5 for its R1 sign-off, R6 and R7 for M11, and R8 for M14-06.
+AgentPulse builds R1 to R9 in its milestone 40, in four slices. Its plan is in its own repository, at `docs/milestones/tenant-api-plan.md`.
+
+| Slice | Covers |
+| --- | --- |
+| 40a | R1 tenants, contacts, R2 `/v1/notify`, R5 `/v1/rules` with `matchAny`, R9 `/healthz`, Bearer auth |
+| 40b | R3 action callbacks, R4 `/v1/feedback` |
+| 40c | R6 learning suggestions, R7 feedback analytics |
+| 40d | R8 in-app feed, Slack direct messages |
+
+Changes to the specification above:
+
+- **Paths.** Every endpoint is under `/v1/`: `/v1/notify`, `/v1/feedback`, `/v1/rules`, `/v1/learning/...`, `/v1/analytics/feedback`, and `/v1/tenants/{t}/users/{u}/in-app-feed`. `/healthz` stays. AgentPulse accepts `Authorization: Bearer` as well as `X-API-Key`.
+- **Tenant IDs** must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`. They are compared case-sensitively and never trimmed, and `default` is refused. Taskify enforces the same rule (AP-04).
+- **Contacts.** Taskify calls `PUT /v1/tenants/{t}/users/{u}/contact` with `{email, slackUserId, phone}`.
+  - It is a full replace: a field that is `null` or left out is cleared, and a contact with all three empty is deleted.
+  - Sending the same body again changes nothing.
+  - A user with no contact gets in-app and digest delivery only.
+  - Taskify adds `PUT /api/v1/me/contact` for users to set their own contact (AP-05).
+- **Rules.** `matchAny` is supported natively.
+  - A rule may set `attentionClass` (`critical`, `standard`, `background`).
+  - A critical rule needs a real condition in every entry.
+  - AgentPulse's own locked critical rules run first, then the tenant's rules, then a default of `standard`.
+  - Taskify's default rule makes p1_critical tasks, manual blocks, and `task.escalated` critical (AP-03).
+- **Digest and priority.** `bypassDigest` keeps an item out of the digest, but budget and quiet hours still apply, and it never makes an item critical. `priorityHint` is only an input to rules.
+- **Idempotency.** The key is stored as sent: up to 320 printable ASCII characters, unique per tenant.
+- **Actions.**
+  - AgentPulse makes its own signed links for callback actions. Only `view` is used as sent.
+  - A click opens a confirmation page, and the action runs when the button is pressed.
+  - Each link works once and expires after 7 days. Without AgentPulse's `ACTIONS_PUBLIC_BASE_URL`, messages carry only the view link.
+  - The keys are fixed:
+
+    | `actionUrls` key | Callback `action` | IDs read from the payload | Default button text |
+    | --- | --- | --- | --- |
+    | `complete` | `complete` | `taskId` | Mark done |
+    | `snooze_2h` | `snooze`, with `duration: "2h"` | `taskId` | Snooze 2h |
+    | `approve` | `approve` | `jobId` | Approve |
+    | `reject` | `reject` | `jobId` | Reject |
+    | `unblock` | `unblock` | `taskId` | Unblock and set In Progress |
+    | `view` | none, a plain link | | View |
+
+  - `payload.actionLabels` overrides the button text.
+  - From 40b, an unknown key or a missing ID is refused with a 400, so Taskify replaces `acknowledge` with `complete` first (AP-02).
+  - A notification that is not about a task, such as `digest.morning_brief`, carries only `view`.
+- **Callbacks** go through AgentPulse's delivery queue, which retries them.
+  - The body carries `callbackId`: `cb-` plus 32 hex characters, the same on every retry of one click, while the timestamp and signature are new each time.
+  - Taskify deduplicates on `(tenantId, callbackId)` (AP-06).
+  - Taskify's callback URL must be https and on AgentPulse's allow-list.
+- **Learning.** `proposedAdjustment` is AgentPulse's heuristic score shift for that scope, in the same unit as its own learned adjustments.
+- **Slack.** One Slack workspace per AgentPulse deployment for now. Per-tenant workspaces come in a later AgentPulse milestone.
 
 ## What happens in Taskify meanwhile
 
-- Work continues against the mock. The mock is kept in line with this spec, and any change to the spec changes the mock in the same commit.
+- Work continues against the mock. AP brings the mock in line with the agreed contract, and any later change to the contract changes the mock in the same commit.
 - When AgentPulse ships these endpoints, task M0-07 runs Taskify's client and webhook tests against a real AgentPulse. M2, M3, M10, M11 and M14-06 are signed off then.

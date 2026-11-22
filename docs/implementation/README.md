@@ -12,7 +12,7 @@ This folder breaks the milestones in [milestones.md](../milestones.md) into task
 
 Task lists:
 
-- [r2-agents.md](r2-agents.md): M5 to M11, 33 tasks. M5 to M10 are done.
+- [r2-agents.md](r2-agents.md): M5 to M11, 33 tasks, plus AP (AgentPulse v1 alignment, 9 tasks) before M11. M5 to M10 are done.
 - [r3-clients.md](r3-clients.md): M12 to M15, 32 tasks. Not started.
 - R1 (M0 to M4, 40 tasks) is complete; its task list is archived in [archive/r1-task-service.md](../archive/r1-task-service.md). Its one open task, M0-07, is owner action O1 below.
 
@@ -154,6 +154,7 @@ Update this table as milestones close.
 | M8 Decomposer | 4 | Done. All exit criteria have tests, passing with `-race` on memory and PostgreSQL |
 | M9 Blocker | 4 | Done. All exit criteria have tests, passing with `-race` on memory and PostgreSQL. R2 core complete |
 | M10 Digest | 3 | Done. All exit criteria have tests, passing with `-race` on memory and PostgreSQL. Final sign-off waits on AgentPulse (O1) |
+| AP AgentPulse v1 alignment | 9 | Not started. Owner decisions of 2026-11-22; see [blockers.md](../blockers.md) |
 | M11 Learning (R2) | 3 | Not started |
 | M12 Contract and conformance | 8 | Not started |
 | M13 CLI | 6 | Not started |
