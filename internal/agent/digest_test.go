@@ -154,7 +154,8 @@ func TestDigestWritesBrief(t *testing.T) {
 			}
 			return task
 		}
-		past := f.clock.now().Add(-time.Hour).UTC().Truncate(time.Second)
+		// Overdue at the brief time, whatever the time of day the test runs.
+		past := f.briefAt().Add(-time.Hour)
 		mk("Docs", domain.PriorityMedium, nil)
 		review := mk("Review the design", domain.PriorityHigh, nil)
 		outage := mk("Fix the outage", domain.PriorityCritical, nil)
