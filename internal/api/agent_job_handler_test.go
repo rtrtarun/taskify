@@ -142,6 +142,7 @@ func TestWebhookApproveAndReject(t *testing.T) {
 
 	// Approve, from the assignee's notification.
 	jobID := e.proposal(taskID, "Approved in Slack")
+	e.mock.SeedNotification("ntf_approve", map[string]any{"tenantId": tenant, "userId": "usr_carol"})
 	approve := map[string]any{"action": "approve", "tenantId": tenant, "userId": "usr_carol", "jobId": jobID,
 		"taskId": taskID, "notificationId": "ntf_approve"}
 	if r := e.webhook(approve, now, ""); r.status != 200 || r.json["status"] != "applied" {

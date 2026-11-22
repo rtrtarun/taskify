@@ -192,8 +192,15 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("AgentPulse traceparent = %q, want trace %s", tp, traceID)
 	}
 
-	// The assignee dismisses it; the signal reaches AgentPulse.
-	if status, _ := h.call("POST", "/api/v1/tasks/"+id+"/feedback", "usr_carol", "member", map[string]any{"signal": "dismissed", "notification_id": "ntf_1"}, nil); status != 202 {
+	// The assignee dismisses it; the signal reaches AgentPulse, naming the
+	// notification AgentPulse delivered.
+	ntfID := ""
+	for _, sent := range h.mock.Notifications() {
+		if sent.Body["eventType"] == "task.created" && sent.Body["userId"] == "usr_carol" {
+			ntfID = sent.ID
+		}
+	}
+	if status, _ := h.call("POST", "/api/v1/tasks/"+id+"/feedback", "usr_carol", "member", map[string]any{"signal": "dismissed", "notification_id": ntfID}, nil); status != 202 || ntfID == "" {
 		t.Fatalf("feedback: %d", status)
 	}
 	if fb := h.mock.Feedback(); len(fb) != 1 || fb[0]["signal"] != "dismissed" || fb[0]["userId"] != "usr_carol" {
@@ -211,7 +218,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	// The assignee clicks "Mark done" in Slack: AgentPulse calls the webhook.
-	raw, _ := json.Marshal(map[string]any{"action": "complete", "tenantId": tenant, "userId": "usr_carol", "taskId": id, "notificationId": "ntf_1"})
+	raw, _ := json.Marshal(map[string]any{"action": "complete", "tenantId": tenant, "userId": "usr_carol", "taskId": id, "notificationId": ntfID})
 	ts := time.Now().Unix()
 	status, out := h.call("POST", "/api/v1/webhooks/agentpulse", "", "", raw, map[string]string{
 		api.HeaderWebhookTimestamp: strconv.FormatInt(ts, 10),

@@ -15,7 +15,7 @@ import (
 // LearningClient is the part of the AgentPulse client the admin proxy uses.
 type LearningClient interface {
 	ListLearningSuggestions(ctx context.Context, tenantID string) (json.RawMessage, error)
-	ReviewLearningSuggestion(ctx context.Context, id, decision, decidedBy string) (json.RawMessage, error)
+	ReviewLearningSuggestion(ctx context.Context, tenantID, id, decision, decidedBy string) (json.RawMessage, error)
 }
 
 // proxyTimeout bounds each proxied call to AgentPulse.
@@ -206,9 +206,10 @@ func (h *handlers) decideSuggestion(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), proxyTimeout)
 	defer cancel()
-	// AgentPulse holds suggestions for many tenants; it is responsible for
-	// refusing a decision on another tenant's suggestion. Unverified (M0-07).
-	raw, err := h.learning.ReviewLearningSuggestion(ctx, chi.URLParam(r, "id"), req.Decision, identity(r).UserID)
+	// The call names the caller's tenant, and AgentPulse answers 404 for
+	// another tenant's suggestion (AP-12), so an admin decides only their
+	// own tenant's suggestions.
+	raw, err := h.learning.ReviewLearningSuggestion(ctx, identity(r).TenantID, chi.URLParam(r, "id"), req.Decision, identity(r).UserID)
 	if err != nil {
 		h.fail(w, r, err)
 		return

@@ -158,9 +158,12 @@ func normalizeNotify(body json.RawMessage) (json.RawMessage, error) {
 	return json.Marshal(doc)
 }
 
-// Feedback is a user's reaction to a notification.
+// Feedback is a user's reaction to a notification. It names the
+// notification, the task, or both (AP-12). Without a NotificationID the
+// field is left out, never sent empty, and AgentPulse counts the signal
+// under the user's latest notification about TaskID.
 type Feedback struct {
-	NotificationID string `json:"notificationId"`
+	NotificationID string `json:"notificationId,omitempty"`
 	TenantID       string `json:"tenantId"`
 	UserID         string `json:"userId"`
 	Signal         string `json:"signal"` // acted, dismissed, snoozed, muted
@@ -232,11 +235,13 @@ func (c *Client) ListLearningSuggestions(ctx context.Context, tenantID string) (
 	return out, err
 }
 
-// ReviewLearningSuggestion approves or rejects a suggestion and returns
-// AgentPulse's response unchanged.
-func (c *Client) ReviewLearningSuggestion(ctx context.Context, id, decision, decidedBy string) (json.RawMessage, error) {
+// ReviewLearningSuggestion approves or rejects one of the tenant's
+// suggestions and returns AgentPulse's response unchanged. The body names
+// the tenant: AgentPulse answers 404 for another tenant's suggestion, as
+// for an unknown one (AP-12).
+func (c *Client) ReviewLearningSuggestion(ctx context.Context, tenantID, id, decision, decidedBy string) (json.RawMessage, error) {
 	var out json.RawMessage
-	body := map[string]string{"decision": decision, "decidedBy": decidedBy}
+	body := map[string]string{"tenantId": tenantID, "decision": decision, "decidedBy": decidedBy}
 	err := c.do(ctx, http.MethodPost, pathSuggestions+"/"+url.PathEscape(id)+"/decision", body, &out)
 	return out, err
 }

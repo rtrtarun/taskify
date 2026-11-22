@@ -4,8 +4,11 @@
 // agreed in docs/blockers.md ("Agreed with AgentPulse"), records every request
 // so tests can assert on them, and can be scripted to fail. It enforces the
 // validation AgentPulse applies from slice 40b: tenant IDs, the fixed
-// actionUrls keys and the IDs each needs, and critical rule conditions. Any
-// later change to the contract changes this mock in the same commit.
+// actionUrls keys and the IDs each needs, and critical rule conditions; and
+// what AgentPulse confirmed for AP-12: feedback names a notification or a
+// task, a call naming an object by ID names its tenant and another tenant's
+// object is not found, and contact fields have fixed formats. Any later
+// change to the contract changes this mock in the same commit.
 //
 // It must not import any Taskify server package: the conformance suite reuses
 // it as a black box.
@@ -17,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/mail"
 	"regexp"
 	"slices"
 	"sort"
@@ -43,6 +47,17 @@ func (r Request) JSON(v any) error { return json.Unmarshal(r.Body, v) }
 type Notification struct {
 	ID   string
 	Body map[string]any
+	// At is when the mock accepted it, by its clock (SetClock).
+	At time.Time
+}
+
+// signal is one accepted feedback signal, as analytics count it: under the
+// notification it names, or, without one, the user's latest notification
+// about its taskId (AP-12). notification is empty when there is none: the
+// signal is stored but not counted.
+type signal struct {
+	tenant, user, kind, notification string
+	at                               time.Time
 }
 
 // Suggestion is a learning suggestion held by the mock.
@@ -75,6 +90,8 @@ type Server struct {
 	byKey         map[string]string // tenantId + "\x00" + idempotencyKey -> notification ID
 	duplicates    int
 	feedback      []map[string]any
+	signals       []signal
+	now           func() time.Time
 	rules         []storedRule
 	suggestions   []*Suggestion
 	feeds         map[string][]FeedItem // key: tenant + "/" + user
@@ -93,6 +110,7 @@ func New() *Server {
 		feeds:    map[string][]FeedItem{},
 		contacts: map[string]Contact{},
 		delays:   map[string]time.Duration{},
+		now:      time.Now,
 		mux:      http.NewServeMux(),
 	}
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -274,6 +292,48 @@ func printableASCII(s string) bool {
 	return s != ""
 }
 
+// Contact formats, exactly as AgentPulse validates them (AP-12).
+const MaxEmail = 254
+
+var (
+	slackUserRe = regexp.MustCompile(`^[UW][A-Z0-9]+$`)
+	phoneRe     = regexp.MustCompile(`^\+[1-9][0-9]{1,14}$`)
+)
+
+// CheckContact returns why AgentPulse would refuse a contact PUT body, or
+// nil. Each field is null, absent, or a value of its format: email a plain
+// address of at most 254 characters with no display name, slackUserId
+// ^[UW][A-Z0-9]+$ of at most 32 characters, phone ^\+[1-9][0-9]{1,14}$. One
+// bad field refuses the whole PUT, and the message names it.
+func CheckContact(body map[string]any) error {
+	checks := []struct {
+		field, rule string
+		ok          func(string) bool
+	}{
+		{"email", "a plain address of at most 254 characters with no display name", func(v string) bool {
+			a, err := mail.ParseAddress(v)
+			return err == nil && a.Name == "" && a.Address == v && len(v) <= MaxEmail
+		}},
+		{"slackUserId", "U or W and then capital letters and digits, at most 32 characters", func(v string) bool {
+			return len(v) <= 32 && slackUserRe.MatchString(v)
+		}},
+		{"phone", "E.164: a plus sign and 2 to 15 digits, the first not 0", phoneRe.MatchString},
+	}
+	for _, c := range checks {
+		switch v := body[c.field].(type) {
+		case nil:
+		case string:
+			if !c.ok(v) {
+				// The value is personal data: name the field, not the value.
+				return fmt.Errorf("%s must be %s", c.field, c.rule)
+			}
+		default:
+			return fmt.Errorf("%s must be a string or null", c.field)
+		}
+	}
+	return nil
+}
+
 // Attention classes a rule may set.
 var attentionClasses = []string{"critical", "standard", "background"}
 
@@ -339,6 +399,26 @@ func (s *Server) ClearFailures() {
 	s.failures = map[string]*failure{}
 }
 
+// SetClock sets the clock that stamps accepted notifications and feedback.
+// Nil restores time.Now.
+func (s *Server) SetClock(now func() time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if now == nil {
+		now = time.Now
+	}
+	s.now = now
+}
+
+// SeedNotification stores a notification under id as if /v1/notify had
+// accepted it, so feedback and callbacks in tests can name it. body is a
+// /v1/notify body and must carry tenantId.
+func (s *Server) SeedNotification(id string, body map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.notifications = append(s.notifications, Notification{ID: id, Body: body, At: s.now()})
+}
+
 // SeedSuggestion adds a pending learning suggestion and returns its ID.
 func (s *Server) SeedSuggestion(body map[string]any) string {
 	s.mu.Lock()
@@ -364,6 +444,7 @@ func (s *Server) Reset() {
 	s.byKey = map[string]string{}
 	s.duplicates = 0
 	s.feedback = nil
+	s.signals = nil
 	s.rules = nil
 	s.suggestions = nil
 	s.feeds = map[string][]FeedItem{}
@@ -475,17 +556,14 @@ func (s *Server) handlePutContact(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var c Contact
-	for field, dst := range map[string]*string{"email": &c.Email, "slackUserId": &c.SlackUserID, "phone": &c.Phone} {
-		switch v := body[field].(type) {
-		case nil:
-		case string:
-			*dst = v
-		default:
-			badRequest(w, fmt.Errorf("%s must be a string or null", field))
-			return
-		}
+	if err := CheckContact(body); err != nil {
+		badRequest(w, err)
+		return
 	}
+	var c Contact
+	c.Email, _ = body["email"].(string)
+	c.SlackUserID, _ = body["slackUserId"].(string)
+	c.Phone, _ = body["phone"].(string)
 	key := tenant + "/" + user
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -520,7 +598,7 @@ func (s *Server) handleNotify(w http.ResponseWriter, r *http.Request) {
 	}
 	id := s.nextIDLocked("ntf")
 	s.byKey[key] = id
-	s.notifications = append(s.notifications, Notification{ID: id, Body: body})
+	s.notifications = append(s.notifications, Notification{ID: id, Body: body, At: s.now()})
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": id, "duplicate": false})
 }
 
@@ -534,19 +612,50 @@ func (s *Server) handleFeedback(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err)
 		return
 	}
-	if user, _ := body["userId"].(string); user == "" {
+	user, _ := body["userId"].(string)
+	if user == "" {
 		badRequest(w, fmt.Errorf("userId is required"))
 		return
 	}
-	switch body["signal"] {
+	kind, _ := body["signal"].(string)
+	switch kind {
 	case "acted", "dismissed", "snoozed", "muted":
 	default:
 		badRequest(w, fmt.Errorf("signal must be acted, dismissed, snoozed, or muted"))
 		return
 	}
+	// AP-12: notificationId is optional, and empty means absent, but the
+	// signal must name a notification or a task.
+	notification, task := "", ""
+	for field, dst := range map[string]*string{"notificationId": &notification, "taskId": &task} {
+		switch v := body[field].(type) {
+		case nil:
+		case string:
+			*dst = v
+		default:
+			badRequest(w, fmt.Errorf("%s must be a string", field))
+			return
+		}
+	}
+	if notification == "" && task == "" {
+		badRequest(w, fmt.Errorf("notificationId or taskId is required"))
+		return
+	}
+
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	linked := notification
+	if notification != "" {
+		// Another tenant's notification is not found, like an unknown one.
+		if s.notificationLocked(tenant, notification) == nil {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "notification not found"})
+			return
+		}
+	} else {
+		linked = s.latestAboutTaskLocked(tenant, user, task)
+	}
 	s.feedback = append(s.feedback, body)
-	s.mu.Unlock()
+	s.signals = append(s.signals, signal{tenant: tenant, user: user, kind: kind, notification: linked, at: s.now()})
 	writeJSON(w, http.StatusAccepted, map[string]any{"status": "recorded"})
 }
 
@@ -639,12 +748,19 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, fmt.Errorf("decision must be approve or reject"))
 		return
 	}
+	// AP-12: a call naming an object by ID names its tenant, and another
+	// tenant's suggestion is not found, like an unknown one.
+	tenant, _ := body["tenantId"].(string)
+	if err := CheckTenant(tenant); err != nil {
+		badRequest(w, err)
+		return
+	}
 	id := r.PathValue("id")
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, sg := range s.suggestions {
-		if sg.ID != id {
+		if t, _ := sg.Body["tenantId"].(string); sg.ID != id || t != tenant {
 			continue
 		}
 		if sg.Status != "PENDING_APPROVAL" {
@@ -703,6 +819,32 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- helpers ---------------------------------------------------------------
+
+// notificationLocked returns the tenant's notification with that ID, or nil.
+func (s *Server) notificationLocked(tenant, id string) *Notification {
+	for i := range s.notifications {
+		n := &s.notifications[i]
+		if t, _ := n.Body["tenantId"].(string); n.ID == id && t == tenant {
+			return n
+		}
+	}
+	return nil
+}
+
+// latestAboutTaskLocked returns the ID of the user's latest notification in
+// the tenant whose payload.taskId is task, or "" when there is none.
+func (s *Server) latestAboutTaskLocked(tenant, user, task string) string {
+	for i := len(s.notifications) - 1; i >= 0; i-- {
+		n := s.notifications[i]
+		t, _ := n.Body["tenantId"].(string)
+		u, _ := n.Body["userId"].(string)
+		payload, _ := n.Body["payload"].(map[string]any)
+		if id, _ := payload["taskId"].(string); t == tenant && u == user && task != "" && id == task {
+			return n.ID
+		}
+	}
+	return ""
+}
 
 func (s *Server) nextIDLocked(prefix string) string {
 	s.seq++

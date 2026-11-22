@@ -189,6 +189,7 @@ func TestWorkspaceRename(t *testing.T) {
 func TestFeedback(t *testing.T) {
 	eachIntegration(t, func(t *testing.T, it *integration) {
 		task := it.create(t, nil)
+		it.mock.SeedNotification("ntf_1", map[string]any{"tenantId": tenant, "userId": bob.ID})
 		in := FeedbackInput{TenantID: tenant, UserID: bob.ID, TaskID: task.ID, NotificationID: "ntf_1", Signal: SignalSnoozed, Duration: "2h"}
 		if err := it.feedback.Record(ctx, in); err != nil {
 			t.Fatal(err)
@@ -200,6 +201,15 @@ func TestFeedback(t *testing.T) {
 		}
 		if stored, _ := it.b.Tasks.Get(ctx, tenant, task.ID); stored.Version != 1 {
 			t.Error("feedback changed the task")
+		}
+		// AP-12: without a notification, notificationId is left out and the
+		// task names what the signal is about.
+		if err := it.feedback.Record(ctx, FeedbackInput{TenantID: tenant, UserID: bob.ID, TaskID: task.ID, Signal: SignalDismissed}); err != nil {
+			t.Fatal(err)
+		}
+		sent = it.mock.Feedback()
+		if _, named := sent[len(sent)-1]["notificationId"]; named || len(sent) != 2 || sent[1]["taskId"] != task.ID.String() {
+			t.Errorf("sent without a notification = %v", sent)
 		}
 
 		for name, bad := range map[string]FeedbackInput{
@@ -230,6 +240,7 @@ func TestFeedback(t *testing.T) {
 func TestWebhookComplete(t *testing.T) {
 	eachIntegration(t, func(t *testing.T, it *integration) {
 		task := it.create(t, nil)
+		it.mock.SeedNotification("ntf_9", map[string]any{"tenantId": tenant, "userId": bob.ID})
 		cb := Callback{Key: "sig-1", Action: ActionComplete, TenantID: tenant, UserID: bob.ID, TaskID: task.ID, NotificationID: "ntf_9"}
 
 		dup, err := it.webhooks.Handle(ctx, cb)
@@ -261,6 +272,7 @@ func TestWebhookComplete(t *testing.T) {
 func TestWebhookUnblock(t *testing.T) {
 	eachIntegration(t, func(t *testing.T, it *integration) {
 		// A manual block and a dependency block are both lifted.
+		it.mock.SeedNotification("ntf_u", map[string]any{"tenantId": tenant, "userId": "usr_dave"})
 		manual := it.create(t, nil)
 		it.setStatus(t, manual, domain.StatusBlocked)
 		dependent := it.create(t, nil)

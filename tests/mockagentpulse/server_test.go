@@ -241,7 +241,7 @@ func TestScriptedFailures(t *testing.T) {
 }
 
 func feedbackBody(signal string) map[string]any {
-	return map[string]any{"notificationId": "n1", "tenantId": "tenant_acme", "userId": "usr_1", "signal": signal}
+	return map[string]any{"taskId": "task-1", "tenantId": "tenant_acme", "userId": "usr_1", "signal": signal}
 }
 
 func TestFeedback(t *testing.T) {
@@ -255,10 +255,13 @@ func TestFeedback(t *testing.T) {
 		change func(b map[string]any)
 		want   string
 	}{
-		"unknown signal": {func(b map[string]any) { b["signal"] = "shrugged" }, "signal must be"},
-		"no tenant":      {func(b map[string]any) { delete(b, "tenantId") }, "tenantId"},
-		"bad tenant":     {func(b map[string]any) { b["tenantId"] = "a/b" }, `tenantId "a/b" is invalid`},
-		"no user":        {func(b map[string]any) { delete(b, "userId") }, "userId is required"},
+		"unknown signal":          {func(b map[string]any) { b["signal"] = "shrugged" }, "signal must be"},
+		"no tenant":               {func(b map[string]any) { delete(b, "tenantId") }, "tenantId"},
+		"bad tenant":              {func(b map[string]any) { b["tenantId"] = "a/b" }, `tenantId "a/b" is invalid`},
+		"no user":                 {func(b map[string]any) { delete(b, "userId") }, "userId is required"},
+		"no notification or task": {func(b map[string]any) { delete(b, "taskId") }, "notificationId or taskId is required"},
+		"both empty":              {func(b map[string]any) { b["taskId"], b["notificationId"] = "", "" }, "notificationId or taskId is required"},
+		"numeric task":            {func(b map[string]any) { b["taskId"] = 7 }, "taskId must be a string"},
 	} {
 		b := feedbackBody("acted")
 		tc.change(b)
@@ -269,6 +272,34 @@ func TestFeedback(t *testing.T) {
 	}
 	if got := len(s.Feedback()); got != 4 {
 		t.Errorf("feedback = %d, want 4", got)
+	}
+
+	// AP-12: a named notification must be the tenant's own; an empty
+	// notificationId means none.
+	s.SeedNotification("n1", map[string]any{"tenantId": "tenant_acme", "userId": "usr_1"})
+	named := feedbackBody("dismissed")
+	named["notificationId"] = "n1"
+	delete(named, "taskId")
+	if status, out := do(t, "POST", url+"/v1/feedback", named); status != http.StatusAccepted {
+		t.Errorf("known notification: %d %v", status, out)
+	}
+	for name, id := range map[string]string{"unknown": "n404", "another tenant's": "n1"} {
+		b := feedbackBody("dismissed")
+		b["notificationId"] = id
+		if name != "unknown" {
+			b["tenantId"] = "tenant_other"
+		}
+		if status, out := do(t, "POST", url+"/v1/feedback", b); status != http.StatusNotFound {
+			t.Errorf("%s notification: %d %v", name, status, out)
+		}
+	}
+	empty := feedbackBody("muted")
+	empty["notificationId"] = ""
+	if status, out := do(t, "POST", url+"/v1/feedback", empty); status != http.StatusAccepted {
+		t.Errorf("empty notificationId with a task: %d %v", status, out)
+	}
+	if got := len(s.Feedback()); got != 6 {
+		t.Errorf("feedback = %d, want 6", got)
 	}
 }
 
@@ -353,7 +384,7 @@ func TestLearningSuggestions(t *testing.T) {
 		t.Fatalf("create: status %d body %v", status, created)
 	}
 	id := created["id"].(string)
-	s.SeedSuggestion(map[string]any{"tenantId": "t2", "proposedAdjustment": 5.0})
+	other := s.SeedSuggestion(map[string]any{"tenantId": "t2", "proposedAdjustment": 5.0})
 
 	_, list := do(t, "GET", url+"/v1/learning/suggestions?tenantId=t1", nil)
 	if got := len(list["suggestions"].([]any)); got != 1 {
@@ -363,17 +394,36 @@ func TestLearningSuggestions(t *testing.T) {
 		t.Errorf("list without a tenant: status = %d, want 400", status)
 	}
 
-	if status, _ := do(t, "POST", url+"/v1/learning/suggestions/"+id+"/decision", map[string]any{"decision": "maybe"}); status != http.StatusBadRequest {
+	if status, _ := do(t, "POST", url+"/v1/learning/suggestions/"+id+"/decision", map[string]any{"tenantId": "t1", "decision": "maybe"}); status != http.StatusBadRequest {
 		t.Errorf("bad decision: status = %d, want 400", status)
 	}
-	status, decided := do(t, "POST", url+"/v1/learning/suggestions/"+id+"/decision", map[string]any{"decision": "approve"})
+	// AP-12: a decision names its tenant, and another tenant's suggestion
+	// is not found.
+	for name, body := range map[string]map[string]any{
+		"no tenant":  {"decision": "approve"},
+		"bad tenant": {"tenantId": "default", "decision": "approve"},
+	} {
+		if status, _ := do(t, "POST", url+"/v1/learning/suggestions/"+id+"/decision", body); status != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", name, status)
+		}
+	}
+	for _, sid := range []string{id, other} {
+		body := map[string]any{"tenantId": "t2", "decision": "approve"}
+		if sid == other {
+			body["tenantId"] = "t1"
+		}
+		if status, _ := do(t, "POST", url+"/v1/learning/suggestions/"+sid+"/decision", body); status != http.StatusNotFound {
+			t.Errorf("another tenant's suggestion %s: status = %d, want 404", sid, status)
+		}
+	}
+	status, decided := do(t, "POST", url+"/v1/learning/suggestions/"+id+"/decision", map[string]any{"tenantId": "t1", "decision": "approve"})
 	if status != http.StatusOK || decided["status"] != "APPROVED" {
 		t.Fatalf("approve: status %d body %v", status, decided)
 	}
-	if status, _ := do(t, "POST", url+"/v1/learning/suggestions/"+id+"/decision", map[string]any{"decision": "reject"}); status != http.StatusConflict {
+	if status, _ := do(t, "POST", url+"/v1/learning/suggestions/"+id+"/decision", map[string]any{"tenantId": "t1", "decision": "reject"}); status != http.StatusConflict {
 		t.Errorf("second decision: status = %d, want 409", status)
 	}
-	if status, _ := do(t, "POST", url+"/v1/learning/suggestions/nope/decision", map[string]any{"decision": "approve"}); status != http.StatusNotFound {
+	if status, _ := do(t, "POST", url+"/v1/learning/suggestions/nope/decision", map[string]any{"tenantId": "t1", "decision": "approve"}); status != http.StatusNotFound {
 		t.Errorf("unknown id: status = %d, want 404", status)
 	}
 }
@@ -469,7 +519,20 @@ func TestContactIsAFullReplace(t *testing.T) {
 			t.Errorf("%s: status %d, want 400", name, status)
 		}
 	}
-	if s.ContactPuts() != 4 {
-		t.Error("a refused put was counted")
+	// AP-12: one field in a bad format refuses the whole PUT, naming it and
+	// not echoing the value.
+	for field, body := range map[string]map[string]any{
+		"email":       {"email": "Bob <bob@example.com>", "phone": "+14155550123"},
+		"slackUserId": {"email": "bob@example.com", "slackUserId": "U" + strings.Repeat("A", 32)},
+		"phone":       {"email": "bob@example.com", "phone": "+0123"},
+	} {
+		status, out := do(t, "PUT", path, body)
+		msg, _ := out["error"].(string)
+		if status != http.StatusBadRequest || !strings.HasPrefix(msg, field+" must be") || strings.Contains(msg, "bob") {
+			t.Errorf("bad %s: %d %q", field, status, msg)
+		}
+	}
+	if _, ok := s.ContactOf("t1", "u1"); ok || s.ContactPuts() != 4 {
+		t.Error("a refused put was stored or counted")
 	}
 }

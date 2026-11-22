@@ -15,13 +15,16 @@ import (
 // PUT /v1/tenants/{t}/users/{u}/contact instead of /v1/notify.
 const EventContactUpdate = "contact.update"
 
-// Contact limits. A Slack user ID is U or W and then capital letters and
-// digits; a phone number is E.164.
+// Contact formats, exactly as AgentPulse validates them (AP-12), so a value
+// Taskify accepts is never refused: an email is a plain address of at most
+// 254 characters with no display name; a Slack user ID is U or W and then
+// capital letters and digits, at most 32 characters in all; a phone number
+// is E.164, a plus sign and 2 to 15 digits, the first not 0.
 const maxEmailLen = 254
 
 var (
-	slackUserIDRe = regexp.MustCompile(`^[UW][A-Z0-9]{2,31}$`)
-	phoneRe       = regexp.MustCompile(`^\+[1-9][0-9]{6,14}$`)
+	slackUserIDRe = regexp.MustCompile(`^[UW][A-Z0-9]{1,31}$`)
+	phoneRe       = regexp.MustCompile(`^\+[1-9][0-9]{1,14}$`)
 )
 
 // Contact is how AgentPulse reaches a person on Slack, email, or phone. Each

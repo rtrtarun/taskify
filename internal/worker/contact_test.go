@@ -224,3 +224,40 @@ func TestContactOrderAcrossReplicas(t *testing.T) {
 		t.Logf("%d updates, %d PUTs", 30, mock.ContactPuts())
 	})
 }
+
+// TestContactRefusedByAgentPulseIsDeadLettered is AP-12: a contact PUT that
+// AgentPulse refuses with 400 is permanent. The row goes to dead letter on
+// its first attempt with the reason, naming the field, and is not retried.
+// The row is written directly here: Taskify's own validation, which matches
+// AgentPulse's, would refuse the value before it reached the outbox.
+func TestContactRefusedByAgentPulseIsDeadLettered(t *testing.T) {
+	each(t, func(t *testing.T, b repotest.Backend) {
+		mock, client := newMock(t)
+		email, phone := "bob@example.com", "+0123"
+		entry, err := domain.NewContactEntry(domain.Contact{TenantID: tenant, UserID: "usr_bob", Email: &email, Phone: &phone}, 10, t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Outbox.Coalesce(ctx, entry); err != nil {
+			t.Fatal(err)
+		}
+		r := NewRelay(b.Outbox, client, RelayConfig{Backoff: func(int) time.Duration { return 0 }, Logger: quiet})
+		if n, err := r.RunOnce(ctx); err != nil || n != 1 {
+			t.Fatalf("run: %d rows, %v", n, err)
+		}
+		row := contactRow(t, b)
+		if row.Status != domain.OutboxDeadLetter || row.Attempts != 1 || !strings.Contains(row.LastError, "400") ||
+			!strings.Contains(row.LastError, "phone must be") {
+			t.Errorf("row = %s after %d attempts: %q", row.Status, row.Attempts, row.LastError)
+		}
+		if n, _ := r.RunOnce(ctx); n != 0 {
+			t.Errorf("a refused contact was sent again: %d rows", n)
+		}
+		if got := len(mock.RequestsTo("PUT", contactPath)); got != 1 {
+			t.Errorf("PUT requests = %d, want 1", got)
+		}
+		if _, ok := mock.ContactOf(tenant, "usr_bob"); ok {
+			t.Error("AgentPulse stored a refused contact")
+		}
+	})
+}

@@ -67,6 +67,7 @@ func TestWebhookCallbackID(t *testing.T) {
 	task := e.createTask(nil)
 	body := map[string]any{"action": "complete", "tenantId": tenant, "userId": "usr_carol", "taskId": task["id"],
 		"notificationId": "ntf_1", "callbackId": "cb-0123456789abcdef0123456789abcdef"}
+	e.mock.SeedNotification("ntf_1", map[string]any{"tenantId": tenant, "userId": "usr_carol"})
 	now := e.now.Unix()
 	if r := e.webhook(body, now, ""); r.status != http.StatusOK || r.json["status"] != "applied" {
 		t.Fatalf("first delivery: %d %s", r.status, r.raw)

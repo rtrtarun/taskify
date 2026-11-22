@@ -106,10 +106,17 @@ func TestOtherCalls(t *testing.T) {
 		}
 	}
 
+	mock.SeedNotification("n1", map[string]any{"tenantId": "t", "userId": "u"})
 	if err := c.RecordFeedback(ctx, Feedback{NotificationID: "n1", TenantID: "t", UserID: "u", Signal: "snoozed", SnoozeDuration: "2h"}); err != nil {
 		t.Fatal(err)
 	}
 	last("POST", "/v1/feedback", "", `{"notificationId":"n1","tenantId":"t","userId":"u","signal":"snoozed","snoozeDuration":"2h"}`)
+	// AP-12: without a notification, notificationId is left out, not sent
+	// empty.
+	if err := c.RecordFeedback(ctx, Feedback{TenantID: "t", UserID: "u", Signal: "dismissed", TaskID: "task-1"}); err != nil {
+		t.Fatal(err)
+	}
+	last("POST", "/v1/feedback", "", `{"tenantId":"t","userId":"u","signal":"dismissed","taskId":"task-1"}`)
 	if err := c.RecordFeedback(ctx, Feedback{TenantID: "t", UserID: "u", Signal: "shrug"}); err == nil {
 		t.Error("an invalid signal was accepted")
 	}
@@ -133,13 +140,20 @@ func TestOtherCalls(t *testing.T) {
 		t.Fatalf("ListLearningSuggestions = %s, %v", raw, err)
 	}
 	last("GET", "/v1/learning/suggestions", "tenantId=t.a-1", "")
-	raw, err = c.ReviewLearningSuggestion(ctx, sid, "approve", "usr_admin")
+	raw, err = c.ReviewLearningSuggestion(ctx, "t.a-1", sid, "approve", "usr_admin")
 	if err != nil || !strings.Contains(string(raw), "APPROVED") {
 		t.Fatalf("ReviewLearningSuggestion = %s, %v", raw, err)
 	}
-	last("POST", "/v1/learning/suggestions/"+sid+"/decision", "", `{"decidedBy":"usr_admin","decision":"approve"}`)
-	if _, err := c.ReviewLearningSuggestion(ctx, "missing", "approve", "u"); err == nil {
+	last("POST", "/v1/learning/suggestions/"+sid+"/decision", "", `{"decidedBy":"usr_admin","decision":"approve","tenantId":"t.a-1"}`)
+	if _, err := c.ReviewLearningSuggestion(ctx, "t.a-1", "missing", "approve", "u"); err == nil {
 		t.Error("unknown suggestion did not fail")
+	}
+	seen++
+	// Another tenant's suggestion is not found (AP-12).
+	other := mock.SeedSuggestion(map[string]any{"tenantId": "t", "proposedAdjustment": -5.0})
+	var se *StatusError
+	if _, err := c.ReviewLearningSuggestion(ctx, "t.a-1", other, "approve", "u"); !errors.As(err, &se) || se.Code != 404 {
+		t.Errorf("another tenant's suggestion: %v", err)
 	}
 	seen++
 
