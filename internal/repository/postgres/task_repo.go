@@ -451,6 +451,18 @@ func (r *TaskRepo) CountAssigned(ctx context.Context, tenantID, assigneeID strin
 	return n, mapErr(err)
 }
 
+func (r *TaskRepo) Existing(ctx context.Context, tenantID string, ids []uuid.UUID) ([]uuid.UUID, error) {
+	if len(ids) == 0 {
+		return []uuid.UUID{}, nil
+	}
+	rows, err := r.db.q(ctx).Query(ctx, `SELECT id FROM tasks WHERE tenant_id = $1 AND id = ANY($2) ORDER BY id`, tenantID, ids)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	found, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	return found, mapErr(err)
+}
+
 func (r *TaskRepo) WorkspaceLabels(ctx context.Context, tenantID, workspaceID string, limit int) ([]string, error) {
 	rows, err := r.db.q(ctx).Query(ctx, `
 		SELECT l FROM tasks, unnest(labels) AS l

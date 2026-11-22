@@ -219,10 +219,25 @@ func (s *TaskService) SnoozeTask(ctx context.Context, actor domain.Actor, tenant
 // blocker was this task is unblocked. The check runs after the delete, in the
 // same transaction, so the deleted task no longer counts as an open blocker.
 // Agent jobs for the task go with it through ON DELETE CASCADE.
+//
+// Morning briefs that name the task are deleted too, in the same
+// transaction (AP-08): the digest jobs whose stored report lists it, and
+// every outbox row of theirs, so GET /me/brief falls back to an older brief
+// or 404 and no pending notification names the task. The tenant's brief
+// lock is taken first, exclusive: a brief being stored when the delete
+// starts commits first and is then found and deleted, and one stored after
+// it finds the task gone and is gathered again (agent.TaskNamer).
 func (s *TaskService) DeleteTask(ctx context.Context, tenantID string, id uuid.UUID) error {
 	now := s.clock()
 	var events []domain.Event
 	err := s.deps.Tx.WithTx(ctx, func(ctx context.Context) error {
+		if s.deps.AgentJobs != nil {
+			// Before any task lock, so it cannot deadlock with the
+			// dependents locked below.
+			if err := s.deps.AgentJobs.LockBriefs(ctx, tenantID, true); err != nil {
+				return err
+			}
+		}
 		task, err := s.deps.Tasks.GetForUpdate(ctx, tenantID, id)
 		if err != nil {
 			return err
@@ -233,6 +248,17 @@ func (s *TaskService) DeleteTask(ctx context.Context, tenantID string, id uuid.U
 		}
 		if _, err := s.deps.Outbox.DeleteForAggregate(ctx, tenantID, id); err != nil {
 			return err
+		}
+		if s.deps.AgentJobs != nil {
+			briefs, err := s.deps.AgentJobs.DeleteBriefsMentioning(ctx, tenantID, id)
+			if err != nil {
+				return err
+			}
+			for _, job := range briefs {
+				if _, err := s.deps.Outbox.DeleteForAggregate(ctx, tenantID, job); err != nil {
+					return err
+				}
+			}
 		}
 		if err := s.deps.Tasks.Delete(ctx, tenantID, id); err != nil {
 			return err

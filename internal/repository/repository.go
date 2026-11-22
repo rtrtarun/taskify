@@ -101,6 +101,10 @@ type TaskRepository interface {
 	// the digest gatekeeper measures it (G14). It takes no locks.
 	CountAssigned(ctx context.Context, tenantID, assigneeID string, status domain.Status, priority domain.Priority) (int, error)
 
+	// Existing returns those of ids that name a task in the tenant. It takes
+	// no locks.
+	Existing(ctx context.Context, tenantID string, ids []uuid.UUID) ([]uuid.UUID, error)
+
 	// WorkspaceLabels returns up to limit labels used in the workspace, most
 	// used first, ties by name.
 	WorkspaceLabels(ctx context.Context, tenantID, workspaceID string, limit int) ([]string, error)
@@ -197,6 +201,15 @@ type AgentJobRepository interface {
 	// execution_result holds a report. A brief skipped for having nothing to
 	// report does not count. ErrNotFound when there is none.
 	LatestBrief(ctx context.Context, tenantID, userID string) (*domain.AgentJob, error)
+	// LockBriefs serialises storing morning briefs with scrubbing them, in
+	// one tenant, until the transaction ends (AP-08): the runtime takes it
+	// shared to store a brief, a permanent task delete takes it exclusive.
+	// It requires a transaction. Take it before any task row lock.
+	LockBriefs(ctx context.Context, tenantID string, exclusive bool) error
+	// DeleteBriefsMentioning deletes the tenant's digest jobs whose stored
+	// report names the task (domain.MorningBrief.TaskIDs), with their run
+	// history, and returns their IDs.
+	DeleteBriefsMentioning(ctx context.Context, tenantID string, taskID uuid.UUID) ([]uuid.UUID, error)
 	InsertRun(ctx context.Context, r domain.AgentRun) error
 	// ListRuns returns a job's turns in order.
 	ListRuns(ctx context.Context, jobID uuid.UUID) ([]domain.AgentRun, error)

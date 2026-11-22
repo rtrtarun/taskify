@@ -139,6 +139,39 @@ func (r *AgentJobRepo) LatestBrief(ctx context.Context, tenantID, userID string)
 		LIMIT 1`, tenantID, userID)
 }
 
+func (r *AgentJobRepo) LockBriefs(ctx context.Context, tenantID string, exclusive bool) error {
+	tx, err := r.db.tx(ctx)
+	if err != nil {
+		return err
+	}
+	fn := "pg_advisory_xact_lock_shared"
+	if exclusive {
+		fn = "pg_advisory_xact_lock"
+	}
+	_, err = tx.Exec(ctx, `SELECT `+fn+`(hashtextextended('taskify:briefs:' || $1, 0))`, tenantID)
+	return mapErr(err)
+}
+
+// DeleteBriefsMentioning names agent_type as a literal so the planner can
+// use idx_agent_jobs_brief for the tenant. A report lists tasks under
+// top_items, pending_approvals, and unblocked_tasks, each entry with a
+// task_id.
+func (r *AgentJobRepo) DeleteBriefsMentioning(ctx context.Context, tenantID string, taskID uuid.UUID) ([]uuid.UUID, error) {
+	needle := `[{"task_id": "` + taskID.String() + `"}]`
+	rows, err := r.db.q(ctx).Query(ctx, `
+		DELETE FROM agent_jobs
+		WHERE tenant_id = $1 AND agent_type = 'digest' AND task_id IS NULL AND execution_result ? 'report'
+		  AND (execution_result->'report'->'top_items' @> $2::jsonb
+		    OR execution_result->'report'->'pending_approvals' @> $2::jsonb
+		    OR execution_result->'report'->'unblocked_tasks' @> $2::jsonb)
+		RETURNING id`, tenantID, needle)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	return ids, mapErr(err)
+}
+
 func (r *AgentJobRepo) InsertRun(ctx context.Context, run domain.AgentRun) error {
 	_, err := r.db.q(ctx).Exec(ctx, `
 		INSERT INTO agent_run_history (id, job_id, turn, model, tool_name, tool_args, tool_result, outcome,

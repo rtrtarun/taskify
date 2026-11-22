@@ -241,6 +241,39 @@ func NewMorningBrief(job *AgentJob, in BriefInput, open []*Task, approvals []Bri
 	return b
 }
 
+// TaskIDs returns every task the brief names, once each: its top items, the
+// tasks of its pending approvals, and its unblocked tasks. The model sees
+// nothing else, so its text can name no other task.
+func (b MorningBrief) TaskIDs() []uuid.UUID {
+	var out []uuid.UUID
+	add := func(id uuid.UUID) {
+		if !slices.Contains(out, id) {
+			out = append(out, id)
+		}
+	}
+	for _, t := range b.TopItems {
+		add(t.ID)
+	}
+	for _, a := range b.PendingApprovals {
+		add(a.TaskID)
+	}
+	for _, t := range b.UnblockedTasks {
+		add(t.ID)
+	}
+	return out
+}
+
+// BriefMentions reports whether a stored report, as kept in a digest job's
+// execution_result.report, names the task. An unreadable report names
+// nothing.
+func BriefMentions(report json.RawMessage, taskID uuid.UUID) bool {
+	var b MorningBrief
+	if len(report) == 0 || json.Unmarshal(report, &b) != nil {
+		return false
+	}
+	return slices.Contains(b.TaskIDs(), taskID)
+}
+
 // Empty reports whether the person has nothing to hear about: no open task
 // and no decision waiting. An empty brief is not sent.
 func (b MorningBrief) Empty() bool {

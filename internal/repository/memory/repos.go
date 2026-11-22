@@ -774,6 +774,19 @@ func (r *TaskRepo) CountAssigned(ctx context.Context, tenantID, assigneeID strin
 	return n, err
 }
 
+func (r *TaskRepo) Existing(ctx context.Context, tenantID string, ids []uuid.UUID) (found []uuid.UUID, err error) {
+	found = []uuid.UUID{}
+	err = r.st.do(ctx, func(s *state) error {
+		for _, id := range ids {
+			if t, ok := s.tasks[id]; ok && t.TenantID == tenantID && !slices.Contains(found, id) {
+				found = append(found, id)
+			}
+		}
+		return nil
+	})
+	return found, err
+}
+
 func (r *TaskRepo) WorkspaceLabels(ctx context.Context, tenantID, workspaceID string, limit int) ([]string, error) {
 	counts := map[string]int{}
 	err := r.st.do(ctx, func(s *state) error {

@@ -55,7 +55,10 @@ type Digest struct {
 	Now func() time.Time
 }
 
-var _ Reporter = Digest{}
+var (
+	_ Reporter  = Digest{}
+	_ TaskNamer = digestReport{}
+)
 
 func (Digest) Type() string { return domain.AgentDigest }
 
@@ -199,3 +202,7 @@ func (r digestReport) Deliver(text, publicBaseURL string) (json.RawMessage, []do
 	}
 	return result, []domain.Notification{b.Notification(publicBaseURL)}, nil
 }
+
+// TaskIDs names the brief's tasks, so the runtime stores the brief only if
+// none was deleted meanwhile (TaskNamer, AP-08).
+func (r digestReport) TaskIDs() []uuid.UUID { return r.brief.TaskIDs() }
