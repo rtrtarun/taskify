@@ -21,13 +21,22 @@ type SchedulerConfig struct {
 	Logger            *slog.Logger
 	// Wake is called after a tick that wrote outbox rows. Optional.
 	Wake func()
+	// Jobs receives the blocker investigations of stale tasks. Nil turns the
+	// stale scan off.
+	Jobs repository.AgentJobRepository
+	// StaleAfter is how long an in_progress task may go without a comment
+	// or an edit before it is investigated; default domain.StaleAfter (G12).
+	StaleAfter time.Duration
 }
 
-// Scheduler writes task.due_soon and task.overdue events.
+// Scheduler writes task.due_soon and task.overdue events, and queues
+// blocker_investigator jobs for stale tasks (section 3.3).
 //
 // Replicas may run it at the same time: each batch claims its tasks with
 // SKIP LOCKED and marks them in the same transaction, and the unique
-// idempotency key stops a second row should two ever overlap.
+// idempotency key stops a second row should two ever overlap. A stale task
+// is marked by its job, whose dedup key names the day, so it is
+// investigated at most once per day however many scans see it.
 type Scheduler struct {
 	cfg    SchedulerConfig
 	tx     repository.TxManager
@@ -55,6 +64,9 @@ func NewScheduler(tx repository.TxManager, tasks repository.TaskRepository, outb
 	if cfg.Wake == nil {
 		cfg.Wake = func() {}
 	}
+	if cfg.StaleAfter <= 0 {
+		cfg.StaleAfter = domain.StaleAfter
+	}
 	return &Scheduler{cfg: cfg, tx: tx, tasks: tasks, outbox: outbox}
 }
 
@@ -74,26 +86,72 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 }
 
-// Tick runs both scans to completion and returns how many reminders it wrote.
+// Tick runs the reminder scans and then the stale scan to completion, and
+// returns how many reminders it wrote. Stale investigations are agent jobs,
+// not reminders, and are not counted.
 func (s *Scheduler) Tick(ctx context.Context) (int, error) {
 	now := s.cfg.Now().UTC().Truncate(time.Microsecond)
 	total := 0
 	for _, scan := range []func(context.Context, time.Time) (int, error){s.dueSoonBatch, s.overdueBatch} {
-		for {
-			n, err := scan(ctx, now)
-			total += n
-			if err != nil {
-				return total, err
-			}
-			if n < s.cfg.BatchSize {
-				break
-			}
+		n, err := s.drain(ctx, now, scan)
+		total += n
+		if err != nil {
+			return total, err
 		}
 	}
 	if total > 0 {
 		s.cfg.Wake()
 	}
+	if s.cfg.Jobs != nil {
+		n, err := s.drain(ctx, now, s.staleBatch)
+		if err != nil {
+			return total, err
+		}
+		if n > 0 {
+			s.cfg.Logger.Info("deadline scheduler: queued stale task investigations", "tasks", n)
+		}
+	}
 	return total, nil
+}
+
+// drain runs scan until a batch comes back short.
+func (s *Scheduler) drain(ctx context.Context, now time.Time, scan func(context.Context, time.Time) (int, error)) (int, error) {
+	total := 0
+	for {
+		n, err := scan(ctx, now)
+		total += n
+		if err != nil || n < s.cfg.BatchSize {
+			return total, err
+		}
+	}
+}
+
+// staleBatch queues one blocker investigation per claimed stale task (G12)
+// and returns how many tasks it claimed. Agents and settings are checked by
+// the claim, as the task transaction checks them for a change.
+func (s *Scheduler) staleBatch(ctx context.Context, now time.Time) (int, error) {
+	claimed := 0
+	err := s.tx.WithTx(ctx, func(ctx context.Context) error {
+		tasks, err := s.tasks.ClaimStale(ctx, now.Add(-s.cfg.StaleAfter), now, s.cfg.BatchSize)
+		if err != nil {
+			return err
+		}
+		claimed = len(tasks)
+		for _, t := range tasks {
+			job, err := domain.NewStaleJob(t, now)
+			if err != nil {
+				return err
+			}
+			if _, err := s.cfg.Jobs.Insert(ctx, job); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return claimed, nil
 }
 
 // dueSoonBatch handles one batch and returns how many tasks it claimed.

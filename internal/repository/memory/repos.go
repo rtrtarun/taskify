@@ -365,6 +365,40 @@ func (r *TaskRepo) scan(s *state, limit int, match func(*domain.Task) bool) []*d
 	return out
 }
 
+func (r *TaskRepo) ClaimStale(ctx context.Context, staleBefore, now time.Time, limit int) ([]*domain.Task, error) {
+	if !inTx(ctx) {
+		return nil, repository.ErrTxRequired
+	}
+	s := &r.st.s
+	commented := map[uuid.UUID]bool{}
+	for _, c := range s.comments {
+		if c.CreatedAt.After(staleBefore) {
+			commented[c.TaskID] = true
+		}
+	}
+	var out []*domain.Task
+	for _, t := range s.tasks {
+		if t.Status != domain.StatusInProgress || t.UpdatedAt.After(staleBefore) || commented[t.ID] {
+			continue
+		}
+		w, ok := s.workspaces[wsKey{t.TenantID, t.WorkspaceID}]
+		if !ok || !w.AgentSettings.Allows(domain.AgentBlocker) {
+			continue
+		}
+		if _, queued := s.jobKeys[domain.StaleJobDedupKey(domain.AgentBlocker, t.ID, now)]; queued {
+			continue
+		}
+		out = append(out, copyTask(t))
+	}
+	slices.SortFunc(out, func(a, b *domain.Task) int {
+		return cmp.Or(a.UpdatedAt.Compare(b.UpdatedAt), strings.Compare(a.ID.String(), b.ID.String()))
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (r *TaskRepo) MarkDueSoonNotified(ctx context.Context, tenantID string, id uuid.UUID, at time.Time) error {
 	return r.mark(ctx, tenantID, id, func(t *domain.Task) { t.LastDueSoonNotifiedAt = microPtr(&at) })
 }

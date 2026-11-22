@@ -198,6 +198,29 @@ func (r *TaskRepo) ClaimOverdue(ctx context.Context, now time.Time, limit int) (
 		FOR UPDATE SKIP LOCKED`, now, startOfDay, limit)
 }
 
+func (r *TaskRepo) ClaimStale(ctx context.Context, staleBefore, now time.Time, limit int) ([]*domain.Task, error) {
+	if _, err := r.db.tx(ctx); err != nil {
+		return nil, err
+	}
+	// The job key is built as domain.StaleJobDedupKey builds it, so a task
+	// already investigated today is not claimed again; the unique dedup key
+	// still stops a second job should two scans overlap.
+	return r.query(ctx, `
+		SELECT `+taskColumns+` FROM tasks t
+		WHERE t.status = 'in_progress' AND t.updated_at <= $1
+		  AND EXISTS (SELECT 1 FROM workspaces w
+		              WHERE w.tenant_id = t.tenant_id AND w.id = t.workspace_id
+		                AND COALESCE((w.agent_settings->>'agents_enabled')::boolean, false)
+		                AND NOT COALESCE(w.agent_settings->'disabled_agents' ? $2::text, false))
+		  AND NOT EXISTS (SELECT 1 FROM task_comments c WHERE c.task_id = t.id AND c.created_at > $1)
+		  AND NOT EXISTS (SELECT 1 FROM agent_jobs j
+		                  WHERE j.dedup_key = $2::text || ':' || t.id::text || ':stale:' || $3::text)
+		ORDER BY t.updated_at, t.id
+		LIMIT $4
+		FOR UPDATE OF t SKIP LOCKED`,
+		staleBefore, domain.AgentBlocker, now.UTC().Format("2006-01-02"), limit)
+}
+
 func (r *TaskRepo) MarkDueSoonNotified(ctx context.Context, tenantID string, id uuid.UUID, at time.Time) error {
 	return r.mark(ctx, "last_due_soon_notified_at", tenantID, id, at)
 }

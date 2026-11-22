@@ -201,3 +201,17 @@ func TestAgentTriggers(t *testing.T) {
 		}
 	}
 }
+
+func TestNewStaleJob(t *testing.T) {
+	task := &Task{ID: uuid.New(), TenantID: "tenant_acme", Version: 4}
+	at := time.Date(2026, 11, 12, 23, 30, 0, 0, time.FixedZone("x", -3*3600)) // 02:30 UTC on the 13th
+	j, err := NewStaleJob(task, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j.AgentType != AgentBlocker || j.Status != JobPending || *j.TaskID != task.ID || *j.BaseTaskVersion != 4 ||
+		j.DedupKey != "blocker_investigator:"+task.ID.String()+":stale:2026-11-13" ||
+		string(j.InputContext) != `{"trigger":"stale"}` {
+		t.Errorf("stale job = %+v (%s)", j, j.InputContext)
+	}
+}

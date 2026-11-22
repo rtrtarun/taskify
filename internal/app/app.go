@@ -159,6 +159,7 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 			OutboxMaxAttempts: cfg.OutboxMaxAttempts,
 			Logger:            logger,
 			Wake:              relay.Wake,
+			Jobs:              postgres.NewAgentJobRepo(db),
 		}),
 		cleanup: worker.NewCleanup(outbox, worker.CleanupConfig{Deliveries: deliveries, Logger: logger}),
 	}, nil
