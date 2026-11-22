@@ -111,7 +111,8 @@ func TestMyBriefAfterPermanentDelete(t *testing.T) {
 		}
 		job.ExecutionResult, _ = json.Marshal(map[string]any{"turns": 1, "stopped": "final", "report": map[string]any{
 			"brief_date": day.Format(time.DateOnly), "user_id": user, "text": "Acquire Initech quietly first",
-			"top_items":         []map[string]any{{"task_id": id, "title": "Acquire Initech quietly"}},
+			"top_items": []map[string]any{{"task_id": id, "title": "Acquire Initech quietly", "workspace_id": "ws_core",
+				"status": "todo", "priority": "p3_medium", "due_at": nil, "overdue": false}},
 			"pending_approvals": []any{}, "unblocked_tasks": []any{}}})
 		prev := job.UpdatedAt
 		job.Status, job.UpdatedAt = domain.JobCompleted, day.Add(time.Minute)

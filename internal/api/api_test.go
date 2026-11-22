@@ -170,6 +170,11 @@ func (e *env) do(r req) resp {
 	rec := httptest.NewRecorder()
 	e.handler.ServeHTTP(rec, hr)
 	out := resp{status: rec.Code, header: rec.Header(), raw: rec.Body.Bytes()}
+	// M12-05: every response a handler test sees is one the contract
+	// describes.
+	if err := contractValidator(e.t).Check(hr, out.status, out.header, out.raw); err != nil {
+		e.t.Errorf("contract: %v", err)
+	}
 	_ = json.Unmarshal(out.raw, &out.json)
 	return out
 }

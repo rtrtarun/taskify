@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -77,4 +78,20 @@ func TestRoutesMatchContract(t *testing.T) {
 	if len(served) < 20 || len(legacy) < 10 {
 		t.Errorf("walked %d routes and %d legacy aliases; the walk is missing some", len(served), len(legacy))
 	}
+}
+
+var (
+	validatorOnce sync.Once
+	validator     *contracttest.Validator
+	validatorErr  error
+)
+
+// contractValidator returns the response validator, loaded once.
+func contractValidator(t *testing.T) *contracttest.Validator {
+	t.Helper()
+	validatorOnce.Do(func() { validator, validatorErr = contracttest.NewValidator() })
+	if validatorErr != nil {
+		t.Fatal(validatorErr)
+	}
+	return validator
 }

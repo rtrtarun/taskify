@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -282,8 +283,15 @@ func TestOutboxAdmin(t *testing.T) {
 			t.Errorf("%s: %d %s", name, r.status, r.raw)
 		}
 	}
-	if r := newEnv(t, func(d *Deps) { d.Outbox = nil }).do(req{method: "GET", path: "/api/v1/admin/outbox", as: "admin"}); r.status != 404 {
-		t.Errorf("without the outbox service: %d", r.status)
+	// A server built without the outbox service does not serve the routes.
+	// Every real server has it, so the contract does not list this 404.
+	bare := newEnv(t, func(d *Deps) { d.Outbox = nil })
+	hr := httptest.NewRequest("GET", "/api/v1/admin/outbox", nil)
+	hr.Header.Set("Authorization", "Bearer "+token(t, tenant, "usr_admin", "admin", time.Hour))
+	rec := httptest.NewRecorder()
+	bare.handler.ServeHTTP(rec, hr)
+	if rec.Code != 404 {
+		t.Errorf("without the outbox service: %d", rec.Code)
 	}
 }
 

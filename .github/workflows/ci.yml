@@ -42,6 +42,13 @@ jobs:
           version: v2.15.0
       - name: Build
         run: go build ./...
+      # contract/openapi.yaml must be valid and match the router, and the
+      # response validator must refuse what the contract does not describe.
+      # The handler and end-to-end tests in the next step validate every
+      # response they see against it, so an undocumented status or body
+      # fails CI (M12-05).
+      - name: Contract
+        run: go test ./contract/... ./internal/api/ -run 'TestOpenAPILint|TestSchemas|TestValidator|TestRoutesMatchContract'
       - name: Test
         shell: bash # with pipefail, so a test failure is not hidden by tee
         run: go test -race -cover ./... | tee test-output.txt

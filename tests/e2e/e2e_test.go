@@ -130,8 +130,17 @@ func (h *harness) call(method, path, user, role string, body any, headers map[st
 		h.t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	// M12-05: every response the end-to-end tests see is one the contract
+	// describes, from the assembled server and PostgreSQL.
+	if err := contractValidator(h.t).Check(req, resp.StatusCode, resp.Header, raw); err != nil {
+		h.t.Errorf("contract: %v", err)
+	}
 	var out map[string]any
-	_ = json.NewDecoder(resp.Body).Decode(&out)
+	_ = json.Unmarshal(raw, &out)
 	return resp.StatusCode, out
 }
 
