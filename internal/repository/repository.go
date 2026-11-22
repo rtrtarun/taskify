@@ -170,6 +170,11 @@ type AgentJobRepository interface {
 	// task whose owner (assignee, or creator when unassigned) is userID: the
 	// person the approval request went to. Oldest first.
 	ListAwaitingApproval(ctx context.Context, tenantID, userID string) ([]*domain.AgentJob, error)
+	// LatestBrief returns userID's newest morning brief in the tenant: the
+	// most recently created completed digest job for them whose
+	// execution_result holds a report. A brief skipped for having nothing to
+	// report does not count. ErrNotFound when there is none.
+	LatestBrief(ctx context.Context, tenantID, userID string) (*domain.AgentJob, error)
 	InsertRun(ctx context.Context, r domain.AgentRun) error
 	// ListRuns returns a job's turns in order.
 	ListRuns(ctx context.Context, jobID uuid.UUID) ([]domain.AgentRun, error)

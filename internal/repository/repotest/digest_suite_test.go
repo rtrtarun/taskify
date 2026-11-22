@@ -2,6 +2,7 @@ package repotest
 
 import (
 	"encoding/json"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -232,6 +233,66 @@ func TestListAwaitingApproval(t *testing.T) {
 		}
 		if got, _ := b.AgentJobs.ListAwaitingApproval(ctx, "tenant_beta", "usr_bob"); len(got) != 0 {
 			t.Errorf("bob in another tenant = %v", ids(got))
+		}
+	})
+}
+
+// storeBrief stores a completed brief job for user on day; with report
+// false it is one skipped for having nothing to report.
+func storeBrief(t *testing.T, b Backend, tenantID, user string, day time.Time, report bool) domain.AgentJob {
+	t.Helper()
+	job, err := domain.NewBriefJob(domain.BriefRecipient{TenantID: tenantID, UserID: user, WorkspaceID: ws}, day, day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertJob(t, b, job)
+	prev := job.UpdatedAt
+	job.Status, job.UpdatedAt = domain.JobCompleted, day.Add(time.Minute)
+	job.ExecutionResult = json.RawMessage(`{"turns": 0, "stopped": "skipped", "skip_reason": "nothing to report"}`)
+	if report {
+		job.ExecutionResult = json.RawMessage(`{"turns": 1, "stopped": "final", "report": {"brief_date": "` +
+			day.Format(time.DateOnly) + `", "user_id": "` + user + `", "text": "Brief"}}`)
+	}
+	if err := b.AgentJobs.Update(ctx, &job, domain.JobPending, prev); err != nil {
+		t.Fatal(err)
+	}
+	return job
+}
+
+// TestLatestBrief covers the read behind GET /api/v1/me/brief (M10-03).
+func TestLatestBrief(t *testing.T) {
+	each(t, func(t *testing.T, b Backend) {
+		day := time.Date(2026, 11, 20, 8, 0, 0, 0, time.UTC)
+		storeBrief(t, b, tenant, "usr_bob", day, true)
+		latest := storeBrief(t, b, tenant, "usr_bob", day.Add(24*time.Hour), true)
+		storeBrief(t, b, tenant, "usr_bob", day.Add(48*time.Hour), false) // nothing to report that day
+		pending, err := domain.NewBriefJob(domain.BriefRecipient{TenantID: tenant, UserID: "usr_bob", WorkspaceID: ws},
+			day.Add(72*time.Hour), day.Add(72*time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		insertJob(t, b, pending) // not written yet
+		carols := storeBrief(t, b, tenant, "usr_carol", day.Add(48*time.Hour), true)
+		theirs := storeBrief(t, b, "tenant_beta", "usr_bob", day.Add(72*time.Hour), true)
+
+		for name, tc := range map[string]struct {
+			tenant, user string
+			want         domain.AgentJob
+		}{
+			"bob's newest written brief": {tenant, "usr_bob", latest},
+			"carol's":                    {tenant, "usr_carol", carols},
+			"bob in another tenant":      {"tenant_beta", "usr_bob", theirs},
+		} {
+			got, err := b.AgentJobs.LatestBrief(ctx, tc.tenant, tc.user)
+			if err != nil || got.ID != tc.want.ID {
+				t.Errorf("%s = %v, %v; want %s", name, got, err, tc.want.ID)
+			}
+		}
+		if _, err := b.AgentJobs.LatestBrief(ctx, tenant, "usr_dave"); !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("no brief: %v", err)
+		}
+		if _, err := b.AgentJobs.LatestBrief(ctx, "tenant_beta", "usr_carol"); !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("carol in another tenant: %v", err)
 		}
 	})
 }

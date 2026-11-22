@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/rtrtarun/taskify/internal/agent/llm"
 	"github.com/rtrtarun/taskify/internal/domain"
 	"github.com/rtrtarun/taskify/internal/repository/repotest"
+	"github.com/rtrtarun/taskify/internal/service"
 )
 
 func (f *fixture) digest() Digest {
@@ -226,6 +228,17 @@ func TestDigestWritesBrief(t *testing.T) {
 		}
 		if outcomes := f.outcomes(t, job.ID); !slices.Equal(outcomes, []string{OutcomeFinal}) {
 			t.Errorf("run history = %v", outcomes)
+		}
+
+		// GET /me/brief (M10-03) reads back what the run stored.
+		jobs := service.NewAgentJobService(b.Tx, b.AgentJobs, b.Tasks, f.reg, nil, f.clock.now)
+		latest, err := jobs.LatestBrief(ctx, "tenant_acme", bob.ID)
+		if err != nil || latest.JobID != job.ID || latest.Text != text || len(latest.TopItems) != 3 ||
+			latest.PendingApprovalsTotal != 1 || latest.UnblockedTotal != 1 {
+			t.Errorf("LatestBrief = %+v, %v", latest, err)
+		}
+		if _, err := jobs.LatestBrief(ctx, "tenant_acme", "usr_alice"); !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("alice has no brief: %v", err)
 		}
 	})
 }

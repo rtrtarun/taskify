@@ -107,6 +107,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 			r.Route("/tasks", h.taskRoutes)
 			if h.agentJobs != nil {
 				r.Route("/agent-jobs", h.agentJobRoutes)
+				r.Get("/me/brief", h.getMyBrief)
 			}
 			r.Group(h.adminRoutes)
 		})

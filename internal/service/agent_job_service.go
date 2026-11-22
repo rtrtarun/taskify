@@ -69,6 +69,35 @@ func (s *AgentJobService) Get(ctx context.Context, tenantID string, id uuid.UUID
 	return s.jobs.Get(ctx, tenantID, id)
 }
 
+// Brief is a morning brief as the digest agent stored it (M10-02).
+type Brief struct {
+	JobID uuid.UUID
+	// WrittenAt is when the job completed.
+	WrittenAt time.Time
+	domain.MorningBrief
+}
+
+// LatestBrief returns userID's most recent morning brief in the tenant
+// (G15). Callers pass the tenant and user of the authenticated caller, so a
+// person only ever reads their own. A day with nothing to report wrote no
+// brief and leaves the previous one in place; with none at all it returns
+// domain.ErrNotFound.
+func (s *AgentJobService) LatestBrief(ctx context.Context, tenantID, userID string) (Brief, error) {
+	job, err := s.jobs.LatestBrief(ctx, tenantID, userID)
+	if err != nil {
+		return Brief{}, err
+	}
+	var res struct {
+		Report *domain.MorningBrief `json:"report"`
+	}
+	if err := json.Unmarshal(job.ExecutionResult, &res); err != nil || res.Report == nil {
+		return Brief{}, fmt.Errorf("brief job %s has no readable report", job.ID)
+	}
+	b := Brief{JobID: job.ID, WrittenAt: job.UpdatedAt, MorningBrief: *res.Report}
+	b.TenantID, b.MorningBrief.JobID = job.TenantID, job.ID
+	return b, nil
+}
+
 type decision int
 
 const (
