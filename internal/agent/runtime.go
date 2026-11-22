@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +43,7 @@ const (
 	stoppedError       = "error"
 	stoppedFailed      = "failed"
 	stoppedInterrupted = "interrupted"
+	stoppedSkipped     = "skipped" // the agent had nothing to do; the model was not called
 )
 
 // Config tunes the runtime. Zero values take the defaults in G11.
@@ -271,6 +273,18 @@ func permanent(format string, a ...any) error {
 	return &permanentError{msg: fmt.Sprintf(format, a...)}
 }
 
+// skipError ends a run before the model is called: the job completes with
+// nothing done, stopped "skipped", and the reason in execution_result.
+type skipError struct{ reason string }
+
+func (e *skipError) Error() string { return "skipped: " + e.reason }
+
+// Skip is returned by BuildContext, or a Reporter's Gather, when the job
+// has nothing to do, such as a morning brief with nothing to report.
+func Skip(format string, a ...any) error {
+	return &skipError{reason: fmt.Sprintf(format, a...)}
+}
+
 // Execute runs one claimed job to its next status. The run continues the
 // trace of the request whose change queued the job.
 func (r *Runtime) Execute(ctx context.Context, job *domain.AgentJob) {
@@ -316,8 +330,14 @@ type run struct {
 	repaired  bool
 	final     string
 	stopped   string
+	skipped   string // why the run was skipped
 	executed  []executedCall
 	proposals []tools.Proposal
+
+	// A Reporter's run: its facts, then what it stores and sends.
+	report   Report
+	reported json.RawMessage
+	notes    []domain.Notification
 }
 
 type executedCall struct {
@@ -352,22 +372,66 @@ func (ru *run) do(ctx context.Context) error {
 	if err != nil {
 		return permanent("%v", err)
 	}
-	messages, err := agent.BuildContext(ctx, ru.job)
-	if err != nil {
+	messages, err := ru.opening(ctx, agent)
+	var skip *skipError
+	switch {
+	case errors.As(err, &skip):
+		ru.stopped, ru.skipped = stoppedSkipped, skip.reason
+		return nil
+	case err != nil:
 		return fmt.Errorf("build context: %w", err)
 	}
 
 	for ru.turns < r.cfg.MaxTurns {
 		ru.turns++
 		done, err := ru.turn(ctx, &messages, schemas)
-		if err != nil || done {
+		if err != nil {
 			return err
+		}
+		if done {
+			return ru.deliver()
 		}
 		if err := ru.heartbeat(ctx); err != nil {
 			return err
 		}
 	}
 	ru.stopped = stoppedMaxTurns
+	return ru.deliver()
+}
+
+// opening returns the messages the run starts with: from a Reporter's
+// facts, or from BuildContext.
+func (ru *run) opening(ctx context.Context, agent Agent) ([]llm.Message, error) {
+	rep, ok := agent.(Reporter)
+	if !ok {
+		return agent.BuildContext(ctx, ru.job)
+	}
+	report, err := rep.Gather(ctx, ru.job)
+	if err != nil {
+		return nil, err
+	}
+	if report == nil {
+		return nil, Skip("nothing to report")
+	}
+	ru.report = report
+	return report.Messages(), nil
+}
+
+// deliver turns a Reporter's facts and the model's final text into what the
+// job stores and sends. A run that ends without text wrote no report: it
+// counts as a failed attempt and runs again.
+func (ru *run) deliver() error {
+	if ru.report == nil {
+		return nil
+	}
+	if ru.stopped != stoppedFinal || strings.TrimSpace(ru.final) == "" {
+		return errors.New("the model wrote no report")
+	}
+	result, notes, err := ru.report.Deliver(ru.final, ru.rt.cfg.PublicBaseURL)
+	if err != nil {
+		return permanent("report: %v", err)
+	}
+	ru.reported, ru.notes = result, notes
 	return nil
 }
 
@@ -577,9 +641,13 @@ func newID() (uuid.UUID, error) { return uuid.NewV7() }
 type executionResult struct {
 	Turns        int            `json:"turns"`
 	Stopped      string         `json:"stopped"`
+	SkipReason   string         `json:"skip_reason,omitempty"`
 	FinalMessage string         `json:"final_message,omitempty"`
 	Executed     []executedCall `json:"executed"`
 	Proposals    int            `json:"proposals"`
+	// Report is what a Reporter's completed run produced, such as a
+	// morning brief.
+	Report json.RawMessage `json:"report,omitempty"`
 }
 
 // finish saves the job's next status. Its writes outlive a cancelled ctx,
@@ -651,11 +719,15 @@ func (r *Runtime) finish(ctx context.Context, ru *run, runErr error) (outcome st
 		_ = job.TransitionTo(next, now)
 	}
 
-	result := executionResult{Turns: ru.turns, Stopped: ru.stopped, FinalMessage: ru.final,
+	result := executionResult{Turns: ru.turns, Stopped: ru.stopped, SkipReason: ru.skipped, FinalMessage: ru.final,
 		Executed: ru.executed, Proposals: len(ru.proposals)}
 	if result.Executed == nil {
 		result.Executed = []executedCall{}
 	}
+	if job.Status != domain.JobCompleted {
+		ru.reported, ru.notes = nil, nil // only a completed run stores and sends its report
+	}
+	result.Report = ru.reported
 	job.ExecutionResult, _ = json.Marshal(result)
 
 	notified, err := r.save(wctx, ctx, ru)
@@ -691,11 +763,35 @@ type Finisher interface {
 	FinishEvents(ctx context.Context, job *domain.AgentJob, now time.Time) ([]domain.Event, error)
 }
 
+// Reporter is an agent whose model writes a report from facts that Go code
+// gathers, such as the morning brief, rather than acting through tools. The
+// runtime calls Gather in place of BuildContext.
+type Reporter interface {
+	Agent
+	// Gather loads what this run reports on. A nil Report, or a Skip error,
+	// means there is nothing to report: the job completes as skipped, the
+	// model is not called, and nothing is stored or sent.
+	Gather(ctx context.Context, job *domain.AgentJob) (Report, error)
+}
+
+// Report is the facts of one Reporter run.
+type Report interface {
+	// Messages opens the conversation with the model.
+	Messages() []llm.Message
+	// Deliver turns the model's final text into the report the job keeps in
+	// execution_result.report and the notifications that send it. It makes
+	// no calls: the runtime writes both in the transaction that completes
+	// the job, so a report is stored and sent once, and never by a run that
+	// failed or will be retried.
+	Deliver(text, publicBaseURL string) (json.RawMessage, []domain.Notification, error)
+}
+
 // save writes the job's next status, and reports whether it also wrote
 // outbox rows. A job that now awaits approval gets its
 // agent.approval_requested row in the same transaction, so the request is
-// sent exactly when the proposals are stored; a Finisher's events are
-// written there too. traceCtx carries the run's trace for those rows.
+// sent exactly when the proposals are stored; a Finisher's events, and a
+// Reporter's notifications, are written there too. traceCtx carries the
+// run's trace for those rows.
 func (r *Runtime) save(ctx, traceCtx context.Context, ru *run) (notified bool, err error) {
 	job := ru.job
 	err = r.deps.Tx.WithTx(ctx, func(ctx context.Context) error {
@@ -703,35 +799,16 @@ func (r *Runtime) save(ctx, traceCtx context.Context, ru *run) (notified bool, e
 		if err := r.deps.Jobs.Update(ctx, job, domain.JobRunning, ru.lease); err != nil {
 			return err
 		}
-		ended := job.Status == domain.JobCompleted || job.Status == domain.JobAwaitingApproval
-		if !ended || job.TaskID == nil {
-			// A job without a task has nobody to ask yet; its proposals wait
-			// in the job, visible through the API.
-			return nil
-		}
-		var events []domain.Event
-		if job.Status == domain.JobAwaitingApproval {
-			task, err := r.deps.Tasks.Get(ctx, job.TenantID, *job.TaskID)
-			if err != nil {
-				return err
-			}
-			names := make([]string, len(ru.proposals))
-			for i, p := range ru.proposals {
-				names[i] = p.Tool
-			}
-			events = append(events, domain.NewApprovalRequestedEvent(task, job, names, job.UpdatedAt))
-		}
-		if f, ok := r.agents[job.AgentType].(Finisher); ok {
-			more, err := f.FinishEvents(ctx, job, job.UpdatedAt)
-			if err != nil {
-				return fmt.Errorf("finish events: %w", err)
-			}
-			events = append(events, more...)
-		}
-		entries, err := domain.NewOutboxEntries(events, r.cfg.PublicBaseURL, r.cfg.OutboxMaxAttempts, job.UpdatedAt)
+		// A report is about no single task: its rows are keyed by the job.
+		entries, err := domain.NewNotificationEntries(ru.notes, job.ID, r.cfg.OutboxMaxAttempts, job.UpdatedAt)
 		if err != nil {
 			return err
 		}
+		more, err := r.taskEvents(ctx, ru)
+		if err != nil {
+			return err
+		}
+		entries = append(entries, more...)
 		if len(entries) == 0 {
 			return nil
 		}
@@ -744,6 +821,38 @@ func (r *Runtime) save(ctx, traceCtx context.Context, ru *run) (notified bool, e
 		return err
 	})
 	return notified, err
+}
+
+// taskEvents returns the outbox rows a job about a task writes as it ends:
+// its approval request and a Finisher's events.
+func (r *Runtime) taskEvents(ctx context.Context, ru *run) ([]domain.OutboxEntry, error) {
+	job := ru.job
+	ended := job.Status == domain.JobCompleted || job.Status == domain.JobAwaitingApproval
+	if !ended || job.TaskID == nil {
+		// A job without a task has nobody to ask yet; its proposals wait in
+		// the job, visible through the API.
+		return nil, nil
+	}
+	var events []domain.Event
+	if job.Status == domain.JobAwaitingApproval {
+		task, err := r.deps.Tasks.Get(ctx, job.TenantID, *job.TaskID)
+		if err != nil {
+			return nil, err
+		}
+		names := make([]string, len(ru.proposals))
+		for i, p := range ru.proposals {
+			names[i] = p.Tool
+		}
+		events = append(events, domain.NewApprovalRequestedEvent(task, job, names, job.UpdatedAt))
+	}
+	if f, ok := r.agents[job.AgentType].(Finisher); ok {
+		more, err := f.FinishEvents(ctx, job, job.UpdatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("finish events: %w", err)
+		}
+		events = append(events, more...)
+	}
+	return domain.NewOutboxEntries(events, r.cfg.PublicBaseURL, r.cfg.OutboxMaxAttempts, job.UpdatedAt)
 }
 
 // outcomeOf is the metric outcome of a run that ended with the job in status.

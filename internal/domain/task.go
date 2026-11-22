@@ -45,6 +45,10 @@ type Task struct {
 	// Set exactly while Status is blocked.
 	StatusBeforeBlocked *Status
 	BlockedReason       *BlockedReason
+	// UnblockedAt is when the task last left blocked for todo or
+	// in_progress, by a person or by dependency release. The morning brief
+	// lists the tasks unblocked since the last brief (M10-02).
+	UnblockedAt *time.Time
 
 	// EstimatedMinutes is the expected effort, when known.
 	EstimatedMinutes *int
@@ -308,6 +312,9 @@ func (t *Task) moveTo(to Status, reason BlockedReason, now time.Time) error {
 	} else {
 		t.StatusBeforeBlocked = nil
 		t.BlockedReason = nil
+	}
+	if from == StatusBlocked && (to == StatusTodo || to == StatusInProgress) {
+		t.UnblockedAt = &now
 	}
 
 	switch to {

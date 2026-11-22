@@ -165,6 +165,23 @@ func (r *AgentJobRepo) ListForTask(ctx context.Context, tenantID string, taskID 
 	return out, err
 }
 
+func (r *AgentJobRepo) ListAwaitingApproval(ctx context.Context, tenantID, userID string) ([]*domain.AgentJob, error) {
+	out := []*domain.AgentJob{}
+	err := r.st.do(ctx, func(s *state) error {
+		for _, j := range s.jobs {
+			if j.TenantID != tenantID || j.Status != domain.JobAwaitingApproval || j.TaskID == nil {
+				continue
+			}
+			if t := s.tasks[*j.TaskID]; t != nil && t.TenantID == tenantID && t.Owner() == userID {
+				out = append(out, copyJob(j))
+			}
+		}
+		return nil
+	})
+	sortJobs(out)
+	return out, err
+}
+
 func (r *AgentJobRepo) InsertRun(ctx context.Context, run domain.AgentRun) error {
 	return r.st.do(ctx, func(s *state) error {
 		if s.jobs[run.JobID] == nil {

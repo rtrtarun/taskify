@@ -43,32 +43,46 @@ type OutboxEntry struct {
 // NewOutboxEntries turns events into pending outbox rows, one per event per
 // recipient. An event with no recipients produces no rows.
 func NewOutboxEntries(events []Event, publicBaseURL string, maxAttempts int, now time.Time) ([]OutboxEntry, error) {
-	now = now.UTC()
 	var out []OutboxEntry
 	for _, e := range events {
-		for _, n := range e.Notifications(publicBaseURL) {
-			body, err := json.Marshal(n)
-			if err != nil {
-				return nil, err
-			}
-			id, err := uuid.NewV7()
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, OutboxEntry{
-				ID:             id,
-				TenantID:       e.Task.TenantID,
-				AggregateID:    e.Task.ID,
-				EventType:      e.Type,
-				IdempotencyKey: n.IdempotencyKey,
-				Payload:        body,
-				TraceContext:   map[string]string{},
-				Status:         OutboxPending,
-				MaxAttempts:    maxAttempts,
-				NextAttemptAt:  now,
-				CreatedAt:      now,
-			})
+		entries, err := NewNotificationEntries(e.Notifications(publicBaseURL), e.Task.ID, maxAttempts, now)
+		if err != nil {
+			return nil, err
 		}
+		out = append(out, entries...)
+	}
+	return out, nil
+}
+
+// NewNotificationEntries turns notifications into pending outbox rows.
+// aggregateID is what they are about: the task for a task event, or the
+// agent job for a notification that is about no single task, such as a
+// morning brief.
+func NewNotificationEntries(ns []Notification, aggregateID uuid.UUID, maxAttempts int, now time.Time) ([]OutboxEntry, error) {
+	now = now.UTC()
+	out := make([]OutboxEntry, 0, len(ns))
+	for _, n := range ns {
+		body, err := json.Marshal(n)
+		if err != nil {
+			return nil, err
+		}
+		id, err := uuid.NewV7()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, OutboxEntry{
+			ID:             id,
+			TenantID:       n.TenantID,
+			AggregateID:    aggregateID,
+			EventType:      n.EventType,
+			IdempotencyKey: n.IdempotencyKey,
+			Payload:        body,
+			TraceContext:   map[string]string{},
+			Status:         OutboxPending,
+			MaxAttempts:    maxAttempts,
+			NextAttemptAt:  now,
+			CreatedAt:      now,
+		})
 	}
 	return out, nil
 }

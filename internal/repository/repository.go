@@ -82,6 +82,15 @@ type TaskRepository interface {
 	// key of domain.StaleJobDedupKey). Rows another transaction holds are
 	// skipped. Oldest first.
 	ClaimStale(ctx context.Context, staleBefore, now time.Time, limit int) ([]*domain.Task, error)
+	// ListBriefRecipients returns up to limit people to brief on day (UTC),
+	// across tenants, ordered by tenant and user: the assignees of todo and
+	// in_progress tasks, and the owners (assignee, or creator when
+	// unassigned) of tasks with a job awaiting approval, counting only
+	// workspaces whose settings allow the digest agent. A person who already
+	// has day's brief job (domain.BriefJobDedupKey) is left out. Each names
+	// the first such workspace by ID. It takes no locks: the brief job's
+	// unique dedup key stops a second brief if two scans overlap.
+	ListBriefRecipients(ctx context.Context, day time.Time, limit int) ([]domain.BriefRecipient, error)
 	// Reminder bookkeeping. These do not change the version: a reminder is
 	// not an edit and must not cause a client's next save to conflict.
 	MarkDueSoonNotified(ctx context.Context, tenantID string, id uuid.UUID, at time.Time) error
@@ -157,6 +166,10 @@ type AgentJobRepository interface {
 	RecoverStuck(ctx context.Context, olderThan, now time.Time, maxAttempts int) (requeued, failed int, err error)
 	// ListForTask returns the task's jobs, oldest first.
 	ListForTask(ctx context.Context, tenantID string, taskID uuid.UUID) ([]*domain.AgentJob, error)
+	// ListAwaitingApproval returns the tenant's jobs awaiting approval on a
+	// task whose owner (assignee, or creator when unassigned) is userID: the
+	// person the approval request went to. Oldest first.
+	ListAwaitingApproval(ctx context.Context, tenantID, userID string) ([]*domain.AgentJob, error)
 	InsertRun(ctx context.Context, r domain.AgentRun) error
 	// ListRuns returns a job's turns in order.
 	ListRuns(ctx context.Context, jobID uuid.UUID) ([]domain.AgentRun, error)
