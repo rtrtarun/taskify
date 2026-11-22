@@ -105,6 +105,10 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 		tools.UpdateTaskAttributes{Tasks: taskSvc},
 		tools.LinkDependencies{Tasks: taskSvc},
 		tools.CreateSubtaskDAG{Tasks: taskSvc},
+		tools.DraftResolutionComment{Tasks: taskSvc},
+		tools.ReassignTask{Tasks: taskSvc},
+		tools.ShiftDueDate{Tasks: taskSvc},
+		tools.ArchiveTask{Tasks: taskSvc},
 	} {
 		if err := registry.Register(tool); err != nil {
 			return nil, err
