@@ -192,6 +192,9 @@ func TestAgentSettings(t *testing.T) {
 	if c.AgentsEnabled || c.AgentWorkers != 4 || c.AgentMaxTurns != 6 || c.AgentMaxAttempts != 3 || c.LLMTimeout != 30*time.Second {
 		t.Errorf("agent defaults = %+v", c)
 	}
+	if c.DigestLoadThreshold != 3 || c.DigestBriefHourUTC != 8 {
+		t.Errorf("digest defaults = %+v", c)
+	}
 
 	// Turning agents on needs a model endpoint and a model name.
 	env := valid()
@@ -207,6 +210,8 @@ func TestAgentSettings(t *testing.T) {
 	env["AGENT_WORKERS"] = "2"
 	env["AGENT_MAX_TURNS"] = "4"
 	env["LLM_TIMEOUT"] = "10s"
+	env["DIGEST_LOAD_THRESHOLD"] = "5"
+	env["DIGEST_BRIEF_HOUR_UTC"] = "0"
 	c, err = FromLookup(lookupFrom(env))
 	if err != nil {
 		t.Fatal(err)
@@ -214,11 +219,15 @@ func TestAgentSettings(t *testing.T) {
 	if !c.AgentsEnabled || c.LLMBaseURL != "http://ollama:11434/v1" || c.AgentWorkers != 2 || c.AgentMaxTurns != 4 || c.LLMTimeout != 10*time.Second {
 		t.Errorf("agent config = %+v", c)
 	}
+	if c.DigestLoadThreshold != 5 || c.DigestBriefHourUTC != 0 {
+		t.Errorf("digest config = %+v", c)
+	}
 	if strings.Contains(c.String(), "llm-secret-key") {
 		t.Errorf("String() leaks the LLM key: %s", c.String())
 	}
 
-	for name, value := range map[string]string{"AGENTS_ENABLED": "maybe", "LLM_BASE_URL": "ollama:11434", "AGENT_MAX_TURNS": "0"} {
+	for name, value := range map[string]string{"AGENTS_ENABLED": "maybe", "LLM_BASE_URL": "ollama:11434", "AGENT_MAX_TURNS": "0",
+		"DIGEST_LOAD_THRESHOLD": "0", "DIGEST_BRIEF_HOUR_UTC": "24"} {
 		bad := valid()
 		bad[name] = value
 		if _, err := FromLookup(lookupFrom(bad)); err == nil || !strings.Contains(err.Error(), name) {

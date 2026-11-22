@@ -44,7 +44,14 @@ type Deps struct {
 type Config struct {
 	PublicBaseURL     string
 	OutboxMaxAttempts int
+	// DigestLoadThreshold is how many in_progress p1_critical tasks make an
+	// assignee overloaded, so that a non-critical assignment is held for
+	// their digest (DIGEST_LOAD_THRESHOLD, default 3, G14).
+	DigestLoadThreshold int
 }
+
+// DefaultDigestLoadThreshold is the default of Config.DigestLoadThreshold.
+const DefaultDigestLoadThreshold = 3
 
 // TaskService implements the task use cases.
 type TaskService struct {
@@ -74,6 +81,9 @@ func WithMetrics(m *observability.Metrics) Option { return func(s *TaskService) 
 func NewTaskService(d Deps, cfg Config, opts ...Option) *TaskService {
 	if cfg.OutboxMaxAttempts <= 0 {
 		cfg.OutboxMaxAttempts = 10
+	}
+	if cfg.DigestLoadThreshold <= 0 {
+		cfg.DigestLoadThreshold = DefaultDigestLoadThreshold
 	}
 	s := &TaskService{deps: d, cfg: cfg, now: time.Now, wake: func() {}}
 	for _, o := range opts {
@@ -377,8 +387,12 @@ func (s *TaskService) ListTasks(ctx context.Context, f repository.TaskFilter) (r
 	return page, err
 }
 
-// emit writes the outbox rows for events.
+// emit writes the outbox rows for events, after the load gatekeeper has
+// decided which assignments wait for the digest.
 func (s *TaskService) emit(ctx context.Context, events []domain.Event, now time.Time) error {
+	if err := s.deferForLoad(ctx, events); err != nil {
+		return err
+	}
 	entries, err := domain.NewOutboxEntries(events, s.cfg.PublicBaseURL, s.cfg.OutboxMaxAttempts, now)
 	if err != nil {
 		return err
@@ -391,6 +405,55 @@ func (s *TaskService) emit(ctx context.Context, events []domain.Event, now time.
 	}
 	_, err = s.deps.Outbox.Insert(ctx, entries)
 	return err
+}
+
+// deferForLoad is the digest agent's load gatekeeper (feature A4, M10-01).
+// An assignment notification is held for the assignee's digest when they
+// already have DigestLoadThreshold or more in_progress p1_critical tasks in
+// the tenant, provided the task's workspace allows the digest agent. It is a
+// count in the caller's transaction, not a model call, and it queues no job
+// (G14). A critical task keeps bypassDigest and is never deferred
+// (domain.Event.Deferrable). Every path that raises an assignment, a
+// person's or an agent's, passes through here.
+//
+// The count takes no locks: two assignments racing each other, or a task
+// reaching in_progress meanwhile, can only move a borderline notification
+// between the digest and immediate delivery.
+func (s *TaskService) deferForLoad(ctx context.Context, events []domain.Event) error {
+	allowed := map[string]bool{}    // by tenant and workspace
+	overloaded := map[string]bool{} // by tenant and assignee
+	for i := range events {
+		e := &events[i]
+		if !e.Deferrable() {
+			continue
+		}
+		t := &e.Task
+		key := t.TenantID + "\x00" + t.WorkspaceID
+		on, seen := allowed[key]
+		if !seen {
+			w, err := s.deps.Workspaces.Get(ctx, t.TenantID, t.WorkspaceID)
+			if err != nil {
+				return err
+			}
+			on = w.AgentSettings.Allows(domain.AgentDigest)
+			allowed[key] = on
+		}
+		if !on {
+			continue
+		}
+		key = t.TenantID + "\x00" + t.AssigneeID
+		over, seen := overloaded[key]
+		if !seen {
+			n, err := s.deps.Tasks.CountAssigned(ctx, t.TenantID, t.AssigneeID, domain.StatusInProgress, domain.PriorityCritical)
+			if err != nil {
+				return err
+			}
+			over = n >= s.cfg.DigestLoadThreshold
+			overloaded[key] = over
+		}
+		e.Deferred = over
+	}
+	return nil
 }
 
 // signal wakes the relay after a commit that may have written outbox rows.

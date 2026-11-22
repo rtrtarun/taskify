@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,21 +28,35 @@ type SchedulerConfig struct {
 	// StaleAfter is how long an in_progress task may go without a comment
 	// or an edit before it is investigated; default domain.StaleAfter (G12).
 	StaleAfter time.Duration
+	// Briefs turns on the morning brief: from BriefHourUTC each day, one
+	// digest job is queued per person with something to report (G15). It
+	// needs Jobs.
+	Briefs bool
+	// BriefHourUTC is the hour, 0 to 23, at which briefs are due
+	// (DIGEST_BRIEF_HOUR_UTC). There is no per-user time zone.
+	BriefHourUTC int
 }
 
-// Scheduler writes task.due_soon and task.overdue events, and queues
-// blocker_investigator jobs for stale tasks (section 3.3).
+// Scheduler writes task.due_soon and task.overdue events, queues
+// blocker_investigator jobs for stale tasks (section 3.3), and queues the
+// day's morning briefs.
 //
 // Replicas may run it at the same time: each batch claims its tasks with
 // SKIP LOCKED and marks them in the same transaction, and the unique
 // idempotency key stops a second row should two ever overlap. A stale task
 // is marked by its job, whose dedup key names the day, so it is
-// investigated at most once per day however many scans see it.
+// investigated at most once per day however many scans see it. A brief is
+// marked the same way, by its job's key naming the person and the day.
 type Scheduler struct {
 	cfg    SchedulerConfig
 	tx     repository.TxManager
 	tasks  repository.TaskRepository
 	outbox repository.OutboxRepository
+
+	mu sync.Mutex
+	// briefed is the last day whose brief scan ran to the end in this
+	// process; later ticks that day skip the scan.
+	briefed string
 }
 
 // NewScheduler returns a scheduler.
@@ -111,7 +126,88 @@ func (s *Scheduler) Tick(ctx context.Context) (int, error) {
 			s.cfg.Logger.Info("deadline scheduler: queued stale task investigations", "tasks", n)
 		}
 	}
+	if s.cfg.Jobs != nil && s.cfg.Briefs {
+		n, err := s.briefs(ctx, now)
+		if err != nil {
+			return total, err
+		}
+		if n > 0 {
+			s.cfg.Logger.Info("deadline scheduler: queued morning briefs", "briefs", n)
+		}
+	}
 	return total, nil
+}
+
+// briefs queues the day's morning briefs once the brief hour has passed
+// (G15) and returns how many it queued. The first scan of the day that runs
+// to the end is remembered, so later ticks cost nothing; a scan by another
+// replica, or after a restart, finds the jobs already queued and adds none.
+// Settings are checked by the query, as for the stale scan, and the jobs are
+// queued whatever AGENTS_ENABLED is, as a task change's jobs are.
+func (s *Scheduler) briefs(ctx context.Context, now time.Time) (int, error) {
+	at := time.Date(now.Year(), now.Month(), now.Day(), s.cfg.BriefHourUTC, 0, 0, 0, time.UTC)
+	if now.Before(at) {
+		return 0, nil
+	}
+	day := at.Format(time.DateOnly)
+	s.mu.Lock()
+	done := s.briefed == day
+	s.mu.Unlock()
+	if done {
+		return 0, nil
+	}
+	queued := 0
+	for {
+		found, created, err := s.briefBatch(ctx, at, now)
+		queued += created
+		if err != nil {
+			return queued, err
+		}
+		if found < s.cfg.BatchSize {
+			break
+		}
+		if created == 0 {
+			// Another replica's scan holds this batch; look again next
+			// tick rather than spin on it.
+			return queued, nil
+		}
+	}
+	s.mu.Lock()
+	s.briefed = day
+	s.mu.Unlock()
+	return queued, nil
+}
+
+// briefBatch queues the briefs of up to BatchSize people who have none for
+// the day yet. It returns how many people it found and how many briefs it
+// queued; the unique dedup key stops a brief another scan queued first.
+func (s *Scheduler) briefBatch(ctx context.Context, at, now time.Time) (found, created int, err error) {
+	err = s.tx.WithTx(ctx, func(ctx context.Context) error {
+		found, created = 0, 0 // a retried transaction starts again
+		people, err := s.tasks.ListBriefRecipients(ctx, at, s.cfg.BatchSize)
+		if err != nil {
+			return err
+		}
+		found = len(people)
+		for _, p := range people {
+			job, err := domain.NewBriefJob(p, at, now)
+			if err != nil {
+				return err
+			}
+			ok, err := s.cfg.Jobs.Insert(ctx, job)
+			if err != nil {
+				return err
+			}
+			if ok {
+				created++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	return found, created, nil
 }
 
 // drain runs scan until a batch comes back short.

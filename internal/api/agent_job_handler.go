@@ -83,6 +83,27 @@ func rawOrNull(b json.RawMessage) json.RawMessage {
 
 func rfc3339(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
+// briefJSON is the caller's morning brief: the stored report, flat, with
+// the job that wrote it.
+type briefJSON struct {
+	JobID     string `json:"job_id"`
+	WrittenAt string `json:"written_at"`
+	domain.MorningBrief
+}
+
+// getMyBrief serves GET /me/brief (G15, M10-03): the caller's most recent
+// morning brief, for the frontend (M14-10). Tenant and user come from the
+// token only, so nobody can read another person's brief.
+func (h *handlers) getMyBrief(w http.ResponseWriter, r *http.Request) {
+	id := identity(r)
+	b, err := h.agentJobs.LatestBrief(r.Context(), id.TenantID, id.UserID)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, briefJSON{JobID: b.JobID.String(), WrittenAt: rfc3339(b.WrittenAt), MorningBrief: b.MorningBrief})
+}
+
 func decider(r *http.Request) service.Decider {
 	id := identity(r)
 	return service.Decider{UserID: id.UserID, Admin: id.IsAdmin()}

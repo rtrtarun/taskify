@@ -25,7 +25,7 @@ var _ repository.TaskRepository = (*TaskRepo)(nil)
 const taskColumns = `id, tenant_id, workspace_id, title, description, status::text, priority::text,
 	creator_id, assignee_id, labels, metadata, due_at, remind_at, completed_at, archived_at,
 	last_due_soon_notified_at, last_overdue_notified_at, status_before_blocked::text, blocked_reason,
-	version, created_at, updated_at, parent_id, estimated_minutes, agent_metadata`
+	version, created_at, updated_at, parent_id, estimated_minutes, agent_metadata, unblocked_at`
 
 // openTasks is the predicate of the partial index idx_tasks_due_scan.
 const openTasks = `status NOT IN ('completed', 'archived')`
@@ -37,14 +37,14 @@ func (r *TaskRepo) Create(ctx context.Context, t *domain.Task) error {
 			INSERT INTO tasks (id, tenant_id, workspace_id, title, description, status, priority,
 				creator_id, assignee_id, labels, metadata, due_at, remind_at, completed_at, archived_at,
 				last_due_soon_notified_at, last_overdue_notified_at, status_before_blocked, blocked_reason,
-				version, created_at, updated_at, parent_id, estimated_minutes, agent_metadata)
+				version, created_at, updated_at, parent_id, estimated_minutes, agent_metadata, unblocked_at)
 			VALUES ($1, $2, $3, $4, $5, $6::text::task_status, $7::text::task_priority,
-				$8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::text::task_status, $19, $20, $21, $22, $23, $24, $25)`,
+				$8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::text::task_status, $19, $20, $21, $22, $23, $24, $25, $26)`,
 			t.ID, t.TenantID, t.WorkspaceID, t.Title, t.Description, string(t.Status), string(t.Priority),
 			t.CreatorID, nullString(t.AssigneeID), labels(t.Labels), metadata(t.Metadata),
 			t.DueAt, t.RemindAt, t.CompletedAt, t.ArchivedAt,
 			t.LastDueSoonNotifiedAt, t.LastOverdueNotifiedAt, statusPtr(t.StatusBeforeBlocked), reasonPtr(t.BlockedReason),
-			t.Version, t.CreatedAt, t.UpdatedAt, t.ParentID, t.EstimatedMinutes, agentMetadata(t.AgentMetadata))
+			t.Version, t.CreatedAt, t.UpdatedAt, t.ParentID, t.EstimatedMinutes, agentMetadata(t.AgentMetadata), t.UnblockedAt)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -86,14 +86,14 @@ func (r *TaskRepo) Update(ctx context.Context, t *domain.Task, expectedVersion i
 				completed_at = $12, archived_at = $13, last_due_soon_notified_at = $14,
 				last_overdue_notified_at = $15, status_before_blocked = $16::text::task_status,
 				blocked_reason = $17, version = $18, updated_at = $19,
-				estimated_minutes = $21, agent_metadata = $22
+				estimated_minutes = $21, agent_metadata = $22, unblocked_at = $23
 			WHERE id = $1 AND tenant_id = $2 AND version = $20`,
 			t.ID, t.TenantID, t.Title, t.Description, string(t.Status), string(t.Priority),
 			nullString(t.AssigneeID), labels(t.Labels), metadata(t.Metadata), t.DueAt, t.RemindAt,
 			t.CompletedAt, t.ArchivedAt, t.LastDueSoonNotifiedAt,
 			t.LastOverdueNotifiedAt, statusPtr(t.StatusBeforeBlocked),
 			reasonPtr(t.BlockedReason), t.Version, t.UpdatedAt, expectedVersion,
-			t.EstimatedMinutes, agentMetadata(t.AgentMetadata))
+			t.EstimatedMinutes, agentMetadata(t.AgentMetadata), t.UnblockedAt)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -221,6 +221,39 @@ func (r *TaskRepo) ClaimStale(ctx context.Context, staleBefore, now time.Time, l
 		staleBefore, domain.AgentBlocker, now.UTC().Format("2006-01-02"), limit)
 }
 
+func (r *TaskRepo) ListBriefRecipients(ctx context.Context, day time.Time, limit int) ([]domain.BriefRecipient, error) {
+	// The job key is built as domain.BriefJobDedupKey builds it. Byte order
+	// (COLLATE "C") keeps the order and the chosen workspace independent of
+	// the database's locale.
+	rows, err := r.db.q(ctx).Query(ctx, `
+		WITH candidates AS (
+			SELECT tenant_id, assignee_id AS user_id, workspace_id FROM tasks
+			WHERE status IN ('todo', 'in_progress') AND assignee_id IS NOT NULL
+			UNION
+			SELECT t.tenant_id, COALESCE(t.assignee_id, t.creator_id), t.workspace_id
+			FROM agent_jobs j JOIN tasks t ON t.id = j.task_id
+			WHERE j.status = 'awaiting_approval'
+		)
+		SELECT c.tenant_id, c.user_id, min(c.workspace_id COLLATE "C") FROM candidates c
+		JOIN workspaces w ON w.tenant_id = c.tenant_id AND w.id = c.workspace_id
+		WHERE COALESCE((w.agent_settings->>'agents_enabled')::boolean, false)
+		  AND NOT COALESCE(w.agent_settings->'disabled_agents' ? $1::text, false)
+		  AND NOT EXISTS (SELECT 1 FROM agent_jobs d
+		                  WHERE d.dedup_key = $1::text || ':' || c.tenant_id || ':' || c.user_id || ':brief:' || $2::text)
+		GROUP BY c.tenant_id, c.user_id
+		ORDER BY c.tenant_id COLLATE "C", c.user_id COLLATE "C"
+		LIMIT $3`, domain.AgentDigest, day.UTC().Format(time.DateOnly), limit)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (domain.BriefRecipient, error) {
+		var r domain.BriefRecipient
+		err := row.Scan(&r.TenantID, &r.UserID, &r.WorkspaceID)
+		return r, err
+	})
+	return out, mapErr(err)
+}
+
 func (r *TaskRepo) MarkDueSoonNotified(ctx context.Context, tenantID string, id uuid.UUID, at time.Time) error {
 	return r.mark(ctx, "last_due_soon_notified_at", tenantID, id, at)
 }
@@ -315,12 +348,13 @@ func scanTask(row pgx.Row) (*domain.Task, error) {
 		assignee, before, reason  *string
 		due, remind, completed    *time.Time
 		archived, dueSoon, overdu *time.Time
+		unblocked                 *time.Time
 		agentMeta                 []byte
 	)
 	err := row.Scan(&t.ID, &t.TenantID, &t.WorkspaceID, &t.Title, &t.Description, &status, &priority,
 		&t.CreatorID, &assignee, &t.Labels, &t.Metadata, &due, &remind, &completed, &archived,
 		&dueSoon, &overdu, &before, &reason, &t.Version, &t.CreatedAt, &t.UpdatedAt, &t.ParentID,
-		&t.EstimatedMinutes, &agentMeta)
+		&t.EstimatedMinutes, &agentMeta, &unblocked)
 	if err != nil {
 		return nil, err
 	}
@@ -342,6 +376,7 @@ func scanTask(row pgx.Row) (*domain.Task, error) {
 	}
 	t.DueAt, t.RemindAt, t.CompletedAt, t.ArchivedAt = utc(due), utc(remind), utc(completed), utc(archived)
 	t.LastDueSoonNotifiedAt, t.LastOverdueNotifiedAt = utc(dueSoon), utc(overdu)
+	t.UnblockedAt = utc(unblocked)
 	t.CreatedAt, t.UpdatedAt = t.CreatedAt.UTC(), t.UpdatedAt.UTC()
 	if t.Labels == nil {
 		t.Labels = []string{}
@@ -404,6 +439,16 @@ func reasonPtr(r *domain.BlockedReason) *string {
 	}
 	v := string(*r)
 	return &v
+}
+
+// CountAssigned is served by idx_tasks_tenant_assignee_status.
+func (r *TaskRepo) CountAssigned(ctx context.Context, tenantID, assigneeID string, status domain.Status, priority domain.Priority) (int, error) {
+	var n int
+	err := r.db.q(ctx).QueryRow(ctx, `
+		SELECT count(*) FROM tasks
+		WHERE tenant_id = $1 AND assignee_id = $2 AND status = $3::text::task_status AND priority = $4::text::task_priority`,
+		tenantID, assigneeID, string(status), string(priority)).Scan(&n)
+	return n, mapErr(err)
 }
 
 func (r *TaskRepo) WorkspaceLabels(ctx context.Context, tenantID, workspaceID string, limit int) ([]string, error) {

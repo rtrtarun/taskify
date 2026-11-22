@@ -54,6 +54,31 @@ type Event struct {
 	Job *JobRef
 	// Escalation is set for task.escalated.
 	Escalation *Escalation
+	// Deferred holds the notification for the recipient's digest: the load
+	// gatekeeper sets it on an assignment to an overloaded assignee (M10-01,
+	// G14). Only a Deferrable event is deferred.
+	Deferred bool
+}
+
+// Digest routing (decision 5, feature A4).
+const (
+	// ChannelDigest, alone in channels, delivers a notification only in the
+	// recipient's digest.
+	ChannelDigest = "digest"
+	// DeferredDigestSummary is the digest line of a deferred notification.
+	DeferredDigestSummary = "Deferred to avoid context switching"
+)
+
+// Deferrable reports whether the load gatekeeper may hold this event's
+// notification for the digest: an assignment (task.created with an
+// assignee, which stands for the assignment since D1, or task.assigned)
+// that notifies the assignee and would not bypass the digest anyway. A
+// critical task keeps bypassDigest and is never deferred.
+func (e Event) Deferrable() bool {
+	if e.Type != EventTaskCreated && e.Type != EventTaskAssigned {
+		return false
+	}
+	return e.Task.AssigneeID != "" && len(e.Recipients()) > 0 && !e.bypassDigest()
 }
 
 func (t *Task) event(eventType string, actor Actor, at time.Time) Event {
@@ -190,8 +215,9 @@ type Notification struct {
 	Payload        map[string]any `json:"payload"`
 }
 
-// immediateChannels is used with bypassDigest. Otherwise channels are left
-// to AgentPulse's rules and preferences.
+// immediateChannels is used with bypassDigest, and ChannelDigest alone for a
+// deferred notification. Otherwise channels are left to AgentPulse's rules
+// and preferences.
 var immediateChannels = []string{"slack", "email", "in_app"}
 
 // Notifications builds one /notify request per recipient. publicBaseURL is
@@ -216,8 +242,12 @@ func (e Event) Notifications(publicBaseURL string) []Notification {
 			PriorityHint:   e.priorityHint(),
 			Payload:        payload,
 		}
-		if e.bypassDigest() {
+		switch {
+		case e.bypassDigest():
 			n.Channels = slices.Clone(immediateChannels)
+		case e.Deferred && e.Deferrable():
+			n.Channels = []string{ChannelDigest}
+			payload["digestSummary"] = DeferredDigestSummary
 		}
 		out = append(out, n)
 	}

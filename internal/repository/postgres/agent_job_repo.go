@@ -122,6 +122,23 @@ func (r *AgentJobRepo) ListForTask(ctx context.Context, tenantID string, taskID 
 		WHERE tenant_id = $1 AND task_id = $2 ORDER BY created_at, id`, tenantID, taskID)
 }
 
+func (r *AgentJobRepo) ListAwaitingApproval(ctx context.Context, tenantID, userID string) ([]*domain.AgentJob, error) {
+	return r.query(ctx, `SELECT `+jobColumns+` FROM agent_jobs
+		WHERE tenant_id = $1 AND status = 'awaiting_approval'
+		  AND task_id IN (SELECT id FROM tasks WHERE tenant_id = $1 AND COALESCE(assignee_id, creator_id) = $2)
+		ORDER BY created_at, id`, tenantID, userID)
+}
+
+// LatestBrief names agent_type as a literal so the planner can use the
+// partial index idx_agent_jobs_brief.
+func (r *AgentJobRepo) LatestBrief(ctx context.Context, tenantID, userID string) (*domain.AgentJob, error) {
+	return r.one(ctx, `SELECT `+jobColumns+` FROM agent_jobs
+		WHERE tenant_id = $1 AND agent_type = 'digest' AND input_context->>'user_id' = $2
+		  AND status = 'completed' AND execution_result ? 'report'
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1`, tenantID, userID)
+}
+
 func (r *AgentJobRepo) InsertRun(ctx context.Context, run domain.AgentRun) error {
 	_, err := r.db.q(ctx).Exec(ctx, `
 		INSERT INTO agent_run_history (id, job_id, turn, model, tool_name, tool_args, tool_result, outcome,

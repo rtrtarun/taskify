@@ -77,6 +77,7 @@ func normalizeTimes(t *domain.Task) {
 	t.DueAt, t.RemindAt = microPtr(t.DueAt), microPtr(t.RemindAt)
 	t.CompletedAt, t.ArchivedAt = microPtr(t.CompletedAt), microPtr(t.ArchivedAt)
 	t.LastDueSoonNotifiedAt, t.LastOverdueNotifiedAt = microPtr(t.LastDueSoonNotifiedAt), microPtr(t.LastOverdueNotifiedAt)
+	t.UnblockedAt = microPtr(t.UnblockedAt)
 	slices.Sort(t.Watchers)
 }
 
@@ -399,6 +400,48 @@ func (r *TaskRepo) ClaimStale(ctx context.Context, staleBefore, now time.Time, l
 	return out, nil
 }
 
+func (r *TaskRepo) ListBriefRecipients(ctx context.Context, day time.Time, limit int) ([]domain.BriefRecipient, error) {
+	type who struct{ tenant, user string }
+	first := map[who]string{} // the first allowed workspace by ID
+	err := r.st.do(ctx, func(s *state) error {
+		add := func(t *domain.Task, user string) {
+			w, ok := s.workspaces[wsKey{t.TenantID, t.WorkspaceID}]
+			if user == "" || !ok || !w.AgentSettings.Allows(domain.AgentDigest) {
+				return
+			}
+			if _, queued := s.jobKeys[domain.BriefJobDedupKey(t.TenantID, user, day)]; queued {
+				return
+			}
+			k := who{t.TenantID, user}
+			if cur, seen := first[k]; !seen || t.WorkspaceID < cur {
+				first[k] = t.WorkspaceID
+			}
+		}
+		for _, t := range s.tasks {
+			if t.Status == domain.StatusTodo || t.Status == domain.StatusInProgress {
+				add(t, t.AssigneeID)
+			}
+		}
+		for _, j := range s.jobs {
+			if j.Status != domain.JobAwaitingApproval || j.TaskID == nil {
+				continue
+			}
+			if t := s.tasks[*j.TaskID]; t != nil {
+				add(t, t.Owner())
+			}
+		}
+		return nil
+	})
+	out := make([]domain.BriefRecipient, 0, len(first))
+	for k, ws := range first {
+		out = append(out, domain.BriefRecipient{TenantID: k.tenant, UserID: k.user, WorkspaceID: ws})
+	}
+	slices.SortFunc(out, func(a, b domain.BriefRecipient) int {
+		return cmp.Or(strings.Compare(a.TenantID, b.TenantID), strings.Compare(a.UserID, b.UserID))
+	})
+	return out[:min(limit, len(out))], err
+}
+
 func (r *TaskRepo) MarkDueSoonNotified(ctx context.Context, tenantID string, id uuid.UUID, at time.Time) error {
 	return r.mark(ctx, tenantID, id, func(t *domain.Task) { t.LastDueSoonNotifiedAt = microPtr(&at) })
 }
@@ -626,6 +669,18 @@ func (r *OutboxRepo) CountByStatus(ctx context.Context, status domain.OutboxStat
 	err = r.st.do(ctx, func(s *state) error {
 		for _, e := range s.outbox {
 			if e.Status == status {
+				n++
+			}
+		}
+		return nil
+	})
+	return n, err
+}
+
+func (r *TaskRepo) CountAssigned(ctx context.Context, tenantID, assigneeID string, status domain.Status, priority domain.Priority) (n int, err error) {
+	err = r.st.do(ctx, func(s *state) error {
+		for _, t := range s.tasks {
+			if t.TenantID == tenantID && t.AssigneeID == assigneeID && t.Status == status && t.Priority == priority {
 				n++
 			}
 		}

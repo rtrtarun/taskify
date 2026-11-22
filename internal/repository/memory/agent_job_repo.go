@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -163,6 +164,52 @@ func (r *AgentJobRepo) ListForTask(ctx context.Context, tenantID string, taskID 
 	})
 	sortJobs(out)
 	return out, err
+}
+
+func (r *AgentJobRepo) ListAwaitingApproval(ctx context.Context, tenantID, userID string) ([]*domain.AgentJob, error) {
+	out := []*domain.AgentJob{}
+	err := r.st.do(ctx, func(s *state) error {
+		for _, j := range s.jobs {
+			if j.TenantID != tenantID || j.Status != domain.JobAwaitingApproval || j.TaskID == nil {
+				continue
+			}
+			if t := s.tasks[*j.TaskID]; t != nil && t.TenantID == tenantID && t.Owner() == userID {
+				out = append(out, copyJob(j))
+			}
+		}
+		return nil
+	})
+	sortJobs(out)
+	return out, err
+}
+
+func (r *AgentJobRepo) LatestBrief(ctx context.Context, tenantID, userID string) (*domain.AgentJob, error) {
+	var briefs []*domain.AgentJob
+	err := r.st.do(ctx, func(s *state) error {
+		for _, j := range s.jobs {
+			if j.TenantID != tenantID || j.AgentType != domain.AgentDigest || j.Status != domain.JobCompleted {
+				continue
+			}
+			var in struct {
+				UserID string `json:"user_id"`
+			}
+			var res map[string]json.RawMessage
+			if json.Unmarshal(j.InputContext, &in) != nil || in.UserID != userID ||
+				json.Unmarshal(j.ExecutionResult, &res) != nil || res["report"] == nil {
+				continue
+			}
+			briefs = append(briefs, copyJob(j))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(briefs) == 0 {
+		return nil, domain.ErrNotFound
+	}
+	sortJobs(briefs)
+	return briefs[len(briefs)-1], nil
 }
 
 func (r *AgentJobRepo) InsertRun(ctx context.Context, run domain.AgentRun) error {
