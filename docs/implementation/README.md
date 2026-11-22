@@ -52,7 +52,7 @@ These block specific tasks. Everything else can proceed without them.
 
 | # | Action | Blocks | Until then |
 | --- | --- | --- | --- |
-| O1 | Give access to the AgentPulse repository or SDK so its contract can be read (task M0-07) | Final sign-off of M2, M3, M10, M11, M14 notification feed | Work proceeds against the mock AgentPulse built in M0-06. All AgentPulse field names stay inside `internal/agentpulse`, so a correction touches one package. |
+| O1 | Give access to the AgentPulse repository or SDK so its contract can be read (task M0-07) | Final sign-off of M2, M3, M10, M11, M14 notification feed | Work proceeds against the mock AgentPulse built in M0-06. All AgentPulse field names stay inside `internal/agentpulse`, so a correction touches one package. **2026-11-22:** the real contract was read and does not match section 5.5; the owner chose to extend AgentPulse to Taskify's design (option B). The mock is the specification AgentPulse must meet: see [blockers.md](../blockers.md). |
 | O2 | Choose the identity provider that issues JWTs (default G17) | `taskctl login` (M13-02), frontend sign-in (M14-03) | Development uses locally minted HS256 tokens from `make dev-token`. |
 | O3 | Reserve `taskify-sdk` on the public Python index (decision 26) | Nothing | Not needed until v1.0. |
 
