@@ -170,6 +170,24 @@ func (s *TaskService) RestoreTask(ctx context.Context, actor domain.Actor, tenan
 	})
 }
 
+// UnblockTask moves a blocked task to in_progress, as when the owner of a
+// blocking task clicks "Unblock and set In Progress" on an escalation
+// (M9-04). A manual block and a dependency block are both lifted: the person
+// decided the task can go ahead. A task already in progress is left alone,
+// so a repeated click is harmless; any other status is an invalid
+// transition. It is the person's change and notifies as one.
+func (s *TaskService) UnblockTask(ctx context.Context, actor domain.Actor, tenantID string, id uuid.UUID) (*domain.Task, error) {
+	return s.mutate(ctx, tenantID, id, nil, func(t *domain.Task, now time.Time) ([]domain.Event, error) {
+		switch t.Status {
+		case domain.StatusInProgress:
+			return nil, nil
+		case domain.StatusBlocked:
+			return t.TransitionTo(domain.StatusInProgress, actor, now)
+		}
+		return nil, &domain.TransitionError{From: t.Status, To: domain.StatusInProgress}
+	})
+}
+
 // SnoozeTask moves the task's reminder to now plus d, as when a user clicks
 // "Snooze 2h" in a notification. It raises no event.
 func (s *TaskService) SnoozeTask(ctx context.Context, actor domain.Actor, tenantID string, id uuid.UUID, d time.Duration) (*domain.Task, error) {

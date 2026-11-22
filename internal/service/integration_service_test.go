@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -236,6 +237,47 @@ func TestWebhookComplete(t *testing.T) {
 		}
 		if len(it.mock.Feedback()) != 1 {
 			t.Error("a replay forwarded feedback again")
+		}
+	})
+}
+
+func TestWebhookUnblock(t *testing.T) {
+	eachIntegration(t, func(t *testing.T, it *integration) {
+		// A manual block and a dependency block are both lifted.
+		manual := it.create(t, nil)
+		it.setStatus(t, manual, domain.StatusBlocked)
+		dependent := it.create(t, nil)
+		it.link(t, dependent, it.unassigned(t, "Open blocker"))
+		for i, task := range []*domain.Task{manual, dependent} {
+			before := it.get(t, task.ID)
+			if before.Status != domain.StatusBlocked {
+				t.Fatalf("setup: %s", before.Status)
+			}
+			cb := Callback{Key: "sig-u" + strconv.Itoa(i), Action: ActionUnblock, TenantID: tenant, UserID: "usr_dave", TaskID: task.ID, NotificationID: "ntf_u"}
+			if dup, err := it.webhooks.Handle(ctx, cb); err != nil || dup {
+				t.Fatalf("Handle = %v, %v", dup, err)
+			}
+			after := it.get(t, task.ID)
+			if after.Status != domain.StatusInProgress || after.BlockedReason != nil || after.Version != before.Version+1 {
+				t.Errorf("after unblock: %s %v v%d", after.Status, after.BlockedReason, after.Version)
+			}
+			// Repeated with a new signature: already in progress, no change.
+			cb.Key += "-again"
+			if _, err := it.webhooks.Handle(ctx, cb); err != nil {
+				t.Errorf("second click: %v", err)
+			}
+			if again := it.get(t, task.ID); again.Version != after.Version {
+				t.Error("a second click changed the task")
+			}
+		}
+		if fb := it.mock.Feedback(); len(fb) != 4 || fb[0]["signal"] != "acted" || fb[0]["userId"] != "usr_dave" {
+			t.Errorf("feedback = %v", fb)
+		}
+		// A todo task is not blocked: refused, and nothing is recorded.
+		todo := it.create(t, nil)
+		cb := Callback{Key: "sig-todo", Action: ActionUnblock, TenantID: tenant, UserID: "usr_dave", TaskID: todo.ID}
+		if _, err := it.webhooks.Handle(ctx, cb); !errors.Is(err, domain.ErrInvalidStateTransition) {
+			t.Errorf("unblock a todo task: %v", err)
 		}
 	})
 }

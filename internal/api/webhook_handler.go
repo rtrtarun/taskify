@@ -43,8 +43,8 @@ type webhookBody struct {
 	Action         string `json:"action"`
 	TenantID       string `json:"tenantId"`
 	UserID         string `json:"userId"`
-	TaskID         string `json:"taskId"`
-	JobID          string `json:"jobId"` // approve and reject
+	TaskID         string `json:"taskId"` // complete, snooze, and unblock
+	JobID          string `json:"jobId"`  // approve and reject
 	NotificationID string `json:"notificationId"`
 	Duration       string `json:"duration"`
 }

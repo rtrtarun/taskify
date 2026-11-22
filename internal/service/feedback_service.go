@@ -113,6 +113,9 @@ func ParseSignal(signal, duration string) (time.Duration, error) {
 const (
 	ActionComplete = "complete"
 	ActionSnooze   = "snooze"
+	// ActionUnblock moves a blocked task to in_progress, from a blocker
+	// escalation.
+	ActionUnblock = domain.ActionUnblock
 	// ActionApprove and ActionReject decide an agent job's proposals.
 	ActionApprove = "approve"
 	ActionReject  = "reject"
@@ -178,7 +181,7 @@ func (s *WebhookService) Handle(ctx context.Context, cb Callback) (duplicate boo
 	var signal string
 	var snooze time.Duration
 	switch cb.Action {
-	case ActionComplete:
+	case ActionComplete, ActionUnblock:
 		signal = SignalActed
 	case ActionSnooze:
 		signal = SignalSnoozed
@@ -199,9 +202,12 @@ func (s *WebhookService) Handle(ctx context.Context, cb Callback) (duplicate boo
 			duplicate = true
 			return nil
 		}
-		if cb.Action == ActionComplete {
+		switch cb.Action {
+		case ActionComplete:
 			_, err = s.tasks.CompleteTask(ctx, actor, cb.TenantID, cb.TaskID, nil)
-		} else {
+		case ActionUnblock:
+			_, err = s.tasks.UnblockTask(ctx, actor, cb.TenantID, cb.TaskID)
+		default:
 			_, err = s.tasks.SnoozeTask(ctx, actor, cb.TenantID, cb.TaskID, snooze)
 		}
 		return err

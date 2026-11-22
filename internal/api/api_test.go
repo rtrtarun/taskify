@@ -703,6 +703,49 @@ func TestWebhook(t *testing.T) {
 	}
 }
 
+// TestWebhookUnblock is the M9 exit criterion "clicking the unblock action
+// moves the task to in_progress through the webhook path" (M9-04).
+func TestWebhookUnblock(t *testing.T) {
+	e := newEnv(t)
+	task := e.createTask(nil)
+	id := task["id"].(string)
+	if r := e.do(req{method: "PATCH", path: "/api/v1/tasks/" + id, body: map[string]any{"version": 1, "status": "blocked"}}); r.status != 200 {
+		t.Fatalf("block: %d %s", r.status, r.raw)
+	}
+	now := e.now.Unix()
+	body := map[string]any{"action": "unblock", "tenantId": tenant, "userId": "usr_dave", "taskId": id, "notificationId": "ntf_esc"}
+	if r := e.webhook(body, now, ""); r.status != 200 || r.json["status"] != "applied" {
+		t.Fatalf("unblock callback: %d %s", r.status, r.raw)
+	}
+	got := e.do(req{method: "GET", path: "/api/v1/tasks/" + id})
+	if got.json["status"] != "in_progress" || got.json["blocked_reason"] != nil {
+		t.Errorf("task after unblock = %v, %v", got.json["status"], got.json["blocked_reason"])
+	}
+	fb := e.mock.Feedback()
+	if len(fb) != 1 || fb[0]["signal"] != "acted" || fb[0]["userId"] != "usr_dave" || fb[0]["notificationId"] != "ntf_esc" {
+		t.Errorf("feedback = %v", fb)
+	}
+	if r := e.webhook(body, now, ""); r.status != 200 || r.json["status"] != "duplicate" {
+		t.Errorf("replay: %d %s", r.status, r.raw)
+	}
+	// A second click, signed anew, finds the task in progress and changes nothing.
+	if r := e.webhook(body, now+1, ""); r.status != 200 {
+		t.Errorf("second click: %d %s", r.status, r.raw)
+	}
+	if again := e.do(req{method: "GET", path: "/api/v1/tasks/" + id}); again.json["version"] != got.json["version"] {
+		t.Errorf("second click moved the version to %v", again.json["version"])
+	}
+	// A completed task cannot be unblocked.
+	done := e.createTask(nil)
+	doneID := done["id"].(string)
+	if r := e.webhook(map[string]any{"action": "complete", "tenantId": tenant, "userId": "usr_carol", "taskId": doneID}, now, ""); r.status != 200 {
+		t.Fatalf("complete: %d %s", r.status, r.raw)
+	}
+	if r := e.webhook(map[string]any{"action": "unblock", "tenantId": tenant, "userId": "usr_carol", "taskId": doneID}, now, ""); r.status != 422 {
+		t.Errorf("unblock a completed task: %d %s", r.status, r.raw)
+	}
+}
+
 // --- workspaces and learning ----------------------------------------------
 
 func TestAdminRoutesNeedAdmin(t *testing.T) {
