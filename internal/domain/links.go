@@ -14,8 +14,9 @@ type Links struct {
 	// App is the web app's address (APP_BASE_URL), or empty when it is not
 	// set. With it, every notification about a task carries
 	// actionUrls.view {App}/tasks/{id}, and the morning brief's view opens
-	// {App}/brief. Without it, task notifications carry no view link, and
-	// approvals, escalations, and the brief keep their links to the API.
+	// {App}/brief. Without it, no notification carries a view link: a view
+	// link is a plain link a person opens in a browser, and every API URL
+	// needs a bearer token such a click cannot carry (D50).
 	App string
 }
 
@@ -37,20 +38,11 @@ func (l Links) jobAPI(id uuid.UUID) string {
 	return fmt.Sprintf("%s/api/v1/agent-jobs/%s", l.API, id)
 }
 
-// taskOrAPI is the app's page for a task, or its API URL without the app:
-// where a person following a link about the task is sent.
-func (l Links) taskOrAPI(id uuid.UUID) string {
-	if v := l.TaskView(id); v != "" {
-		return v
-	}
-	return l.taskAPI(id)
-}
-
 // BriefView is where the morning brief's view link goes: the app's brief
-// page, or, without the app, the brief endpoint (GET /api/v1/me/brief).
+// page, or "" when App is not set.
 func (l Links) BriefView() string {
-	if l.App != "" {
-		return l.App + "/brief"
+	if l.App == "" {
+		return ""
 	}
-	return l.API + "/api/v1/me/brief"
+	return l.App + "/brief"
 }

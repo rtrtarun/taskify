@@ -366,17 +366,16 @@ func (e Event) payload(links Links) map[string]any {
 		p["jobId"] = j.ID.String()
 		p["agentType"] = j.AgentType
 		p["proposedTools"] = append([]string{}, j.Tools...)
-		// view opens the task in the web app, or, without it, the job in
-		// the API as before AP-10.
-		jobView := view
-		if jobView == "" {
-			jobView = jobURL
-		}
-		p["actionUrls"] = map[string]string{
+		// view opens the task in the web app, and is left out without it:
+		// the job's API URL needs a bearer token a click cannot carry (D50).
+		approval := map[string]string{
 			ActionApprove: jobURL + "/apply",
 			ActionReject:  jobURL + "/dismiss",
-			ActionView:    jobView,
 		}
+		if view != "" {
+			approval[ActionView] = view
+		}
+		p["actionUrls"] = approval
 	}
 	if x := e.Escalation; x != nil {
 		p["jobId"] = x.JobID.String()
@@ -386,15 +385,23 @@ func (e Event) payload(links Links) map[string]any {
 			blocking[i] = map[string]any{"taskId": b.ID.String(), "title": b.Title, "status": string(b.Status)}
 		}
 		p["blockingTasks"] = blocking
-		// view opens the escalated task: in the web app, or, without it, in
-		// the API as before AP-10.
-		escalation := map[string]string{ActionView: links.taskOrAPI(t.ID)}
+		// view opens the escalated task in the web app, and is left out
+		// without it (D50). An escalation about a task that is not blocked
+		// then carries no actionUrls at all.
+		escalation := map[string]string{}
+		if view != "" {
+			escalation[ActionView] = view
+		}
 		if t.Status == StatusBlocked {
 			// The click reaches the webhook as action "unblock" for taskId.
 			escalation[ActionUnblock] = taskURL
 			p["actionLabels"] = map[string]string{ActionUnblock: ActionUnblockLabel}
 		}
-		p["actionUrls"] = escalation
+		if len(escalation) > 0 {
+			p["actionUrls"] = escalation
+		} else {
+			delete(p, "actionUrls")
+		}
 	}
 	if e.bypassDigest() {
 		p["bypassDigest"] = true

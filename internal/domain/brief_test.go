@@ -252,8 +252,10 @@ func TestMorningBrief(t *testing.T) {
 			len(p["pendingApprovals"].([]any)) != BriefListMax || len(p["unblockedTasks"].([]any)) != 1 {
 			t.Errorf("payload = %v", p)
 		}
-		if urls := p["actionUrls"].(map[string]any); urls["view"] != baseURL+"/api/v1/me/brief" {
-			t.Errorf("actionUrls = %v", urls)
+		// D50: without APP_BASE_URL there is no brief page, and the brief
+		// endpoint needs a token a click cannot carry: no actionUrls.
+		if urls, ok := p["actionUrls"]; ok {
+			t.Errorf("actionUrls without the app = %v", urls)
 		}
 		var keys []string
 		var walk func(v any)
@@ -277,8 +279,9 @@ func TestMorningBrief(t *testing.T) {
 			}
 		}
 		first, approval := p["topItems"].([]any)[0].(map[string]any), p["pendingApprovals"].([]any)[0].(map[string]any)
-		if first["url"] != baseURL+"/api/v1/tasks/"+overdue.ID.String() ||
-			approval["url"] != baseURL+"/api/v1/agent-jobs/"+approval["jobId"].(string) {
+		_, firstURL := first["url"]
+		_, approvalURL := approval["url"]
+		if firstURL || approvalURL {
 			t.Errorf("item urls without the app: %v, %v", first["url"], approval["url"])
 		}
 	})

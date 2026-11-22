@@ -1113,7 +1113,7 @@ All payload keys are camelCase. `bypass_digest` is a legacy spelling: the serial
 | `approve` | `approve` | `jobId` | Approve | `agent.approval_requested` |
 | `reject` | `reject` | `jobId` | Reject | `agent.approval_requested` |
 | `unblock` | `unblock` | `taskId` | Unblock and set In Progress | `task.escalated` while the task is blocked |
-| `view` | none, a plain link | | View | With `APP_BASE_URL`, every notification about a task, to `{APP_BASE_URL}/tasks/{id}`, and `digest.morning_brief`, to `{APP_BASE_URL}/brief`. Without it, approvals (the job's API URL), escalations (the task's API URL), and the brief (`/api/v1/me/brief`) only (AP-10, D50) |
+| `view` | none, a plain link | | View | With `APP_BASE_URL`, every notification about a task, to `{APP_BASE_URL}/tasks/{id}`, and `digest.morning_brief`, to `{APP_BASE_URL}/brief`. Without it, no notification: an API URL needs a bearer token that a click cannot carry (AP-10, D50) |
 
 **Rules.** `matchAny` is native: a rule applies when any entry matches. A rule may set `attentionClass` (`critical`, `standard`, `background`); a critical rule needs a real condition, event types or payload values, in every entry. AgentPulse runs its own locked critical rules first, then the tenant's rules, then defaults to `standard`. Each workspace gets three default rules, scoped by `payload.workspaceId`: `critical-or-blocked` (critical, `bypassDigest`, matching `priority: p1_critical`, `status: blocked` with `blockedReason: manual`, or `eventTypes: ["task.escalated"]`), `assignments-and-mentions`, and `low-priority-digest`.
 
@@ -1214,7 +1214,7 @@ Reasoning loop limits: 30-second timeout per model call; retry with exponential 
 | `PORT` | `8080` | HTTP listen port |
 | `DATABASE_URL` | required | PostgreSQL connection string |
 | `PUBLIC_BASE_URL` | required | Base for `actionUrls` in notifications |
-| `APP_BASE_URL` | none | The web app's address. When set, every notification about a task carries `actionUrls.view` `{APP_BASE_URL}/tasks/{id}`, and the morning brief `{APP_BASE_URL}/brief`; unset, task notifications carry no view link (AP-10) |
+| `APP_BASE_URL` | none | The web app's address. When set, every notification about a task carries `actionUrls.view` `{APP_BASE_URL}/tasks/{id}`, and the morning brief `{APP_BASE_URL}/brief`; unset, no notification carries a view link (AP-10, D50) |
 | `AGENTPULSE_BASE_URL` | required | AgentPulse API |
 | `AGENTPULSE_API_KEY` | required | Outbound authentication |
 | `AGENTPULSE_WEBHOOK_SECRET` | required | HMAC key for inbound webhooks |
