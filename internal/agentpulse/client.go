@@ -178,13 +178,28 @@ func (c *Client) RecordFeedback(ctx context.Context, fb Feedback) error {
 // set) and every PayloadMatch key equals the payload's value. MatchAny is how
 // Taskify expresses the "A or B" conditions of its default rules; AgentPulse
 // supports it natively.
+//
+// AttentionClass, when set, is the class a matching notification gets.
+// AgentPulse runs its own locked critical rules first, then the tenant's
+// rules, then defaults to standard. A critical rule needs a real condition,
+// event types or payload values, in every entry. BypassDigest keeps an item
+// out of the digest but never makes it critical: only AttentionCritical lets
+// it through quiet hours.
 type Rule struct {
-	TenantID     string      `json:"tenantId"`
-	Name         string      `json:"name"`
-	MatchAny     []RuleMatch `json:"matchAny"`
-	Channels     []string    `json:"channels"`
-	BypassDigest bool        `json:"bypassDigest,omitempty"`
+	TenantID       string      `json:"tenantId"`
+	Name           string      `json:"name"`
+	AttentionClass string      `json:"attentionClass,omitempty"`
+	MatchAny       []RuleMatch `json:"matchAny"`
+	Channels       []string    `json:"channels"`
+	BypassDigest   bool        `json:"bypassDigest,omitempty"`
 }
+
+// Attention classes a Rule may set.
+const (
+	AttentionCritical   = "critical"
+	AttentionStandard   = "standard"
+	AttentionBackground = "background"
+)
 
 // RuleMatch is one condition of a Rule.
 type RuleMatch struct {

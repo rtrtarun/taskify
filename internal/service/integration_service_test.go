@@ -69,12 +69,29 @@ func TestWorkspaceCreateBootstrapsRules(t *testing.T) {
 		if len(sent) != 3 {
 			t.Fatalf("AgentPulse received %d rules, want 3", len(sent))
 		}
-		for _, r := range sent {
-			for _, m := range r["matchAny"].([]any) {
-				pm := m.(map[string]any)["payloadMatch"].(map[string]any)
-				if pm["workspaceId"] != "ws_new" {
-					t.Errorf("rule %v is not scoped to the workspace", r["name"])
-				}
+		// The exact bodies (AP-03). The critical rule makes p1_critical tasks,
+		// manual blocks, and escalations critical, each entry with a real
+		// condition besides the workspace.
+		want := []string{
+			`{"tenantId":"tenant_acme","name":"taskify:ws_new:critical-or-blocked","attentionClass":"critical","matchAny":[` +
+				`{"payloadMatch":{"priority":"p1_critical","workspaceId":"ws_new"}},` +
+				`{"payloadMatch":{"blockedReason":"manual","status":"blocked","workspaceId":"ws_new"}},` +
+				`{"eventTypes":["task.escalated"],"payloadMatch":{"workspaceId":"ws_new"}}],` +
+				`"channels":["slack","email","in_app"],"bypassDigest":true}`,
+			`{"tenantId":"tenant_acme","name":"taskify:ws_new:assignments-and-mentions","matchAny":[` +
+				`{"eventTypes":["task.assigned"],"payloadMatch":{"workspaceId":"ws_new"}},` +
+				`{"eventTypes":["task.comment_added"],"payloadMatch":{"isMentioned":true,"workspaceId":"ws_new"}}],` +
+				`"channels":["in_app","email"]}`,
+			`{"tenantId":"tenant_acme","name":"taskify:ws_new:low-priority-digest","matchAny":[` +
+				`{"payloadMatch":{"priority":"p4_low","workspaceId":"ws_new"}}],"channels":["digest"]}`,
+		}
+		reqs := it.mock.RequestsTo("POST", "/v1/rules")
+		if len(reqs) != len(want) {
+			t.Fatalf("POST /v1/rules requests = %d, want %d", len(reqs), len(want))
+		}
+		for i, r := range reqs {
+			if string(r.Body) != want[i] {
+				t.Errorf("rule %d body:\n got %s\nwant %s", i, r.Body, want[i])
 			}
 		}
 
