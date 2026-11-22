@@ -34,21 +34,6 @@ func (ReassignTask) Description() string {
 	return "Propose giving a task to another person, with your reasoning. A person approves it first."
 }
 
-func (ReassignTask) Parameters() json.RawMessage {
-	return json.RawMessage(`{
-		"type": "object",
-		"properties": {
-			"task_id": {"type": "string", "format": "uuid", "description": "The task to reassign."},
-			"assignee_id": {"type": "string", "minLength": 1, "maxLength": 128,
-				"description": "The user ID of the new assignee."},
-			"reasoning": {"type": "string", "minLength": 1, "maxLength": 1000,
-				"description": "Why this person, in one or two sentences."}
-		},
-		"required": ["task_id", "assignee_id", "reasoning"],
-		"additionalProperties": false
-	}`)
-}
-
 func (ReassignTask) Tier(json.RawMessage) domain.SafetyTier { return domain.Tier2 }
 
 // Execute applies an approved reassignment.

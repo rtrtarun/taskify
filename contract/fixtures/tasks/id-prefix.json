@@ -1,0 +1,11 @@
+{
+  "description": "id_prefix selects tasks by the start of their ID, so a client can accept a short ID.",
+  "rules": ["R9.2"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Short ID"}}, "expect": {"status": 201}, "capture": {"task": "id"}},
+    {"name": "whole ID", "request": {"method": "GET", "path": "/api/v1/tasks?id_prefix={{task}}"},
+      "expect": {"status": 200, "body": {"tasks": [{"id": "{{task}}"}]}}},
+    {"name": "not a prefix of an ID", "request": {"method": "GET", "path": "/api/v1/tasks?id_prefix=xyz"},
+      "expect": {"status": 422, "error_code": "validation_failed"}}
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "description": "A callback whose timestamp is more than 5 minutes from now is refused, however well signed.",
+  "rules": ["R8.2"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Old news"}}, "expect": {"status": 201}, "capture": {"task": "id"}},
+    {"name": "too old", "webhook": {"timestamp_offset_seconds": -400, "body": {"action": "complete", "tenantId": "{{tenant}}", "userId": "usr_bob", "taskId": "{{task}}"}},
+      "expect": {"status": 401, "error_code": "unauthorized"}},
+    {"name": "from the future", "webhook": {"timestamp_offset_seconds": 400, "body": {"action": "complete", "tenantId": "{{tenant}}", "userId": "usr_bob", "taskId": "{{task}}"}},
+      "expect": {"status": 401, "error_code": "unauthorized"}},
+    {"name": "unchanged", "request": {"method": "GET", "path": "/api/v1/tasks/{{task}}"}, "expect": {"status": 200, "body": {"status": "todo"}}}
+  ]
+}

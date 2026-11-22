@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "contact.update",
+  "description": "A person's whole contact, which the outbox relay sends to AgentPulse's PUT /v1/tenants/{tenantId}/users/{userId}/contact (D46). The tenant is the outbox row's. A null field is unset.",
+  "type": "object",
+  "properties": {
+    "userId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "email": {"type": ["string", "null"]},
+    "slackUserId": {"type": ["string", "null"]},
+    "phone": {"type": ["string", "null"]}
+  },
+  "required": ["userId", "email", "slackUserId", "phone"],
+  "additionalProperties": false
+}

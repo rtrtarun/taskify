@@ -1,0 +1,19 @@
+{
+  "description": "A comment notifies the assignee, the watchers, and the people it mentions, who are told so; its key holds the comment's ID.",
+  "rules": ["R5.1", "R5.2", "R5.6"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Discuss", "assignee_id": "usr_carol"}},
+      "expect": {"status": 201}, "capture": {"task": "id"}},
+    {"request": {"method": "POST", "path": "/api/v1/tasks/{{task}}/comments", "body": {"body": "@usr_erin can you check this?"}},
+      "expect": {"status": 201, "body": {"id": "$uuid", "task_id": "{{task}}", "author_id": "usr_bob", "mentions": ["usr_erin"], "created_at": "$timestamp"}},
+      "capture": {"comment": "id"},
+      "outbox": {"rows": [
+        {"event_type": "task.comment_added", "recipient": "usr_carol", "idempotency_key": "taskify:{{tenant}}:{{task}}:task.comment_added:{{comment}}:usr_carol"},
+        {"event_type": "task.comment_added", "recipient": "usr_erin", "idempotency_key": "taskify:{{tenant}}:{{task}}:task.comment_added:{{comment}}:usr_erin"}]},
+      "agentpulse": {"notifications": [
+        {"userId": "usr_carol", "title": "New comment on: Discuss", "payload": {"commentId": "{{comment}}", "isMentioned": false}},
+        {"userId": "usr_erin", "title": "You were mentioned on: Discuss", "payload": {"commentId": "{{comment}}", "isMentioned": true}}]}},
+    {"name": "an empty comment", "request": {"method": "POST", "path": "/api/v1/tasks/{{task}}/comments", "body": {"body": " "}},
+      "expect": {"status": 422, "error_code": "validation_failed"}}
+  ]
+}

@@ -287,16 +287,20 @@ func (b MorningBrief) IdempotencyKey() string {
 }
 
 // Notification is the brief's /notify request: digest channel only, with
-// the model's text as payload.digestSummary, the text the digest shows. Its
-// view link, and each item's url, open the web app when APP_BASE_URL is
-// set (AP-10), and the API otherwise.
+// the model's text as payload.digestSummary, the text the digest shows.
+// With APP_BASE_URL (AP-10), its view link opens the app's brief page and
+// each listed task and approval carries the url of its task's page. Without
+// it there is no page to open: the brief carries no actionUrls and its items
+// no url, since an API URL needs a bearer token a click cannot carry (D50).
 func (b MorningBrief) Notification(links Links) Notification {
 	tasks := func(list []BriefTask) []map[string]any {
 		out := make([]map[string]any, len(list))
 		for i, t := range list {
 			m := map[string]any{"taskId": t.ID.String(), "title": t.Title, "workspaceId": t.WorkspaceID,
-				"status": string(t.Status), "priority": string(t.Priority), "overdue": t.Overdue,
-				"url": links.taskOrAPI(t.ID)}
+				"status": string(t.Status), "priority": string(t.Priority), "overdue": t.Overdue}
+			if v := links.TaskView(t.ID); v != "" {
+				m["url"] = v
+			}
 			if t.DueAt != nil {
 				m["dueAt"] = t.DueAt.UTC().Format(time.RFC3339)
 			}
@@ -306,9 +310,29 @@ func (b MorningBrief) Notification(links Links) Notification {
 	}
 	approvals := make([]map[string]any, len(b.PendingApprovals))
 	for i, a := range b.PendingApprovals {
-		approvals[i] = map[string]any{"jobId": a.JobID.String(), "agentType": a.AgentType, "taskId": a.TaskID.String(),
-			"taskTitle": a.TaskTitle, "proposedTools": append([]string{}, a.Tools...),
-			"url": approvalLink(links, a)}
+		m := map[string]any{"jobId": a.JobID.String(), "agentType": a.AgentType, "taskId": a.TaskID.String(),
+			"taskTitle": a.TaskTitle, "proposedTools": append([]string{}, a.Tools...)}
+		// The task's page, where the person decides.
+		if v := links.TaskView(a.TaskID); v != "" {
+			m["url"] = v
+		}
+		approvals[i] = m
+	}
+	payload := map[string]any{
+		"jobId":                 b.JobID.String(),
+		"agentType":             AgentDigest,
+		"briefDate":             b.Date,
+		"digestSummary":         b.Text,
+		"topItems":              tasks(b.TopItems),
+		"openTasks":             b.OpenTasks,
+		"pendingApprovals":      approvals,
+		"pendingApprovalsTotal": b.PendingApprovalsTotal,
+		"unblockedTasks":        tasks(b.UnblockedTasks),
+		"unblockedTotal":        b.UnblockedTotal,
+	}
+	if v := links.BriefView(); v != "" {
+		// Not about one task: a plain link only.
+		payload["actionUrls"] = map[string]string{ActionView: v}
 	}
 	return Notification{
 		IdempotencyKey: b.IdempotencyKey(),
@@ -320,28 +344,6 @@ func (b MorningBrief) Notification(links Links) Notification {
 		Body:           b.Text,
 		PriorityHint:   PriorityMedium.Hint(),
 		Channels:       []string{ChannelDigest},
-		Payload: map[string]any{
-			"jobId":                 b.JobID.String(),
-			"agentType":             AgentDigest,
-			"briefDate":             b.Date,
-			"digestSummary":         b.Text,
-			"topItems":              tasks(b.TopItems),
-			"openTasks":             b.OpenTasks,
-			"pendingApprovals":      approvals,
-			"pendingApprovalsTotal": b.PendingApprovalsTotal,
-			"unblockedTasks":        tasks(b.UnblockedTasks),
-			"unblockedTotal":        b.UnblockedTotal,
-			// Not about one task: a plain link only.
-			"actionUrls": map[string]string{ActionView: links.BriefView()},
-		},
+		Payload:        payload,
 	}
-}
-
-// approvalLink is where a pending approval in the brief leads: the task in
-// the web app, where the person decides, or the job in the API without it.
-func approvalLink(links Links, a BriefApproval) string {
-	if v := links.TaskView(a.TaskID); v != "" {
-		return v
-	}
-	return links.jobAPI(a.JobID)
 }

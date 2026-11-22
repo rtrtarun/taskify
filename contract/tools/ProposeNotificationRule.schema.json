@@ -1,0 +1,29 @@
+{
+  "type": "object",
+  "properties": {
+    "pattern_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16,
+      "description": "The pattern_id of one pattern in the facts."
+    },
+    "proposed_adjustment": {
+      "type": "integer",
+      "minimum": -20,
+      "maximum": 20,
+      "description": "The new score adjustment for notifications matching the pattern, from -20 to 20. Negative lowers their score, so they interrupt less; it must differ from the pattern's current_adjustment."
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000,
+      "description": "Why, in one or two sentences an admin can check against the numbers."
+    }
+  },
+  "required": [
+    "pattern_id",
+    "proposed_adjustment",
+    "rationale"
+  ],
+  "additionalProperties": false
+}

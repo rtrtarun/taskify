@@ -1,0 +1,16 @@
+{
+  "description": "Lists come a page at a time with an opaque cursor, most recently updated first, and end with a null cursor.",
+  "rules": ["R9.1"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "One"}}, "expect": {"status": 201}, "capture": {"one": "id"}},
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Two"}}, "expect": {"status": 201}, "capture": {"two": "id"}},
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Three"}}, "expect": {"status": 201}, "capture": {"three": "id"}},
+    {"name": "first page", "request": {"method": "GET", "path": "/api/v1/tasks?limit=2"},
+      "expect": {"status": 200, "body": {"tasks": [{"id": "{{three}}"}, {"id": "{{two}}"}], "next_cursor": "$nonempty"}},
+      "capture": {"cursor": "next_cursor"}},
+    {"name": "last page", "request": {"method": "GET", "path": "/api/v1/tasks?limit=2&cursor={{cursor}}"},
+      "expect": {"status": 200, "body": {"tasks": [{"id": "{{one}}"}], "next_cursor": null}}},
+    {"name": "a bad cursor", "request": {"method": "GET", "path": "/api/v1/tasks?cursor=bm9wZQ"},
+      "expect": {"status": 400, "error_code": "invalid_request"}}
+  ]
+}

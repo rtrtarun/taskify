@@ -1,4 +1,4 @@
-package tools
+package contract
 
 import (
 	"bytes"
@@ -15,9 +15,10 @@ import (
 	"unicode/utf8"
 )
 
-// This file validates tool arguments against a subset of JSON Schema
-// (draft 2020-12), using only the standard library. The subset is the one
-// OpenAI-compatible providers accept for tool parameters:
+// This file validates JSON against a subset of JSON Schema (draft 2020-12),
+// using only the standard library (D22). It checks tool arguments in the
+// tool registry and outbox payloads against contract/events in tests. The
+// subset is the one OpenAI-compatible providers accept for tool parameters:
 //
 //	type, properties, required, additionalProperties (boolean), items,
 //	enum, minItems, maxItems, uniqueItems, minLength, maxLength, minimum,
@@ -25,7 +26,8 @@ import (
 //	description, default, examples, and $schema.
 //
 // A schema using any other keyword, such as $ref or oneOf, is rejected when
-// the tool is registered, so no rule in a schema is ever silently ignored.
+// it is compiled, so no rule in a schema is ever silently ignored. Every
+// schema in contract/tools and contract/events keeps to the subset.
 
 const draft2020 = "https://json-schema.org/draft/2020-12/schema"
 
@@ -37,13 +39,14 @@ var (
 		"minItems", "maxItems", "uniqueItems", "minLength", "maxLength", "minimum", "maximum", "format"}
 )
 
-// schema is a compiled schema node.
-type schema struct {
+// Schema is a compiled schema in the subset above. Its zero value accepts
+// anything; use CompileSchema.
+type Schema struct {
 	types       []string
-	properties  map[string]*schema
+	properties  map[string]*Schema
 	required    []string
 	closed      bool // additionalProperties: false
-	items       *schema
+	items       *Schema
 	enum        []any
 	minItems    *int
 	maxItems    *int
@@ -55,16 +58,16 @@ type schema struct {
 	format      string
 }
 
-// compileSchema parses and checks a tool's parameter schema. The root must
-// be an object schema.
-func compileSchema(raw json.RawMessage) (*schema, error) {
-	doc, err := decodeJSON(raw)
+// CompileSchema parses and checks a schema, such as a tool's parameters or
+// an event's payload. The root must be an object schema.
+func CompileSchema(raw json.RawMessage) (*Schema, error) {
+	doc, err := DecodeJSON(raw)
 	if err != nil {
-		return nil, fmt.Errorf("parameters: %w", err)
+		return nil, fmt.Errorf("schema: %w", err)
 	}
 	obj, ok := doc.(map[string]any)
 	if !ok || obj["type"] != "object" {
-		return nil, errors.New(`parameters must be a schema with "type": "object"`)
+		return nil, errors.New(`a schema must have "type": "object" at its root`)
 	}
 	if v, ok := obj["$schema"]; ok && v != draft2020 {
 		return nil, fmt.Errorf("$schema must be %s", draft2020)
@@ -72,8 +75,8 @@ func compileSchema(raw json.RawMessage) (*schema, error) {
 	return compileNode(obj, "")
 }
 
-func compileNode(obj map[string]any, at string) (*schema, error) {
-	fail := func(format string, a ...any) (*schema, error) {
+func compileNode(obj map[string]any, at string) (*Schema, error) {
+	fail := func(format string, a ...any) (*Schema, error) {
 		return nil, fmt.Errorf("schema at %s: %s", pointer(at), fmt.Sprintf(format, a...))
 	}
 	for k := range obj {
@@ -81,7 +84,7 @@ func compileNode(obj map[string]any, at string) (*schema, error) {
 			return fail("keyword %q is not supported", k)
 		}
 	}
-	s := &schema{}
+	s := &Schema{}
 	var err error
 
 	switch t := obj["type"].(type) {
@@ -110,7 +113,7 @@ func compileNode(obj map[string]any, at string) (*schema, error) {
 		if !ok {
 			return fail("properties must be an object")
 		}
-		s.properties = map[string]*schema{}
+		s.properties = map[string]*Schema{}
 		for name, sub := range props {
 			subObj, ok := sub.(map[string]any)
 			if !ok {
@@ -196,15 +199,16 @@ func compileNode(obj map[string]any, at string) (*schema, error) {
 	return s, nil
 }
 
-// validate returns every violation in v, sorted, or nil.
-func (s *schema) validate(v any) []string {
+// Validate returns every violation in v, sorted, or nil. v is a value
+// DecodeJSON returned: numbers must be json.Number.
+func (s *Schema) Validate(v any) []string {
 	var errs []string
 	s.check(v, "", &errs)
 	sort.Strings(errs)
 	return errs
 }
 
-func (s *schema) check(v any, at string, errs *[]string) {
+func (s *Schema) check(v any, at string, errs *[]string) {
 	add := func(format string, a ...any) {
 		*errs = append(*errs, fmt.Sprintf("at %s: %s", pointer(at), fmt.Sprintf(format, a...)))
 	}
@@ -275,8 +279,8 @@ func (s *schema) check(v any, at string, errs *[]string) {
 	}
 }
 
-// decodeJSON decodes exactly one JSON value, keeping numbers exact.
-func decodeJSON(raw []byte) (any, error) {
+// DecodeJSON decodes exactly one JSON value, keeping numbers exact.
+func DecodeJSON(raw []byte) (any, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var v any

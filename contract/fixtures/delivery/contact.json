@@ -1,0 +1,14 @@
+{
+  "description": "A person's contact is stored and forwarded to AgentPulse through one outbox row per person.",
+  "rules": ["R5.6"],
+  "steps": [
+    {"request": {"method": "PUT", "path": "/api/v1/me/contact", "body": {"email": "bob@example.com", "slack_user_id": "U123ABC"}},
+      "expect": {"status": 200, "body": {"email": "bob@example.com", "slack_user_id": "U123ABC", "phone": null, "updated_at": "$timestamp"}},
+      "outbox": {"rows": [{"event_type": "contact.update", "recipient": "usr_bob", "status": "dispatched",
+        "idempotency_key": "taskify:{{tenant}}:contact.update:usr_bob"}]}},
+    {"request": {"method": "GET", "path": "/api/v1/me/contact"},
+      "expect": {"status": 200, "body": {"email": "bob@example.com", "phone": null}}},
+    {"name": "a bad phone", "request": {"method": "PUT", "path": "/api/v1/me/contact", "body": {"phone": "12345"}},
+      "expect": {"status": 422, "error_code": "validation_failed"}}
+  ]
+}

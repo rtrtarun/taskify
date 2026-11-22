@@ -1,0 +1,21 @@
+{
+  "description": "An edit notifies the assignee and the watchers, one row each, the key ending with the recipient when there are several; the editor is never told.",
+  "rules": ["R5.1", "R5.2", "R5.6"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Shared", "assignee_id": "usr_carol", "watcher_ids": ["usr_dave", "usr_bob"]}},
+      "expect": {"status": 201}, "capture": {"task": "id"}},
+    {"name": "rename", "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "body": {"version": 1, "title": "Shared and renamed"}},
+      "expect": {"status": 200},
+      "outbox": {"rows": [
+        {"event_type": "task.updated", "recipient": "usr_carol", "idempotency_key": "taskify:{{tenant}}:{{task}}:task.updated:v2:usr_carol", "status": "dispatched"},
+        {"event_type": "task.updated", "recipient": "usr_dave", "idempotency_key": "taskify:{{tenant}}:{{task}}:task.updated:v2:usr_dave", "status": "dispatched"}]}},
+    {"name": "reassign and raise the priority", "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "body": {"version": 2, "assignee_id": "usr_erin", "priority": "p2_high"}},
+      "expect": {"status": 200},
+      "outbox": {"rows": [
+        {"event_type": "task.assigned", "recipient": "usr_erin", "idempotency_key": "taskify:{{tenant}}:{{task}}:task.assigned:v3"},
+        {"event_type": "task.priority_escalated", "recipient": "usr_erin", "idempotency_key": "taskify:{{tenant}}:{{task}}:task.priority_escalated:v3:usr_erin"},
+        {"event_type": "task.priority_escalated", "recipient": "usr_dave", "idempotency_key": "taskify:{{tenant}}:{{task}}:task.priority_escalated:v3:usr_dave"}]}},
+    {"name": "a status change raises nothing", "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "body": {"version": 3, "status": "in_progress"}},
+      "expect": {"status": 200}, "outbox": {"rows": []}}
+  ]
+}

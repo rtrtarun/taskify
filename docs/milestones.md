@@ -12,7 +12,7 @@ Each milestone is broken into individual tasks, with a delegation level and acce
 | M5 to M7 | Done and released: M5 in v0.4.0, M6 and M7 in v0.5.0 |
 | M8 to M10, AP | Done; AP aligns Taskify with the AgentPulse `/v1/` contract ([blockers.md](blockers.md)) |
 | M11 (**R2 complete**) | Done. Every M5 to M11 exit criterion has a passing test. Final sign-off of M10, M11, and the other AgentPulse parts waits on M0-07 (owner action O1) |
-| M12 to M15 (**R3**) | Not started |
+| M12 to M15 (**R3**) | M12 done; M13 to M15 not started |
 
 Task-level progress and every departure from the plan are in [implementation/README.md](implementation/README.md). The work began from a `main.go` that printed a greeting and an uncompilable router stub.
 

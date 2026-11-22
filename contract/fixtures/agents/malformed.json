@@ -1,0 +1,20 @@
+{
+  "description": "Malformed model output changes nothing: arguments that fail the tool's schema are refused, the model gets one repair turn, and a second bad answer fails the job with the task untouched.",
+  "rules": ["R7.2"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Garbled", "assignee_id": "usr_carol"}},
+      "expect": {"status": 201}, "capture": {"task": "id"}},
+    {"as": "admin", "request": {"method": "PATCH", "path": "/api/v1/workspaces/{{workspace}}/settings", "body": {
+      "agent_settings": {"agents_enabled": true, "require_hitl_for_all": false, "disabled_agents": ["decomposer", "blocker_investigator", "digest", "learning"]}}},
+      "expect": {"status": 200}},
+    {"name": "the model answers badly, twice", "mock": {"llm": [{"match": "{{task}}", "answers": [
+        {"tool_calls": [{"name": "UpdateTaskAttributes", "raw_arguments": "{\"task_id\": "}]},
+        {"tool_calls": [{"name": "UpdateTaskAttributes", "arguments": {"task_id": "{{task}}", "labels": ["x"]}}]}]}]},
+      "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "body": {"version": 1, "title": "Garbled again"}},
+      "expect": {"status": 200, "body": {"version": 2}}},
+    {"name": "the job failed", "eventually": {"timeout_seconds": 30}, "request": {"method": "GET", "path": "/api/v1/agent-jobs?task_id={{task}}"},
+      "expect": {"status": 200, "body": {"agent_jobs": [{"agent_type": "triage", "status": "failed", "error_message": "$nonempty", "execution_result": {"stopped": "failed", "executed": []}}]}}},
+    {"name": "the task is untouched", "request": {"method": "GET", "path": "/api/v1/tasks/{{task}}"},
+      "expect": {"status": 200, "body": {"labels": [], "version": 2}}}
+  ]
+}

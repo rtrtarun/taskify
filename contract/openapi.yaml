@@ -1,0 +1,2195 @@
+openapi: 3.0.3
+info:
+  title: Taskify API
+  version: 1.0.0
+  description: |
+    Taskify's REST API: tasks, comments, agent jobs, workspaces, and the
+    callbacks AgentPulse sends. This document is normative for paths,
+    methods, request and response bodies, and status codes
+    (docs/architecture.md section 9.2). It is written from the Go server's
+    behaviour, which is the reference implementation, and CI validates every
+    response the handler and end-to-end tests see against it.
+
+    Conventions:
+
+    - Field names are snake_case. The exceptions are AgentPulse's own
+      bodies, in camelCase: the webhook callback it sends, and the
+      `payload` of an outbox row in the admin outbox list, which is what
+      Taskify sends it.
+    - Timestamps are RFC 3339 in UTC with a `Z` suffix. IDs are UUIDs in
+      lower case, except workspace IDs, which are names.
+    - Clients ignore response fields they do not know. The server sends no
+      field this document does not list; CI checks that.
+    - Every error has the body `Error`. Clients branch on `error.code`, never
+      on `error.message`.
+    - Updates carry the task's version, in `If-Match` or in the body; a stale
+      version answers `409` with the current version in
+      `error.details.current_version`.
+    - Every response carries `X-Request-ID`, echoing a well-formed incoming
+      one or a new UUID.
+    - A path or method not listed here answers `404 not_found` or
+      `405 invalid_request`, with the `Error` body.
+    - The task routes are also served without the `/api/v1` prefix (`/tasks`,
+      `/tasks/{id}`, ...) for scripts written against the original Taskify.
+      Those aliases are deprecated and not listed separately. Some routes
+      also answer with a trailing slash; clients do not send one.
+
+    Authentication: a bearer JWT (HS256 or RS256) whose `sub` is the user,
+    with claims `tenant_id` and `role` (`admin` or `member`; anything else is
+    a member), and `exp`. In development (`ENV=development`), or from a
+    trusted gateway address, the identity headers `X-Tenant-ID`, `X-User-ID`,
+    and `X-User-Role` stand in for a token. A request that presents a token
+    is judged on the token alone. The tenant always comes from the identity,
+    never from a path, query, or body.
+servers:
+  - url: http://localhost:8080
+    description: Local development
+tags:
+  - name: tasks
+  - name: agent-jobs
+  - name: me
+  - name: workspaces
+  - name: admin
+  - name: webhooks
+  - name: operations
+security:
+  - bearerAuth: []
+  - identityHeaders: []
+paths:
+  /healthz:
+    get:
+      tags: [operations]
+      operationId: getHealth
+      summary: Liveness
+      security: []
+      responses:
+        "200":
+          description: The process is up.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /readyz:
+    get:
+      tags: [operations]
+      operationId: getReadiness
+      summary: Readiness
+      description: Answers 503 while the database does not answer. AgentPulse is not checked, since task writes succeed without it.
+      security: []
+      responses:
+        "200":
+          description: Ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+        "503":
+          description: Not ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+  /metrics:
+    get:
+      tags: [operations]
+      operationId: getMetrics
+      summary: Prometheus metrics
+      description: Served only when the server has a metrics registry; otherwise the path is unknown. Restrict it at the network edge.
+      security: []
+      responses:
+        "200":
+          description: Prometheus text exposition.
+          content:
+            text/plain:
+              schema:
+                type: string
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/tasks:
+    post:
+      tags: [tasks]
+      operationId: createTask
+      summary: Create a task
+      description: |
+        Creates a task in an existing workspace of the caller's tenant. The
+        caller becomes its creator. Unknown body fields are refused.
+        Raises `task.created` when the assignee is someone other than the
+        creator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskCreate"
+      responses:
+        "201":
+          description: Created.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Location:
+              $ref: "#/components/headers/Location"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [tasks]
+      operationId: listTasks
+      summary: List tasks
+      description: |
+        The caller's tenant's tasks, most recently updated first, a page at a
+        time. Archived tasks are listed only with `status=archived`.
+      parameters:
+        - name: assignee_id
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/TaskStatus"
+        - name: priority
+          in: query
+          schema:
+            $ref: "#/components/schemas/Priority"
+        - name: id_prefix
+          in: query
+          description: |
+            Only tasks whose ID starts with this prefix of the canonical,
+            lower-case form, hyphens included, such as `0193a1b2` or
+            `0193a1b2-c3`. 1 to 36 characters; upper case is read as lower.
+            Lets a client accept a short ID.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 36
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/tasks/{id}:
+    parameters:
+      - $ref: "#/components/parameters/TaskID"
+    get:
+      tags: [tasks]
+      operationId: getTask
+      summary: Get a task with its recent comments
+      description: An archived task is still returned, so it can be restored. Another tenant's task is `404`.
+      responses:
+        "200":
+          description: The task.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      tags: [tasks]
+      operationId: updateTask
+      summary: Update a task
+      description: |
+        Changes the fields present in the body. `null` clears a nullable
+        field and empties a list; it is refused for `title`, `description`,
+        `status`, and `priority`. The expected version comes from `If-Match`
+        or from `version` in the body (they must agree when both are sent);
+        without either the answer is `428`. A patch that changes nothing
+        returns the task unchanged. Status changes follow the transition
+        matrix in contract/RULES.md.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskUpdate"
+      responses:
+        "200":
+          $ref: "#/components/responses/TaskUpdated"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [tasks]
+      operationId: replaceTask
+      summary: Update a task (same as PATCH)
+      description: Behaves exactly as `PATCH` (departure D11).
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskUpdate"
+      responses:
+        "200":
+          $ref: "#/components/responses/TaskUpdated"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [tasks]
+      operationId: deleteTask
+      summary: Archive a task, or delete it permanently
+      description: |
+        Without `permanent`, or with `permanent=false`, archives the task and
+        returns it (`200`); archiving an archived task changes nothing.
+        `permanent=true` removes the task and everything about it, for
+        data-scrubbing requests, and is for admins only (`204`). An optional
+        `If-Match` applies to the archive.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+        - name: permanent
+          in: query
+          schema:
+            type: string
+            enum: ["true", "false"]
+      responses:
+        "200":
+          $ref: "#/components/responses/TaskUpdated"
+        "204":
+          description: Permanently deleted.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/tasks/{id}/complete:
+    parameters:
+      - $ref: "#/components/parameters/TaskID"
+    post:
+      tags: [tasks]
+      operationId: completeTask
+      summary: Complete a task
+      description: |
+        Completing a completed task changes nothing. With `notification_id`,
+        an `acted` signal for that notification is forwarded to AgentPulse;
+        the task is completed even when forwarding fails. The body is
+        optional.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompleteRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/TaskUpdated"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/tasks/{id}/restore:
+    parameters:
+      - $ref: "#/components/parameters/TaskID"
+    post:
+      tags: [tasks]
+      operationId: restoreTask
+      summary: Restore an archived task to todo
+      description: A task that is not archived answers `422 invalid_transition`.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          $ref: "#/components/responses/TaskUpdated"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/tasks/{id}/comments:
+    parameters:
+      - $ref: "#/components/parameters/TaskID"
+    post:
+      tags: [tasks]
+      operationId: addComment
+      summary: Comment on a task
+      description: |
+        `@user` mentions are extracted. Raises `task.comment_added`. A
+        comment whose body is exactly `/decompose` (trimmed, any case) also
+        asks for a decomposition when the workspace allows it (D29).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CommentCreate"
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Comment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/tasks/{id}/feedback:
+    parameters:
+      - $ref: "#/components/parameters/TaskID"
+    post:
+      tags: [tasks]
+      operationId: recordFeedback
+      summary: Forward a reaction to a notification to AgentPulse
+      description: |
+        The signal, duration, and notification may come from the query
+        string, as in the links Taskify puts in notifications, or from a JSON
+        body, whose fields take precedence. `snoozed` needs a duration such
+        as `2h` (at most `168h`); other signals take none. The call to
+        AgentPulse is synchronous.
+      parameters:
+        - name: signal
+          in: query
+          schema:
+            $ref: "#/components/schemas/FeedbackSignal"
+        - name: duration
+          in: query
+          schema:
+            type: string
+        - name: notification_id
+          in: query
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FeedbackRequest"
+      responses:
+        "202":
+          description: Forwarded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedbackAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/tasks/{id}/decompose:
+    parameters:
+      - $ref: "#/components/parameters/TaskID"
+    post:
+      tags: [tasks, agent-jobs]
+      operationId: decomposeTask
+      summary: Ask the decomposer to split a task
+      description: |
+        Queues a decomposer job and answers `202` with it. While a
+        decomposition of the task is pending, running, or awaiting approval,
+        that job is returned instead of a second one. A workspace with agents
+        or the decomposer switched off answers `409 agent_disabled`; a
+        completed or archived task `422`.
+      responses:
+        "202":
+          description: Queued, or already queued.
+          headers:
+            Location:
+              $ref: "#/components/headers/Location"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentJob"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/tasks/{id}/subtasks:
+    parameters:
+      - $ref: "#/components/parameters/TaskID"
+    get:
+      tags: [tasks]
+      operationId: listSubtasks
+      summary: A task's children, with their dependency links
+      description: |
+        The tasks whose parent is this one (created by a decomposition),
+        oldest first, archived ones included, each with the IDs of the
+        tasks it depends on.
+      responses:
+        "200":
+          description: The children.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubtaskList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/tasks/{id}/agent-runs:
+    parameters:
+      - $ref: "#/components/parameters/TaskID"
+    get:
+      tags: [tasks, agent-jobs]
+      operationId: listAgentRuns
+      summary: Agent activity on a task
+      description: |
+        Every agent job about the task, oldest first, each with its model
+        turns from the run history: the tool called, its arguments (which
+        hold the model's reasoning), its result, and the tokens used.
+      responses:
+        "200":
+          description: The task's agent activity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRunList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/agent-jobs:
+    get:
+      tags: [agent-jobs]
+      operationId: listAgentJobs
+      summary: List agent jobs
+      description: |
+        The agent jobs the caller may see, newest first, a page at a time
+        (see `getAgentJob`): a job the caller may not see is left out, and
+        neither the page nor its cursor reveals it. With
+        `status=awaiting_approval` it feeds the approvals inbox.
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/AgentJobStatus"
+        - name: task_id
+          in: query
+          schema:
+            $ref: "#/components/schemas/Uuid"
+        - name: agent_type
+          in: query
+          schema:
+            $ref: "#/components/schemas/AgentType"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentJobList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/agent-jobs/{id}:
+    parameters:
+      - $ref: "#/components/parameters/JobID"
+    get:
+      tags: [agent-jobs]
+      operationId: getAgentJob
+      summary: Get an agent job
+      description: |
+        Who may see a job depends on its kind (owner decision, 2026-11-23):
+        a job on a task, any member of the tenant; a morning brief, only
+        the person it is for, and admins; a job about the whole tenant,
+        such as a learning run, admins only. A job the caller may not see
+        answers `404`, as an unknown one does.
+      responses:
+        "200":
+          description: The job.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentJob"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/agent-jobs/{id}/apply:
+    parameters:
+      - $ref: "#/components/parameters/JobID"
+    post:
+      tags: [agent-jobs]
+      operationId: applyAgentJob
+      summary: Approve and apply a job's proposals
+      description: |
+        Allowed for the task's assignee, its creator, or an admin; a job
+        without a task, for an admin only. A job the caller may not see
+        (`getAgentJob`) answers `404`; one they may see but not decide,
+        `403`. Repeating the decision changes
+        nothing (`changed: false`). `409` codes: `stale_version` (the task
+        moved on since the proposal; the job fails), `already_decided`,
+        `not_awaiting_approval`.
+      responses:
+        "200":
+          $ref: "#/components/responses/AgentJobDecided"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/agent-jobs/{id}/dismiss:
+    parameters:
+      - $ref: "#/components/parameters/JobID"
+    post:
+      tags: [agent-jobs]
+      operationId: dismissAgentJob
+      summary: Reject a job's proposals
+      description: The same rules as apply. Nothing is applied.
+      responses:
+        "200":
+          $ref: "#/components/responses/AgentJobDecided"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/me:
+    get:
+      tags: [me]
+      operationId: getMe
+      summary: The caller's identity
+      description: The tenant, user, and role the server took from the caller's credentials.
+      responses:
+        "200":
+          description: The caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/me/brief:
+    get:
+      tags: [me]
+      operationId: getMyBrief
+      summary: The caller's latest morning brief
+      description: |
+        The newest brief written for the caller; a day skipped for having
+        nothing to report leaves the previous one in place. `404` when there
+        is none.
+      responses:
+        "200":
+          description: The brief.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MorningBrief"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/me/contact:
+    get:
+      tags: [me]
+      operationId: getMyContact
+      summary: The caller's contact for AgentPulse
+      responses:
+        "200":
+          $ref: "#/components/responses/ContactResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [me]
+      operationId: putMyContact
+      summary: Change the caller's contact
+      description: |
+        Merges: an absent field is kept, and `null` or an empty string
+        clears it. The stored contact is forwarded to AgentPulse through the
+        outbox.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContactUpdate"
+      responses:
+        "200":
+          $ref: "#/components/responses/ContactResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/workspaces:
+    post:
+      tags: [workspaces, admin]
+      operationId: createWorkspace
+      summary: Create a workspace (admin)
+      description: |
+        Creates the workspace and registers its default AgentPulse rules.
+        When AgentPulse is unreachable the workspace is still created, with
+        `rules_bootstrapped: false` and `rules_error`; `bootstrap-rules` can
+        then be run again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceCreate"
+      responses:
+        "201":
+          description: Created.
+          headers:
+            Location:
+              $ref: "#/components/headers/Location"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceCreated"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/workspaces/{id}/settings:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceID"
+    get:
+      tags: [workspaces, admin]
+      operationId: getWorkspaceSettings
+      summary: Read a workspace's settings (admin)
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      tags: [workspaces, admin]
+      operationId: updateWorkspaceSettings
+      summary: Change a workspace's name or agent settings (admin)
+      description: A refused patch changes nothing, including its valid parts.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceUpdate"
+      responses:
+        "200":
+          $ref: "#/components/responses/WorkspaceResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/workspaces/{id}/bootstrap-rules:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceID"
+    post:
+      tags: [workspaces, admin]
+      operationId: bootstrapWorkspaceRules
+      summary: Register the workspace's default AgentPulse rules (admin)
+      description: Idempotent. Rules already registered are not sent again.
+      responses:
+        "200":
+          description: The workspace's rules.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuleList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/admin/learning/suggestions:
+    get:
+      tags: [admin]
+      operationId: listLearningSuggestions
+      summary: The tenant's learning suggestions, from AgentPulse (admin)
+      description: |
+        Read from AgentPulse and returned in snake_case, like every
+        Taskify response; fields the contract does not list are left out.
+      responses:
+        "200":
+          description: AgentPulse's list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LearningSuggestionList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/admin/learning/suggestions/{id}/decision:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: AgentPulse's suggestion ID.
+        schema:
+          type: string
+    post:
+      tags: [admin]
+      operationId: decideLearningSuggestion
+      summary: Approve or reject a learning suggestion (admin)
+      description: |
+        Decided at AgentPulse in the caller's tenant, as the caller. Another
+        tenant's suggestion is `404`; one already decided, `409`. The
+        response is the decided suggestion, in snake_case.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LearningDecision"
+      responses:
+        "200":
+          description: The decided suggestion.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LearningSuggestion"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/admin/outbox:
+    get:
+      tags: [admin]
+      operationId: listOutbox
+      summary: The tenant's outbox rows (admin)
+      description: |
+        The notifications and other calls waiting for, or past, delivery to
+        AgentPulse, newest first, a page at a time. `status=dead_letter`
+        lists the rows that will not be retried. Dispatched rows are kept
+        for 7 days.
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/OutboxStatus"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OutboxList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/admin/outbox/{id}/replay:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The outbox row's ID. A malformed ID answers `404`.
+        schema:
+          $ref: "#/components/schemas/Uuid"
+    post:
+      tags: [admin]
+      operationId: replayOutboxEntry
+      summary: Return a dead-letter row to pending (admin)
+      description: |
+        The row is sent again by the relay, with its attempts reset. A row
+        in any other status is `409 not_dead_letter`.
+      responses:
+        "200":
+          description: The row, pending again.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OutboxEntry"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/webhooks/agentpulse:
+    post:
+      tags: [webhooks]
+      operationId: agentPulseCallback
+      summary: Signed action callbacks from AgentPulse
+      description: |
+        Authenticated by signature, not by a token, and not rate limited.
+        `X-AgentPulse-Signature` is `sha256=` (optional) and the hex
+        HMAC-SHA256 of `{timestamp}.{raw body}`, keyed with the shared
+        webhook secret; the timestamp must be within 5 minutes of now. A
+        callback already handled answers `duplicate`: the same `callbackId`
+        in the tenant, or a byte-identical body and signature. The matching
+        feedback signal is forwarded to AgentPulse once; a failure to
+        forward is logged, not returned.
+      security: []
+      parameters:
+        - name: X-AgentPulse-Timestamp
+          in: header
+          required: true
+          description: Unix seconds.
+          schema:
+            type: string
+        - name: X-AgentPulse-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookCallback"
+      responses:
+        "200":
+          description: Applied, or a duplicate of a callback already applied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    identityHeaders:
+      type: apiKey
+      in: header
+      name: X-Tenant-ID
+      description: |
+        Development or trusted gateway only: `X-Tenant-ID` and `X-User-ID`,
+        and optionally `X-User-Role: admin`, instead of a token.
+
+  parameters:
+    TaskID:
+      name: id
+      in: path
+      required: true
+      description: The task's ID. A malformed ID answers `404`, as for an unknown task.
+      schema:
+        $ref: "#/components/schemas/Uuid"
+    JobID:
+      name: id
+      in: path
+      required: true
+      description: The agent job's ID. A malformed ID answers `404`.
+      schema:
+        $ref: "#/components/schemas/Uuid"
+    WorkspaceID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      description: Page size, 1 to 200. Default 50.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+    Cursor:
+      name: cursor
+      in: query
+      description: The `next_cursor` of the previous page. Opaque.
+      schema:
+        type: string
+    IfMatch:
+      name: If-Match
+      in: header
+      description: The task's expected version, as `"3"`, `W/"3"`, or `3`.
+      schema:
+        type: string
+
+  headers:
+    ETag:
+      description: The task's version, as a strong validator, such as `"3"`.
+      schema:
+        type: string
+    Location:
+      description: The created resource.
+      schema:
+        type: string
+    RetryAfter:
+      description: Seconds to wait.
+      schema:
+        type: string
+    WWWAuthenticate:
+      description: Set when the token or identity was missing or refused.
+      schema:
+        type: string
+
+  responses:
+    TaskUpdated:
+      description: The task after the change.
+      headers:
+        ETag:
+          $ref: "#/components/headers/ETag"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Task"
+    AgentJobDecided:
+      description: The job after the decision.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AgentJobDecision"
+    ContactResponse:
+      description: The caller's contact.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Contact"
+    WorkspaceResponse:
+      description: The workspace.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Workspace"
+    BadRequest:
+      description: "The request could not be parsed: malformed JSON, an unknown or mistyped field, a bad query value, or a bad header. Code `invalid_request`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: "Missing, expired, or invalid credentials, or a webhook with a bad signature or timestamp. Code `unauthorized`."
+      headers:
+        WWW-Authenticate:
+          $ref: "#/components/headers/WWWAuthenticate"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: "Authenticated but not allowed. Code `forbidden`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: "Unknown, or in another tenant. Code `not_found`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: |
+        Conflicts with the current state. Codes: `version_conflict` (with
+        `details.current_version`), `already_exists`, `agent_disabled`,
+        `stale_version`, `already_decided`, `not_awaiting_approval`, `not_dead_letter`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PayloadTooLarge:
+      description: "The body is larger than 1 MiB. Code `invalid_request`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unprocessable:
+      description: "Well formed but against a rule. Codes `validation_failed` and `invalid_transition`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PreconditionRequired:
+      description: "An update without a version. Code `version_required`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyRequests:
+      description: "Over the caller's rate limit. Code `rate_limited`."
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: "An unexpected error. Code `internal_error`; the message says nothing more."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BadGateway:
+      description: "AgentPulse did not complete the request. Code `upstream_error`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ServiceUnavailable:
+      description: "AgentPulse is unavailable (its circuit breaker is open). Code `upstream_unavailable`; try again shortly."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Uuid:
+      type: string
+      format: uuid
+      pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    Timestamp:
+      type: string
+      format: date-time
+      description: RFC 3339 in UTC.
+      pattern: "Z$"
+    NullableTimestamp:
+      type: string
+      format: date-time
+      description: RFC 3339 in UTC, or null.
+      pattern: "Z$"
+      nullable: true
+    TaskStatus:
+      type: string
+      enum: [todo, in_progress, blocked, completed, archived]
+    Priority:
+      type: string
+      enum: [p1_critical, p2_high, p3_medium, p4_low]
+    AgentType:
+      type: string
+      enum: [triage, decomposer, blocker_investigator, digest, learning]
+    AgentJobStatus:
+      type: string
+      enum: [pending, running, awaiting_approval, completed, failed, dismissed]
+    FeedbackSignal:
+      type: string
+      enum: [acted, dismissed, snoozed, muted]
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: |
+                One of `invalid_request`, `validation_failed`,
+                `invalid_transition`, `unauthorized`, `forbidden`,
+                `not_found`, `version_conflict`, `already_exists`,
+                `version_required`, `rate_limited`, `agent_disabled`,
+                `stale_version`, `already_decided`, `not_awaiting_approval`, `not_dead_letter`.
+                `upstream_error`, `upstream_unavailable`, `internal_error`.
+                A client treats a code it does not know by its status.
+            message:
+              type: string
+              description: For people. Never parse it.
+            details:
+              type: object
+              additionalProperties: true
+              description: Extra facts, such as `current_version` on `version_conflict`.
+
+    Health:
+      type: object
+      required: [status, version]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        version:
+          type: string
+    Readiness:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]
+        reason:
+          type: string
+
+    Task:
+      type: object
+      required: [id, tenant_id, workspace_id, title, description, status, priority, creator_id, assignee_id, labels,
+        metadata, watcher_ids, due_at, remind_at, completed_at, archived_at, blocked_reason, version, created_at, updated_at]
+      properties:
+        id:
+          $ref: "#/components/schemas/Uuid"
+        tenant_id:
+          type: string
+        workspace_id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        priority:
+          $ref: "#/components/schemas/Priority"
+        creator_id:
+          type: string
+        assignee_id:
+          type: string
+          nullable: true
+        labels:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Free-form, as the client stored it.
+        watcher_ids:
+          type: array
+          items:
+            type: string
+        due_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        remind_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        completed_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        archived_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        blocked_reason:
+          type: string
+          nullable: true
+          enum: [manual, dependency]
+          description: Set exactly while the task is blocked.
+        version:
+          type: integer
+          minimum: 1
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
+    TaskDetail:
+      type: object
+      description: A task, as in `Task`, with its most recent comments, newest first.
+      required: [id, tenant_id, workspace_id, title, description, status, priority, creator_id, assignee_id, labels,
+        metadata, watcher_ids, due_at, remind_at, completed_at, archived_at, blocked_reason, version, created_at, updated_at,
+        comments]
+      properties:
+        id:
+          $ref: "#/components/schemas/Uuid"
+        tenant_id:
+          type: string
+        workspace_id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        priority:
+          $ref: "#/components/schemas/Priority"
+        creator_id:
+          type: string
+        assignee_id:
+          type: string
+          nullable: true
+        labels:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        watcher_ids:
+          type: array
+          items:
+            type: string
+        due_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        remind_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        completed_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        archived_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        blocked_reason:
+          type: string
+          nullable: true
+          enum: [manual, dependency]
+        version:
+          type: integer
+          minimum: 1
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
+        comments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Comment"
+    TaskList:
+      type: object
+      required: [tasks, next_cursor]
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/Task"
+        next_cursor:
+          type: string
+          nullable: true
+          description: Pass as `cursor` for the next page; null on the last page.
+    TaskCreate:
+      type: object
+      required: [workspace_id, title]
+      additionalProperties: false
+      properties:
+        workspace_id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        priority:
+          $ref: "#/components/schemas/Priority"
+        assignee_id:
+          type: string
+        labels:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        watcher_ids:
+          type: array
+          items:
+            type: string
+        due_at:
+          type: string
+          format: date-time
+        remind_at:
+          type: string
+          format: date-time
+    TaskUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        version:
+          type: integer
+          minimum: 1
+          description: The expected version, if not sent in `If-Match`.
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        priority:
+          $ref: "#/components/schemas/Priority"
+        assignee_id:
+          type: string
+          nullable: true
+          description: null unassigns.
+        labels:
+          type: array
+          nullable: true
+          items:
+            type: string
+        metadata:
+          type: object
+          nullable: true
+          additionalProperties: true
+        watcher_ids:
+          type: array
+          nullable: true
+          items:
+            type: string
+        due_at:
+          type: string
+          format: date-time
+          nullable: true
+        remind_at:
+          type: string
+          format: date-time
+          nullable: true
+    CompleteRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        notification_id:
+          type: string
+          description: The AgentPulse notification the completion came from.
+    Comment:
+      type: object
+      required: [id, task_id, author_id, body, mentions, created_at]
+      properties:
+        id:
+          $ref: "#/components/schemas/Uuid"
+        task_id:
+          $ref: "#/components/schemas/Uuid"
+        author_id:
+          type: string
+        body:
+          type: string
+        mentions:
+          type: array
+          items:
+            type: string
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+    CommentCreate:
+      type: object
+      required: [body]
+      additionalProperties: false
+      properties:
+        body:
+          type: string
+    FeedbackRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        signal:
+          $ref: "#/components/schemas/FeedbackSignal"
+        notification_id:
+          type: string
+        duration:
+          type: string
+          description: For `snoozed`, such as `2h`.
+    FeedbackAccepted:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [forwarded]
+
+    AgentJob:
+      type: object
+      required: [id, task_id, agent_type, status, base_task_version, proposed_actions, execution_result, error_message,
+        attempts, decided_by, decided_at, created_at, updated_at]
+      properties:
+        id:
+          $ref: "#/components/schemas/Uuid"
+        task_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null for a job about a person or a tenant (digest, learning).
+        agent_type:
+          $ref: "#/components/schemas/AgentType"
+        status:
+          $ref: "#/components/schemas/AgentJobStatus"
+        base_task_version:
+          type: integer
+          nullable: true
+          description: The task version the job reasoned about; a proposal is stale once the task has moved past it.
+        proposed_actions:
+          type: array
+          nullable: true
+          description: The Tier 2 calls waiting for a decision, in order.
+          items:
+            $ref: "#/components/schemas/Proposal"
+        execution_result:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: What the runs did, as the runtime records it. Its shape is not part of the contract.
+        error_message:
+          type: string
+          nullable: true
+        attempts:
+          type: integer
+          minimum: 0
+        decided_by:
+          type: string
+          nullable: true
+        decided_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
+    Proposal:
+      type: object
+      required: [tool, arguments]
+      properties:
+        tool:
+          type: string
+          description: The tool's name; its arguments follow contract/tools/{tool}.schema.json.
+        arguments:
+          type: object
+          additionalProperties: true
+        call_id:
+          type: string
+    AgentJobDecision:
+      type: object
+      required: [job, changed]
+      properties:
+        job:
+          $ref: "#/components/schemas/AgentJob"
+        changed:
+          type: boolean
+          description: False when the same decision had already been made.
+
+    MorningBrief:
+      type: object
+      required: [job_id, written_at, brief_date, user_id, top_items, open_tasks, pending_approvals, pending_approvals_total,
+        unblocked_tasks, unblocked_total]
+      properties:
+        job_id:
+          $ref: "#/components/schemas/Uuid"
+        written_at:
+          $ref: "#/components/schemas/Timestamp"
+        brief_date:
+          type: string
+          format: date
+        user_id:
+          type: string
+        top_items:
+          type: array
+          items:
+            $ref: "#/components/schemas/BriefTask"
+        open_tasks:
+          type: integer
+          minimum: 0
+        pending_approvals:
+          type: array
+          items:
+            $ref: "#/components/schemas/BriefApproval"
+        pending_approvals_total:
+          type: integer
+          minimum: 0
+        unblocked_tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/BriefTask"
+        unblocked_total:
+          type: integer
+          minimum: 0
+        text:
+          type: string
+          description: The brief the model wrote.
+    BriefTask:
+      type: object
+      required: [task_id, title, workspace_id, status, priority, due_at, overdue]
+      properties:
+        task_id:
+          $ref: "#/components/schemas/Uuid"
+        title:
+          type: string
+        workspace_id:
+          type: string
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        priority:
+          $ref: "#/components/schemas/Priority"
+        due_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        overdue:
+          type: boolean
+    BriefApproval:
+      type: object
+      required: [job_id, agent_type, task_id, task_title, proposed_tools, asked_at]
+      properties:
+        job_id:
+          $ref: "#/components/schemas/Uuid"
+        agent_type:
+          $ref: "#/components/schemas/AgentType"
+        task_id:
+          $ref: "#/components/schemas/Uuid"
+        task_title:
+          type: string
+        proposed_tools:
+          type: array
+          items:
+            type: string
+        asked_at:
+          $ref: "#/components/schemas/Timestamp"
+
+    Contact:
+      type: object
+      required: [email, slack_user_id, phone, updated_at]
+      properties:
+        email:
+          type: string
+          nullable: true
+        slack_user_id:
+          type: string
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        updated_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+    ContactUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          nullable: true
+          description: A plain address, at most 254 characters.
+        slack_user_id:
+          type: string
+          nullable: true
+          description: A Slack member ID, `^[UW][A-Z0-9]+$`, at most 32 characters.
+        phone:
+          type: string
+          nullable: true
+          description: E.164, `^\+[1-9][0-9]{1,14}$`.
+
+    AgentSettings:
+      type: object
+      required: [agents_enabled, disabled_agents, require_hitl_for_all, max_subtasks_per_decomposition]
+      properties:
+        agents_enabled:
+          type: boolean
+        disabled_agents:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentType"
+        require_hitl_for_all:
+          type: boolean
+        max_subtasks_per_decomposition:
+          type: integer
+          minimum: 1
+    AgentSettingsPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        agents_enabled:
+          type: boolean
+        disabled_agents:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentType"
+        require_hitl_for_all:
+          type: boolean
+        max_subtasks_per_decomposition:
+          type: integer
+          minimum: 1
+    Workspace:
+      type: object
+      required: [id, name, agent_settings, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        agent_settings:
+          $ref: "#/components/schemas/AgentSettings"
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
+    WorkspaceCreate:
+      type: object
+      required: [id, name]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+    WorkspaceCreated:
+      type: object
+      description: The workspace, as in `Workspace`, with the outcome of registering its rules.
+      required: [id, name, agent_settings, created_at, updated_at, rules, rules_bootstrapped]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        agent_settings:
+          $ref: "#/components/schemas/AgentSettings"
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
+        rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/Rule"
+        rules_bootstrapped:
+          type: boolean
+        rules_error:
+          type: string
+          description: Why the rules could not be registered; present only when `rules_bootstrapped` is false.
+    WorkspaceUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        agent_settings:
+          $ref: "#/components/schemas/AgentSettingsPatch"
+    Rule:
+      type: object
+      required: [key, agentpulse_rule_id, created_at]
+      properties:
+        key:
+          type: string
+        agentpulse_rule_id:
+          type: string
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+    RuleList:
+      type: object
+      required: [rules]
+      properties:
+        rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/Rule"
+
+    LearningSuggestionList:
+      type: object
+      required: [suggestions]
+      properties:
+        suggestions:
+          type: array
+          items:
+            $ref: "#/components/schemas/LearningSuggestion"
+    LearningSuggestion:
+      type: object
+      description: |
+        One of the tenant's learning suggestions, as AgentPulse holds it,
+        with its fields in snake_case. Fields AgentPulse adds that this
+        schema does not list are left out.
+      required: [id, status, rule_id, event_pattern, current_adjustment, proposed_adjustment, signal_count, rationale]
+      properties:
+        id:
+          type: string
+          description: AgentPulse's ID for the suggestion.
+        status:
+          type: string
+          description: AgentPulse's status, such as `PENDING_APPROVAL`, `APPROVED`, or `REJECTED`.
+        rule_id:
+          type: string
+          nullable: true
+          description: The rule the suggestion adjusts, or null when it names an event pattern.
+        event_pattern:
+          type: object
+          nullable: true
+          description: The notifications the suggestion adjusts, or null when it names a rule.
+          required: [event_type, label]
+          properties:
+            event_type:
+              type: string
+            label:
+              type: string
+              nullable: true
+              description: One payload label, or null for the notifications that carry none.
+        current_adjustment:
+          type: integer
+          minimum: -20
+          maximum: 20
+        proposed_adjustment:
+          type: integer
+          minimum: -20
+          maximum: 20
+          description: The score adjustment AgentPulse applies to the scope once an admin approves.
+        signal_count:
+          type: integer
+          minimum: 0
+        rationale:
+          type: string
+    LearningDecision:
+      type: object
+      required: [decision]
+      additionalProperties: false
+      properties:
+        decision:
+          type: string
+          enum: [approve, reject]
+
+    WebhookCallback:
+      type: object
+      description: |
+        AgentPulse's callback, in AgentPulse's camelCase. Unknown fields are
+        ignored. `taskId` is needed for `complete`, `snooze`, and `unblock`;
+        `jobId` for `approve` and `reject`; `duration` for `snooze`.
+      required: [action, tenantId, userId]
+      additionalProperties: true
+      properties:
+        action:
+          type: string
+          enum: [complete, snooze, unblock, approve, reject]
+        tenantId:
+          type: string
+        userId:
+          type: string
+        taskId:
+          type: string
+          format: uuid
+        jobId:
+          type: string
+          format: uuid
+        notificationId:
+          type: string
+        duration:
+          type: string
+        callbackId:
+          type: string
+          description: "`cb-` and 32 lower-case hex digits, the same on every retry of one click."
+    WebhookResult:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [applied, duplicate]
+
+    Me:
+      type: object
+      required: [tenant_id, user_id, role]
+      properties:
+        tenant_id:
+          type: string
+        user_id:
+          type: string
+        role:
+          type: string
+          enum: [admin, member]
+
+    Subtask:
+      type: object
+      required: [task, depends_on]
+      properties:
+        task:
+          $ref: "#/components/schemas/Task"
+        depends_on:
+          type: array
+          description: The IDs of the tasks this one waits for, siblings or not.
+          items:
+            $ref: "#/components/schemas/Uuid"
+    SubtaskList:
+      type: object
+      required: [subtasks]
+      properties:
+        subtasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/Subtask"
+
+    AgentJobList:
+      type: object
+      required: [agent_jobs, next_cursor]
+      properties:
+        agent_jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentJob"
+        next_cursor:
+          type: string
+          nullable: true
+    AgentRun:
+      type: object
+      description: One model turn of a job's run, from the run history.
+      required: [turn, model, tool_name, tool_args, tool_result, outcome, prompt_tokens, completion_tokens, latency_ms,
+        created_at]
+      properties:
+        turn:
+          type: integer
+          minimum: 1
+        model:
+          type: string
+        tool_name:
+          type: string
+          nullable: true
+          description: The tool called, `multiple` when the turn called several, or null for a turn without a call.
+        tool_args:
+          nullable: true
+          description: The call's arguments, as the model sent them; a list for several calls.
+        tool_result:
+          nullable: true
+          description: What the call returned or why it was refused; a list for several calls.
+        outcome:
+          type: string
+          description: Such as `final`, `executed`, `proposed`, `rejected`, `invalid`, or `error`.
+        prompt_tokens:
+          type: integer
+          minimum: 0
+        completion_tokens:
+          type: integer
+          minimum: 0
+        latency_ms:
+          type: integer
+          minimum: 0
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+    AgentJobRuns:
+      type: object
+      required: [job, runs]
+      properties:
+        job:
+          $ref: "#/components/schemas/AgentJob"
+        runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentRun"
+    AgentRunList:
+      type: object
+      required: [agent_runs]
+      properties:
+        agent_runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentJobRuns"
+
+    OutboxStatus:
+      type: string
+      enum: [pending, processing, dispatched, dead_letter]
+    OutboxEntry:
+      type: object
+      description: One outbox row. `aggregate_id` is the task it is about, or the job or person for a row about no task.
+      required: [id, aggregate_id, event_type, idempotency_key, status, attempts, max_attempts, next_attempt_at,
+        last_error, created_at, dispatched_at, payload]
+      properties:
+        id:
+          $ref: "#/components/schemas/Uuid"
+        aggregate_id:
+          $ref: "#/components/schemas/Uuid"
+        event_type:
+          type: string
+          description: An event type with a schema in contract/events.
+        idempotency_key:
+          type: string
+        status:
+          $ref: "#/components/schemas/OutboxStatus"
+        attempts:
+          type: integer
+          minimum: 0
+        max_attempts:
+          type: integer
+          minimum: 1
+        next_attempt_at:
+          $ref: "#/components/schemas/Timestamp"
+        last_error:
+          type: string
+          nullable: true
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        dispatched_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        payload:
+          type: object
+          additionalProperties: true
+          description: What the relay sends AgentPulse, in AgentPulse's camelCase; its shape is contract/events/{event_type}.schema.json.
+    OutboxList:
+      type: object
+      required: [entries, next_cursor]
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/OutboxEntry"
+        next_cursor:
+          type: string
+          nullable: true

@@ -1,0 +1,8 @@
+{
+  "description": "Moving a blocked task to blocked is not a transition: the task comes back unchanged.",
+  "rules": ["R3.1", "R4.1", "R4.2"],
+  "steps": [
+    {"name": "create", "request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Matrix", "assignee_id": "usr_carol"}}, "expect": {"status": 201, "body": {"status": "todo", "version": 1}}, "capture": {"task": "id"}}, {"name": "move to blocked", "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "body": {"version": 1, "status": "blocked"}}, "expect": {"status": 200, "body": {"status": "blocked", "version": 2}}},
+    {"name": "blocked to blocked", "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "headers": {"If-Match": "\"2\""}, "body": {"status": "blocked"}}, "expect": {"status": 200, "headers": {"ETag": "\"2\""}, "body": {"status": "blocked", "version": 2}}, "outbox": {"rows": []}}
+  ]
+}

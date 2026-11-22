@@ -1,0 +1,13 @@
+{
+  "description": "AgentPulse answers 503 and then 200: the relay retries, and exactly one notification is accepted.",
+  "rules": ["R5.5", "R6.1"],
+  "steps": [
+    {"mock": {"agentpulse_fail": [{"method": "POST", "path": "/v1/notify", "status": 503, "count": 1}]},
+      "request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Flaky", "assignee_id": "usr_carol"}},
+      "expect": {"status": 201}, "capture": {"task": "id"},
+      "outbox": {"timeout_seconds": 60, "rows": [{"event_type": "task.created", "recipient": "usr_carol", "status": "dispatched", "attempts": 1,
+        "idempotency_key": "taskify:{{tenant}}:{{task}}:task.created:v1"}]},
+      "agentpulse": {"notify_calls": 2, "notifications": [{"eventType": "task.created", "userId": "usr_carol",
+        "idempotencyKey": "taskify:{{tenant}}:{{task}}:task.created:v1"}]}}
+  ]
+}

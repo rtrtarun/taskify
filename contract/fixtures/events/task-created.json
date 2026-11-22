@@ -1,0 +1,19 @@
+{
+  "description": "task.created goes to an assignee other than the creator, with Mark done and Snooze 2h while the task is open, and no view link on a server without APP_BASE_URL; a task assigned to its creator notifies nobody.",
+  "rules": ["R5.1", "R5.2", "R5.4", "R5.6"],
+  "steps": [
+    {"name": "for someone else", "request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Theirs", "assignee_id": "usr_carol"}},
+      "expect": {"status": 201}, "capture": {"task": "id"},
+      "outbox": {"rows": [{"event_type": "task.created", "recipient": "usr_carol", "idempotency_key": "taskify:{{tenant}}:{{task}}:task.created:v1"}]},
+      "agentpulse": {"notifications": [{"eventType": "task.created", "userId": "usr_carol", "source": "taskify", "tenantId": "{{tenant}}",
+        "title": "New task: Theirs", "priorityHint": "medium", "channels": "$absent",
+        "payload": {"taskId": "{{task}}", "status": "todo", "version": 1, "bypassDigest": "$absent",
+          "actionUrls": {"complete": "$nonempty", "snooze_2h": "$nonempty", "view": "$absent"}}}]}},
+    {"name": "for oneself", "request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Mine", "assignee_id": "usr_bob"}},
+      "expect": {"status": 201}, "outbox": {"rows": []}},
+    {"name": "critical", "request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Down", "priority": "p1_critical", "assignee_id": "usr_carol"}},
+      "expect": {"status": 201},
+      "agentpulse": {"notifications": [{"eventType": "task.created", "priorityHint": "critical", "channels": ["slack", "email", "in_app"],
+        "payload": {"bypassDigest": true}}]}}
+  ]
+}

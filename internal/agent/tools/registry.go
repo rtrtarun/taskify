@@ -4,7 +4,7 @@
 // The model can only ask for a registered tool by name. Typed Go code then
 // decides whether and how the request runs: Dispatch rejects unknown tools,
 // tools not offered to the job's agent, arguments that fail the tool's JSON
-// Schema (see schema.go), and task IDs outside the job's scope, and it turns every call into
+// Schema (from contract/tools), and task IDs outside the job's scope, and it turns every call into
 // a proposal when the workspace requires approval for everything.
 package tools
 
@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/rtrtarun/taskify/contract"
 	"github.com/rtrtarun/taskify/internal/agent/llm"
 	"github.com/rtrtarun/taskify/internal/domain"
 )
@@ -87,12 +88,13 @@ func NewScope(job *domain.AgentJob, settings domain.AgentSettings, allowed []str
 // notifies people but never queues more agent work.
 func (s Scope) Actor() domain.Actor { return domain.Agent(s.AgentType) }
 
-// Tool is one action an agent may request.
+// Tool is one action an agent may request. Its parameter schema, what the
+// model may send, is not part of the Go type: the registry loads it from
+// contract/tools/{Name}.schema.json (M12-02), so the contract is a tool's
+// only definition.
 type Tool interface {
 	Name() string
 	Description() string
-	// Parameters is the JSON Schema the arguments must satisfy.
-	Parameters() json.RawMessage
 	// Tier classifies a call with validated arguments.
 	Tier(args json.RawMessage) domain.SafetyTier
 	// Execute runs a Tier 1 call with validated, in-scope arguments. Each
@@ -133,6 +135,14 @@ type Suggester interface {
 // arguments, using the run's one repair turn. The message is for the model.
 type Checker interface {
 	Check(scope Scope, args json.RawMessage) error
+}
+
+// SelfDescribed is implemented by a tool the contract does not define, such
+// as a test double, which carries its own parameter schema. A tool the
+// contract defines must not implement it: Register refuses one with two
+// definitions.
+type SelfDescribed interface {
+	Parameters() json.RawMessage
 }
 
 // TaskLookup loads a task within a tenant. repository.TaskRepository
@@ -204,7 +214,9 @@ type Registry struct {
 
 type entry struct {
 	tool   Tool
-	schema *schema
+	schema *contract.Schema
+	// params is the schema text, as offered to the model.
+	params json.RawMessage
 }
 
 // NewRegistry returns an empty registry that resolves task IDs with lookup.
@@ -212,14 +224,27 @@ func NewRegistry(lookup TaskLookup) *Registry {
 	return &Registry{lookup: lookup, tools: map[string]entry{}}
 }
 
-// Register adds a tool, compiling its schema. A duplicate name or a schema
-// that does not compile is an error.
+// Register adds a tool with its parameter schema, from
+// contract/tools/{name}.schema.json or, for a tool outside the contract, its
+// own (SelfDescribed). A tool with no schema, or with two, a schema that
+// does not compile, and a duplicate name are errors, so the service does
+// not start with a tool the contract does not describe.
 func (r *Registry) Register(t Tool) error {
 	name := t.Name()
 	if name == "" {
 		return errors.New("tools: a tool needs a name")
 	}
-	schema, err := compileSchema(t.Parameters())
+	params, err := contract.ToolSchema(name)
+	own, self := t.(SelfDescribed)
+	switch {
+	case err == nil && self:
+		return fmt.Errorf("tools: %s is defined in contract/tools and must not carry its own schema", name)
+	case self:
+		params = own.Parameters()
+	case err != nil:
+		return fmt.Errorf("tools: %s: %w", name, err)
+	}
+	schema, err := contract.CompileSchema(params)
 	if err != nil {
 		return fmt.Errorf("tools: %s: %w", name, err)
 	}
@@ -228,7 +253,7 @@ func (r *Registry) Register(t Tool) error {
 	if _, dup := r.tools[name]; dup {
 		return fmt.Errorf("tools: %s is already registered", name)
 	}
-	r.tools[name] = entry{tool: t, schema: schema}
+	r.tools[name] = entry{tool: t, schema: schema, params: params}
 	return nil
 }
 
@@ -242,7 +267,7 @@ func (r *Registry) Schemas(names []string) ([]llm.ToolSchema, error) {
 		if !ok {
 			return nil, fmt.Errorf("tools: %s is not registered", n)
 		}
-		out = append(out, llm.ToolSchema{Name: n, Description: e.tool.Description(), Parameters: e.tool.Parameters()})
+		out = append(out, llm.ToolSchema{Name: n, Description: e.tool.Description(), Parameters: e.params})
 	}
 	return out, nil
 }
@@ -298,7 +323,7 @@ func (r *Registry) check(ctx context.Context, scope Scope, name, arguments strin
 	if err != nil {
 		return reject(CodeInvalidArguments, "arguments are not a JSON object: %v", err)
 	}
-	if errs := e.schema.validate(doc); len(errs) > 0 {
+	if errs := e.schema.Validate(doc); len(errs) > 0 {
 		return reject(CodeInvalidArguments, "%s", strings.Join(errs, "; "))
 	}
 	if err := r.checkScope(ctx, scope, doc); err != nil {
@@ -350,7 +375,7 @@ func parseArgs(text string) (json.RawMessage, any, error) {
 	if text == "" {
 		text = "{}"
 	}
-	doc, err := decodeJSON([]byte(text))
+	doc, err := contract.DecodeJSON([]byte(text))
 	if err != nil {
 		return nil, nil, err
 	}

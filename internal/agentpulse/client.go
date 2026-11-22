@@ -228,20 +228,12 @@ func (c *Client) ListRules(ctx context.Context, tenantID string) (json.RawMessag
 	return out, err
 }
 
-// ListLearningSuggestions returns AgentPulse's response unchanged, for the
-// admin proxy to relay.
-func (c *Client) ListLearningSuggestions(ctx context.Context, tenantID string) (json.RawMessage, error) {
-	var out json.RawMessage
-	err := c.do(ctx, http.MethodGet, pathSuggestions+"?tenantId="+url.QueryEscape(tenantID), nil, &out)
-	return out, err
-}
-
 // ReviewLearningSuggestion approves or rejects one of the tenant's
-// suggestions and returns AgentPulse's response unchanged. The body names
+// suggestions and returns it as AgentPulse now holds it. The body names
 // the tenant: AgentPulse answers 404 for another tenant's suggestion, as
 // for an unknown one (AP-12).
-func (c *Client) ReviewLearningSuggestion(ctx context.Context, tenantID, id, decision, decidedBy string) (json.RawMessage, error) {
-	var out json.RawMessage
+func (c *Client) ReviewLearningSuggestion(ctx context.Context, tenantID, id, decision, decidedBy string) (Suggestion, error) {
+	var out Suggestion
 	body := map[string]string{"tenantId": tenantID, "decision": decision, "decidedBy": decidedBy}
 	err := c.do(ctx, http.MethodPost, pathSuggestions+"/"+url.PathEscape(id)+"/decision", body, &out)
 	return out, err
@@ -297,7 +289,8 @@ const (
 	SuggestionRejected = "REJECTED"
 )
 
-// LearningSuggestions returns the tenant's suggestions, decoded.
+// LearningSuggestions returns the tenant's suggestions, decoded, for the
+// learning agent and the admin endpoints.
 func (c *Client) LearningSuggestions(ctx context.Context, tenantID string) ([]Suggestion, error) {
 	var out struct {
 		Suggestions []Suggestion `json:"suggestions"`

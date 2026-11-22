@@ -57,24 +57,6 @@ func (UpdateTaskAttributes) Description() string {
 		"Prefer labels the workspace already uses. A priority is sent to a person for approval."
 }
 
-func (UpdateTaskAttributes) Parameters() json.RawMessage {
-	return json.RawMessage(`{
-		"type": "object",
-		"properties": {
-			"task_id": {"type": "string", "format": "uuid", "description": "The task to update."},
-			"labels": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 50},
-				"maxItems": 10, "uniqueItems": true, "description": "The complete label list."},
-			"description": {"type": "string", "minLength": 1, "maxLength": 4000},
-			"estimated_minutes": {"type": "integer", "minimum": 1, "maximum": 28800},
-			"priority": {"enum": ["p1_critical", "p2_high", "p3_medium", "p4_low"]},
-			"reasoning": {"type": "string", "minLength": 1, "maxLength": 1000,
-				"description": "Why, in one or two sentences, for the people reading the task."}
-		},
-		"required": ["task_id", "reasoning"],
-		"additionalProperties": false
-	}`)
-}
-
 func parseUpdate(args json.RawMessage) (UpdateTaskAttributesArgs, error) {
 	var a UpdateTaskAttributesArgs
 	if err := json.Unmarshal(args, &a); err != nil {

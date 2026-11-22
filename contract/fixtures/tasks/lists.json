@@ -1,0 +1,17 @@
+{
+  "description": "GET /me names the caller; the agent job, subtask, and agent run lists answer empty for a plain task.",
+  "rules": ["R2.3"],
+  "steps": [
+    {"name": "me", "request": {"method": "GET", "path": "/api/v1/me"},
+      "expect": {"status": 200, "body": {"tenant_id": "{{tenant}}", "user_id": "usr_bob", "role": "member"}}},
+    {"name": "me as admin", "as": "admin", "request": {"method": "GET", "path": "/api/v1/me"},
+      "expect": {"status": 200, "body": {"user_id": "usr_admin", "role": "admin"}}},
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Plain"}}, "expect": {"status": 201}, "capture": {"task": "id"}},
+    {"name": "no subtasks", "request": {"method": "GET", "path": "/api/v1/tasks/{{task}}/subtasks"}, "expect": {"status": 200, "body": {"subtasks": []}}},
+    {"name": "no agent runs", "request": {"method": "GET", "path": "/api/v1/tasks/{{task}}/agent-runs"}, "expect": {"status": 200, "body": {"agent_runs": []}}},
+    {"name": "no agent jobs", "request": {"method": "GET", "path": "/api/v1/agent-jobs?task_id={{task}}"}, "expect": {"status": 200, "body": {"agent_jobs": [], "next_cursor": null}}},
+    {"name": "bad job filter", "request": {"method": "GET", "path": "/api/v1/agent-jobs?status=done"}, "expect": {"status": 422, "error_code": "validation_failed"}},
+    {"name": "subtasks of another tenant's task", "as": "other_tenant", "request": {"method": "GET", "path": "/api/v1/tasks/{{task}}/subtasks"},
+      "expect": {"status": 404, "error_code": "not_found"}}
+  ]
+}

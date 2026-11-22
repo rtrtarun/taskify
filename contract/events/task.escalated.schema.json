@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "task.escalated",
+  "description": "Sent by the blocker investigator to the owner of each open task the investigated task waits on (D30). The body Taskify's outbox relay sends to AgentPulse's POST /v1/notify, camelCase. Key format and recipients: contract/RULES.md.",
+  "type": "object",
+  "properties": {
+    "idempotencyKey": {"type": "string", "minLength": 1, "maxLength": 320},
+    "tenantId": {"type": "string", "minLength": 1, "maxLength": 64},
+    "userId": {"type": "string", "minLength": 1, "maxLength": 128, "description": "The recipient."},
+    "source": {"enum": ["taskify"]},
+    "eventType": {"enum": ["task.escalated"]},
+    "title": {"type": "string", "minLength": 1},
+    "body": {"type": "string", "minLength": 1},
+    "priorityHint": {"enum": ["critical", "high", "medium", "low"]},
+    "channels": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["slack", "email", "in_app", "webhook", "digest"]}, "description": "Absent to leave delivery to AgentPulse's rules; slack, email, and in_app with bypassDigest; digest alone for a deferred assignment."},
+    "payload": {
+      "type": "object",
+      "properties": {
+        "taskId": {"type": "string", "format": "uuid"},
+        "workspaceId": {"type": "string", "minLength": 1},
+        "status": {"enum": ["todo", "in_progress", "blocked", "completed", "archived"]},
+        "priority": {"enum": ["p1_critical", "p2_high", "p3_medium", "p4_low"]},
+        "labels": {"type": "array", "items": {"type": "string"}},
+        "actorId": {"type": "string", "minLength": 1},
+        "actorKind": {"enum": ["user", "agent", "system"]},
+        "version": {"type": "integer", "minimum": 1},
+        "previousStatus": {"enum": ["todo", "in_progress", "blocked", "completed", "archived"]},
+        "dueAt": {"type": "string", "format": "date-time"},
+        "bypassDigest": {"enum": [true]},
+        "actionUrls": {"type": "object", "properties": {"view": {"type": "string", "minLength": 1}, "unblock": {"type": "string", "minLength": 1}}, "additionalProperties": false, "description": "unblock while the task is blocked; view only with APP_BASE_URL. Absent when neither applies."},
+        "jobId": {"type": "string", "format": "uuid"},
+        "agentType": {"enum": ["triage", "decomposer", "blocker_investigator", "digest", "learning"]},
+        "blockedReason": {"enum": ["manual", "dependency"]},
+        "blockingTasks": {"type": "array", "minItems": 1, "items": {
+          "type": "object",
+          "properties": {"taskId": {"type": "string", "format": "uuid"}, "title": {"type": "string", "minLength": 1}, "status": {"enum": ["todo", "in_progress", "blocked", "completed", "archived"]}},
+          "required": ["taskId", "title", "status"],
+          "additionalProperties": false
+        }},
+        "actionLabels": {"type": "object", "properties": {"unblock": {"type": "string", "minLength": 1}}, "additionalProperties": false}
+      },
+      "required": ["taskId", "workspaceId", "status", "priority", "labels", "actorId", "actorKind", "version", "jobId", "agentType", "blockingTasks", "bypassDigest"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["idempotencyKey", "tenantId", "userId", "source", "eventType", "title", "body", "priorityHint", "payload"],
+  "additionalProperties": false
+}

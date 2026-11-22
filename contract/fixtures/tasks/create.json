@@ -1,0 +1,26 @@
+{
+  "description": "A member creates a task; it starts in todo at version 1, in UTC, and its assignee gets task.created.",
+  "rules": ["R1.1", "R1.2", "R3.2", "R5.1", "R5.6"],
+  "steps": [
+    {
+      "request": {"method": "POST", "path": "/api/v1/tasks", "body": {
+        "workspace_id": "{{workspace}}", "title": "Fix checkout crash", "priority": "p2_high",
+        "assignee_id": "usr_carol", "labels": ["bug"], "due_at": "{{in_48h}}"}},
+      "expect": {"status": 201, "headers": {"ETag": "\"1\""}, "body": {
+        "id": "$uuid", "tenant_id": "{{tenant}}", "workspace_id": "{{workspace}}", "status": "todo",
+        "priority": "p2_high", "creator_id": "usr_bob", "assignee_id": "usr_carol", "labels": ["bug"],
+        "due_at": "{{in_48h}}", "version": 1, "completed_at": null, "blocked_reason": null,
+        "created_at": "$timestamp", "updated_at": "$timestamp"}},
+      "capture": {"task": "id"},
+      "outbox": {"rows": [{"event_type": "task.created", "recipient": "usr_carol",
+        "idempotency_key": "taskify:{{tenant}}:{{task}}:task.created:v1", "status": "dispatched"}]},
+      "agentpulse": {"notifications": [{"eventType": "task.created", "userId": "usr_carol", "priorityHint": "high",
+        "idempotencyKey": "taskify:{{tenant}}:{{task}}:task.created:v1",
+        "payload": {"taskId": "{{task}}", "workspaceId": "{{workspace}}", "actorId": "usr_bob", "actorKind": "user"}}]}
+    },
+    {
+      "request": {"method": "GET", "path": "/api/v1/tasks/{{task}}"},
+      "expect": {"status": 200, "headers": {"ETag": "\"1\""}, "body": {"id": "{{task}}", "comments": []}}
+    }
+  ]
+}

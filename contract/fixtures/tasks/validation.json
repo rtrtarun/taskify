@@ -1,0 +1,30 @@
+{
+  "description": "Requests that cannot be parsed are 400 invalid_request; well-formed requests against a rule are 422 validation_failed.",
+  "rules": ["R1.4", "R1.5", "R10.1"],
+  "steps": [
+    {"name": "malformed JSON", "request": {"method": "POST", "path": "/api/v1/tasks", "raw_body": "{\"title\":"},
+      "expect": {"status": 400, "error_code": "invalid_request"}},
+    {"name": "unknown field", "request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "x", "titel": "y"}},
+      "expect": {"status": 400, "error_code": "invalid_request"}},
+    {"name": "tenant in the body", "request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "x", "tenant_id": "{{other_tenant}}"}},
+      "expect": {"status": 400, "error_code": "invalid_request"}},
+    {"name": "two objects", "request": {"method": "POST", "path": "/api/v1/tasks", "raw_body": "{\"workspace_id\":\"ws_conf\",\"title\":\"x\"}{}"},
+      "expect": {"status": 400, "error_code": "invalid_request"}},
+    {"name": "bad timestamp", "request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "x", "due_at": "tomorrow"}},
+      "expect": {"status": 400, "error_code": "invalid_request"}},
+    {"name": "missing title", "request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}"}},
+      "expect": {"status": 422, "error_code": "validation_failed"}},
+    {"name": "unknown priority", "request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "x", "priority": "urgent"}},
+      "expect": {"status": 422, "error_code": "validation_failed"}},
+    {"name": "unknown workspace", "request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "ws_missing", "title": "x"}},
+      "expect": {"status": 422, "error_code": "validation_failed"}},
+    {"name": "unknown status filter", "request": {"method": "GET", "path": "/api/v1/tasks?status=done"},
+      "expect": {"status": 422, "error_code": "validation_failed"}},
+    {"name": "bad limit", "request": {"method": "GET", "path": "/api/v1/tasks?limit=201"},
+      "expect": {"status": 400, "error_code": "invalid_request"}},
+    {"name": "unknown route", "request": {"method": "GET", "path": "/api/v1/nope"},
+      "expect": {"status": 404, "error_code": "not_found"}},
+    {"name": "method the route does not have", "request": {"method": "PUT", "path": "/api/v1/tasks"},
+      "expect": {"status": 405, "error_code": "invalid_request"}}
+  ]
+}

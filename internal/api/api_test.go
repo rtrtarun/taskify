@@ -45,8 +45,10 @@ type env struct {
 	handler http.Handler
 	b       repotest.Backend
 	mock    *mockagentpulse.Server
+	apURL   string
 	now     time.Time
 	tasks   *service.TaskService
+	deps    Deps
 }
 
 type option func(*Deps)
@@ -58,6 +60,7 @@ func newEnv(t *testing.T, opts ...option) *env {
 	e.mock = mockagentpulse.New()
 	ts := httptest.NewServer(e.mock)
 	t.Cleanup(ts.Close)
+	e.apURL = ts.URL
 	client := agentpulse.New(ts.URL, "k", agentpulse.WithBreaker(nil))
 
 	clock := func() time.Time { return e.now }
@@ -72,6 +75,7 @@ func newEnv(t *testing.T, opts ...option) *env {
 	agentJobs := service.NewAgentJobService(b.Tx, b.AgentJobs, b.Tasks, registry, nil, clock)
 	d := Deps{
 		AgentJobs:     agentJobs,
+		Outbox:        service.NewOutboxService(b.Outbox, clock, nil),
 		Contacts:      service.NewContactService(b.Tx, b.Contacts, b.Outbox, 10, clock, nil),
 		Tasks:         tasks,
 		Workspaces:    service.NewWorkspaceService(b.Tx, b.Workspaces, b.Rules, client, clock),
@@ -92,7 +96,7 @@ func newEnv(t *testing.T, opts ...option) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.handler = h
+	e.handler, e.deps = h, d
 	if _, err := tasks.CreateWorkspace(context.Background(), tenant, "ws_core", "Core"); err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +170,11 @@ func (e *env) do(r req) resp {
 	rec := httptest.NewRecorder()
 	e.handler.ServeHTTP(rec, hr)
 	out := resp{status: rec.Code, header: rec.Header(), raw: rec.Body.Bytes()}
+	// M12-05: every response a handler test sees is one the contract
+	// describes.
+	if err := contractValidator(e.t).Check(hr, out.status, out.header, out.raw); err != nil {
+		e.t.Errorf("contract: %v", err)
+	}
 	_ = json.Unmarshal(out.raw, &out.json)
 	return out
 }
@@ -762,6 +771,8 @@ func TestAdminRoutesNeedAdmin(t *testing.T) {
 		{method: "POST", path: "/api/v1/workspaces/ws_core/bootstrap-rules"},
 		{method: "GET", path: "/api/v1/admin/learning/suggestions"},
 		{method: "POST", path: "/api/v1/admin/learning/suggestions/x/decision", body: map[string]any{"decision": "approve"}},
+		{method: "GET", path: "/api/v1/admin/outbox"},
+		{method: "POST", path: "/api/v1/admin/outbox/" + uuid.NewString() + "/replay"},
 	} {
 		if r := e.do(rq); r.status != 403 || r.errCode() != CodeForbidden {
 			t.Errorf("%s %s as member: %d", rq.method, rq.path, r.status)
@@ -856,15 +867,35 @@ func TestWorkspaces(t *testing.T) {
 
 func TestLearningProxy(t *testing.T) {
 	e := newEnv(t)
-	id := e.mock.SeedSuggestion(map[string]any{"tenantId": tenant, "proposedAdjustment": -5.0})
+	id := e.mock.SeedSuggestion(map[string]any{"tenantId": tenant, "eventPattern": map[string]any{"eventType": "task.updated", "label": nil},
+		"currentAdjustment": 0.0, "proposedAdjustment": -5.0, "signalCount": 7.0, "rationale": "Dismissed by most.", "futureField": "x"})
+	byRule := e.mock.SeedSuggestion(map[string]any{"tenantId": tenant, "ruleId": "rule_9", "proposedAdjustment": 4.0})
 	others := e.mock.SeedSuggestion(map[string]any{"tenantId": "tenant_other", "proposedAdjustment": 3.0})
 
+	// snake_case, and only the fields the contract lists (rule 9).
 	r := e.do(req{method: "GET", path: "/api/v1/admin/learning/suggestions", as: "admin"})
-	if r.status != 200 || len(r.json["suggestions"].([]any)) != 1 {
+	list, _ := r.json["suggestions"].([]any)
+	if r.status != 200 || len(list) != 2 {
 		t.Fatalf("list: %d %s", r.status, r.raw)
 	}
+	byPattern, ruled := list[0].(map[string]any), list[1].(map[string]any)
+	if byPattern["id"] != id || byPattern["status"] != "PENDING_APPROVAL" || byPattern["rule_id"] != nil ||
+		byPattern["proposed_adjustment"] != -5.0 || byPattern["signal_count"] != 7.0 || byPattern["rationale"] != "Dismissed by most." {
+		t.Errorf("by pattern = %v", byPattern)
+	}
+	if p, _ := byPattern["event_pattern"].(map[string]any); p["event_type"] != "task.updated" || p["label"] != nil || len(p) != 2 {
+		t.Errorf("event_pattern = %v", byPattern["event_pattern"])
+	}
+	if ruled["id"] != byRule || ruled["rule_id"] != "rule_9" || ruled["event_pattern"] != nil {
+		t.Errorf("by rule = %v", ruled)
+	}
+	for _, camel := range []string{"suggestion", "proposedAdjustment", "eventPattern", "futureField", "tenantId"} {
+		if strings.Contains(string(r.raw), `"`+camel+`"`) {
+			t.Errorf("the list carries %q: %s", camel, r.raw)
+		}
+	}
 	r = e.do(req{method: "POST", path: "/api/v1/admin/learning/suggestions/" + id + "/decision", as: "admin", body: map[string]any{"decision": "approve"}})
-	if r.status != 200 || r.json["status"] != "APPROVED" {
+	if r.status != 200 || r.json["status"] != "APPROVED" || r.json["id"] != id || r.json["proposed_adjustment"] != -5.0 {
 		t.Fatalf("approve: %d %s", r.status, r.raw)
 	}
 	sent := e.mock.RequestsTo("POST", "/v1/learning/suggestions/"+id+"/decision")
@@ -1094,11 +1125,6 @@ func TestEdgeCases(t *testing.T) {
 
 	if (&httpError{message: "m"}).Error() != "m" {
 		t.Error("httpError.Error")
-	}
-	rec := httptest.NewRecorder()
-	writeRaw(rec, json.RawMessage(`not json`))
-	if rec.Body.String() != "{}" {
-		t.Errorf("writeRaw with invalid JSON = %q", rec.Body.String())
 	}
 }
 

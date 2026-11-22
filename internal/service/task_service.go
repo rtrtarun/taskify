@@ -414,6 +414,11 @@ func (s *TaskService) ListTasks(ctx context.Context, f repository.TaskFilter) (r
 	if f.Priority != "" && !f.Priority.Valid() {
 		return repository.TaskPage{}, fmt.Errorf("%w: unknown priority %q", domain.ErrValidation, f.Priority)
 	}
+	if f.IDPrefix != "" {
+		if _, _, err := domain.IDPrefixRange(f.IDPrefix); err != nil {
+			return repository.TaskPage{}, err
+		}
+	}
 	page, err := s.deps.Tasks.List(ctx, f)
 	if page.Tasks == nil {
 		page.Tasks = []*domain.Task{}

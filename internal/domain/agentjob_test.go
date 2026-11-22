@@ -215,3 +215,41 @@ func TestNewStaleJob(t *testing.T) {
 		t.Errorf("stale job = %+v (%s)", j, j.InputContext)
 	}
 }
+
+func TestAgentJobVisibleTo(t *testing.T) {
+	now := time.Date(2026, 11, 23, 8, 0, 0, 0, time.UTC)
+	task := uuid.New()
+	onTask, err := NewAgentJob(NewAgentJobInput{TenantID: "t1", TaskID: &task, AgentType: AgentTriage, DedupKey: "k1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	brief, err := NewBriefJob(BriefRecipient{TenantID: "t1", UserID: "usr_bob", WorkspaceID: "ws"}, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	learning, err := NewLearningJob(LearningTenant{TenantID: "t1", WorkspaceID: "ws"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	garbled := learning
+	garbled.InputContext = []byte(`not json`)
+	for name, tc := range map[string]struct {
+		job                AgentJob
+		person             string
+		carol, bob, admins bool
+	}{
+		"on a task":         {onTask, "", true, true, true},
+		"a brief for bob":   {brief, "usr_bob", false, true, true},
+		"about the tenant":  {learning, "", false, false, true},
+		"unreadable person": {garbled, "", false, false, true},
+	} {
+		if got := tc.job.Person(); got != tc.person {
+			t.Errorf("%s: Person = %q", name, got)
+		}
+		if tc.job.VisibleTo("usr_carol", false) != tc.carol || tc.job.VisibleTo("usr_bob", false) != tc.bob ||
+			tc.job.VisibleTo("usr_carol", true) != tc.admins {
+			t.Errorf("%s: visibility carol/bob/admin = %v/%v/%v", name,
+				tc.job.VisibleTo("usr_carol", false), tc.job.VisibleTo("usr_bob", false), tc.job.VisibleTo("usr_carol", true))
+		}
+	}
+}

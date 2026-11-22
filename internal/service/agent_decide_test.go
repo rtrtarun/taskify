@@ -108,7 +108,9 @@ func TestJobWithoutATask(t *testing.T) {
 		if err := f.b.AgentJobs.Update(ctx, &job, domain.JobPending, prev); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := jf.jobs.Apply(ctx, tenant, job.ID, assignee); !errors.Is(err, domain.ErrForbidden) {
+		// A job about no task and no person is the admins': to a member it
+		// does not exist (owner decision, 2026-11-23).
+		if _, _, err := jf.jobs.Apply(ctx, tenant, job.ID, assignee); !errors.Is(err, domain.ErrNotFound) {
 			t.Errorf("member on a task-less job: %v", err)
 		}
 		got, applied, err := jf.jobs.Apply(ctx, tenant, job.ID, admin)

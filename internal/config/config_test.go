@@ -51,6 +51,9 @@ func TestDefaults(t *testing.T) {
 	if c.OutboxLease != time.Minute || c.SchedulerInterval != time.Minute {
 		t.Errorf("lease/scheduler = %v/%v", c.OutboxLease, c.SchedulerInterval)
 	}
+	if c.OutboxRetryMaxDelay != time.Minute {
+		t.Errorf("OutboxRetryMaxDelay = %v", c.OutboxRetryMaxDelay)
+	}
 	if c.JWTAlgorithm != JWTAlgHS256 {
 		t.Errorf("JWTAlgorithm = %q", c.JWTAlgorithm)
 	}
@@ -69,12 +72,14 @@ func TestOverrides(t *testing.T) {
 	env["OUTBOX_POLL_INTERVAL"] = "1s"
 	env["TRUSTED_GATEWAY_CIDRS"] = "10.0.0.0/8, 192.168.1.7/24"
 	env["RATE_LIMIT_RPS"] = "2.5"
+	env["OUTBOX_RETRY_MAX_DELAY"] = "100ms"
 
 	c, err := FromLookup(lookupFrom(env))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !c.IsDevelopment() || c.Port != 9000 || c.OutboxPollInterval != time.Second || c.RateLimitRPS != 2.5 {
+	if !c.IsDevelopment() || c.Port != 9000 || c.OutboxPollInterval != time.Second || c.RateLimitRPS != 2.5 ||
+		c.OutboxRetryMaxDelay != 100*time.Millisecond {
 		t.Errorf("overrides not applied: %+v", c)
 	}
 	if len(c.TrustedGatewayCIDRs) != 2 || c.TrustedGatewayCIDRs[1].String() != "192.168.1.0/24" {

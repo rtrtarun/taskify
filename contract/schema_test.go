@@ -1,4 +1,4 @@
-package tools
+package contract
 
 import (
 	"encoding/json"
@@ -6,22 +6,22 @@ import (
 	"testing"
 )
 
-func mustCompile(t *testing.T, raw string) *schema {
+func mustCompile(t *testing.T, raw string) *Schema {
 	t.Helper()
-	s, err := compileSchema(json.RawMessage(raw))
+	s, err := CompileSchema(json.RawMessage(raw))
 	if err != nil {
 		t.Fatalf("compile %s: %v", raw, err)
 	}
 	return s
 }
 
-func errsFor(t *testing.T, s *schema, instance string) []string {
+func errsFor(t *testing.T, s *Schema, instance string) []string {
 	t.Helper()
-	v, err := decodeJSON([]byte(instance))
+	v, err := DecodeJSON([]byte(instance))
 	if err != nil {
 		t.Fatalf("instance %s: %v", instance, err)
 	}
-	return s.validate(v)
+	return s.Validate(v)
 }
 
 func TestSchemaKeywords(t *testing.T) {
@@ -113,12 +113,12 @@ func TestSchemaRejectsUnsupportedOrInvalid(t *testing.T) {
 		"root not an object":          `{"type": "string"}`,
 		"not JSON":                    `{"type": `,
 	} {
-		if _, err := compileSchema(json.RawMessage(raw)); err == nil {
+		if _, err := CompileSchema(json.RawMessage(raw)); err == nil {
 			t.Errorf("%s: schema accepted", name)
 		}
 	}
 	// The error names the offending keyword and where it is.
-	_, err := compileSchema(json.RawMessage(`{"type": "object", "properties": {"a": {"oneOf": []}}}`))
+	_, err := CompileSchema(json.RawMessage(`{"type": "object", "properties": {"a": {"oneOf": []}}}`))
 	if err == nil || !strings.Contains(err.Error(), `"oneOf"`) || !strings.Contains(err.Error(), "/properties/a") {
 		t.Errorf("error = %v", err)
 	}
@@ -126,11 +126,11 @@ func TestSchemaRejectsUnsupportedOrInvalid(t *testing.T) {
 
 func TestDecodeJSON(t *testing.T) {
 	for _, bad := range []string{``, `{`, `{} {}`, `{}x`} {
-		if _, err := decodeJSON([]byte(bad)); err == nil {
+		if _, err := DecodeJSON([]byte(bad)); err == nil {
 			t.Errorf("%q decoded", bad)
 		}
 	}
-	v, err := decodeJSON([]byte(` {"n": 12345678901234567890} `))
+	v, err := DecodeJSON([]byte(` {"n": 12345678901234567890} `))
 	if err != nil || v.(map[string]any)["n"].(json.Number).String() != "12345678901234567890" {
 		t.Errorf("decode = %v, %v", v, err)
 	}

@@ -24,7 +24,9 @@ type Deps struct {
 	Contacts *service.ContactService
 	// AgentJobs serves /agent-jobs. Nil leaves those routes out.
 	AgentJobs *service.AgentJobService
-	Learning  LearningClient
+	// Outbox serves /admin/outbox. Nil leaves those routes out.
+	Outbox   *service.OutboxService
+	Learning LearningClient
 
 	Auth          AuthConfig
 	WebhookSecret string
@@ -45,6 +47,7 @@ type handlers struct {
 	feedback      *service.FeedbackService
 	webhooks      *service.WebhookService
 	agentJobs     *service.AgentJobService
+	outbox        *service.OutboxService
 	contacts      *service.ContactService
 	learning      LearningClient
 	webhookSecret string
@@ -61,6 +64,19 @@ type handlers struct {
 // The router deliberately has no middleware that rewrites RemoteAddr from
 // X-Forwarded-For: the trusted-gateway check depends on the real peer.
 func NewRouter(d Deps) (http.Handler, error) {
+	r, err := newMux(d)
+	if err != nil {
+		return nil, err
+	}
+	// The OpenTelemetry handler is outermost: it continues an incoming W3C
+	// trace or starts one, so every log line and outbox row below can carry
+	// the trace ID.
+	return otelhttp.NewHandler(r, "http.request", otelhttp.WithPropagators(observability.Propagator)), nil
+}
+
+// newMux builds the routes. contract/openapi.yaml documents each of them
+// (TestRoutesMatchContract).
+func newMux(d Deps) (*chi.Mux, error) {
 	if d.WebhookSecret == "" {
 		return nil, errors.New("api: a webhook secret is required")
 	}
@@ -76,7 +92,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 	}
 	limiter := newRateLimiter(d.RateLimit)
 	h := &handlers{
-		tasks: d.Tasks, workspaces: d.Workspaces, feedback: d.Feedback, webhooks: d.Webhooks, agentJobs: d.AgentJobs,
+		tasks: d.Tasks, workspaces: d.Workspaces, feedback: d.Feedback, webhooks: d.Webhooks, agentJobs: d.AgentJobs, outbox: d.Outbox,
 		contacts: d.Contacts, learning: d.Learning, webhookSecret: d.WebhookSecret, version: d.Version, logger: d.Logger, now: d.Now,
 	}
 
@@ -107,6 +123,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.Post("/webhooks/agentpulse", h.webhook)
 		r.Group(func(r chi.Router) {
 			authenticated(r)
+			r.Get("/me", h.getMe)
 			r.Route("/tasks", h.taskRoutes)
 			if h.agentJobs != nil {
 				r.Route("/agent-jobs", h.agentJobRoutes)
@@ -126,10 +143,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		r.Route("/tasks", h.taskRoutes)
 	})
 
-	// The OpenTelemetry handler is outermost: it continues an incoming W3C
-	// trace or starts one, so every log line and outbox row below can carry
-	// the trace ID.
-	return otelhttp.NewHandler(r, "http.request", otelhttp.WithPropagators(observability.Propagator)), nil
+	return r, nil
 }
 
 // readiness answers 503 while a dependency the service cannot work without
