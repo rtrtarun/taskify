@@ -426,3 +426,50 @@ func TestSetDelay(t *testing.T) {
 		t.Error("the delay was not removed")
 	}
 }
+
+// TestContactIsAFullReplace covers 40a's contact semantics.
+func TestContactIsAFullReplace(t *testing.T) {
+	s, url := start(t)
+	path := url + "/v1/tenants/t1/users/u1/contact"
+	if status, _ := do(t, "PUT", path, map[string]any{"email": "a@example.com", "slackUserId": "U1", "phone": nil}); status != http.StatusOK {
+		t.Fatalf("first put: %d", status)
+	}
+	if c, ok := s.ContactOf("t1", "u1"); !ok || c != (Contact{Email: "a@example.com", SlackUserID: "U1"}) {
+		t.Errorf("contact = %+v, %v", c, ok)
+	}
+	// The same body again changes nothing.
+	do(t, "PUT", path, map[string]any{"email": "a@example.com", "slackUserId": "U1", "phone": nil})
+	if c, _ := s.ContactOf("t1", "u1"); c != (Contact{Email: "a@example.com", SlackUserID: "U1"}) {
+		t.Errorf("after repeat = %+v", c)
+	}
+	// A field left out is cleared.
+	do(t, "PUT", path, map[string]any{"phone": "+14155550123"})
+	if c, _ := s.ContactOf("t1", "u1"); c != (Contact{Phone: "+14155550123"}) {
+		t.Errorf("after replace = %+v", c)
+	}
+	// All three empty deletes it.
+	if status, out := do(t, "PUT", path, map[string]any{"email": nil, "slackUserId": nil, "phone": nil}); status != http.StatusOK || out["deleted"] != true {
+		t.Errorf("delete: %d %v", status, out)
+	}
+	if _, ok := s.ContactOf("t1", "u1"); ok {
+		t.Error("an empty contact was kept")
+	}
+	if got := s.ContactPuts(); got != 4 {
+		t.Errorf("puts = %d, want 4", got)
+	}
+	for name, tc := range map[string]struct {
+		path string
+		body any
+	}{
+		"reserved tenant": {url + "/v1/tenants/default/users/u1/contact", map[string]any{"email": "a@example.com"}},
+		"number field":    {path, map[string]any{"phone": 4155550123}},
+		"not an object":   {path, []string{"x"}},
+	} {
+		if status, _ := do(t, "PUT", tc.path, tc.body); status != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", name, status)
+		}
+	}
+	if s.ContactPuts() != 4 {
+		t.Error("a refused put was counted")
+	}
+}

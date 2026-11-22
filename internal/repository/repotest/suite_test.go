@@ -782,8 +782,8 @@ func TestMigrationsRoundTrip(t *testing.T) {
 			t.Fatalf("step %d (%s): %v", i, d, err)
 		}
 	}
-	if n := tables(); n != 10 {
-		t.Errorf("tables after up/down/up = %d, want 10", n)
+	if n := tables(); n != 11 { // 000007 adds user_contacts
+		t.Errorf("tables after up/down/up = %d, want 11", n)
 	}
 	if err := migrations.Apply(ctx, exec, migrations.Down); err != nil {
 		t.Fatal(err)

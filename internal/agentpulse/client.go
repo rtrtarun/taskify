@@ -262,6 +262,20 @@ func (c *Client) InAppFeed(ctx context.Context, tenantID, userID string, limit i
 	return out, err
 }
 
+// Contact is how AgentPulse reaches a user. PUT replaces it whole: a nil
+// field is cleared, a contact with all three nil is deleted, and sending the
+// same contact again changes nothing. Every field is always sent.
+type Contact struct {
+	Email       *string `json:"email"`
+	SlackUserID *string `json:"slackUserId"`
+	Phone       *string `json:"phone"`
+}
+
+// PutContact replaces the user's contact at AgentPulse.
+func (c *Client) PutContact(ctx context.Context, tenantID, userID string, ct Contact) error {
+	return c.do(ctx, http.MethodPut, userPath(tenantID, userID)+"/contact", ct, nil)
+}
+
 // userPath is /v1/tenants/{t}/users/{u}, each part escaped.
 func userPath(tenantID, userID string) string {
 	return pathTenants + url.PathEscape(tenantID) + "/users/" + url.PathEscape(userID)

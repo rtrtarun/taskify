@@ -78,6 +78,8 @@ type Server struct {
 	rules         []storedRule
 	suggestions   []*Suggestion
 	feeds         map[string][]FeedItem // key: tenant + "/" + user
+	contacts      map[string]Contact    // key: tenant + "/" + user
+	contactPuts   int
 	delays        map[string]time.Duration
 
 	mux *http.ServeMux
@@ -89,6 +91,7 @@ func New() *Server {
 		failures: map[string]*failure{},
 		byKey:    map[string]string{},
 		feeds:    map[string][]FeedItem{},
+		contacts: map[string]Contact{},
 		delays:   map[string]time.Duration{},
 		mux:      http.NewServeMux(),
 	}
@@ -103,6 +106,7 @@ func New() *Server {
 	s.mux.HandleFunc("POST /v1/learning/suggestions", s.handleCreateSuggestion)
 	s.mux.HandleFunc("POST /v1/learning/suggestions/{id}/decision", s.handleDecision)
 	s.mux.HandleFunc("GET /v1/tenants/{tenantId}/users/{userId}/in-app-feed", s.handleFeed)
+	s.mux.HandleFunc("PUT /v1/tenants/{tenantId}/users/{userId}/contact", s.handlePutContact)
 	return s
 }
 
@@ -363,6 +367,8 @@ func (s *Server) Reset() {
 	s.rules = nil
 	s.suggestions = nil
 	s.feeds = map[string][]FeedItem{}
+	s.contacts = map[string]Contact{}
+	s.contactPuts = 0
 	s.delays = map[string]time.Duration{}
 }
 
@@ -430,7 +436,68 @@ func (s *Server) Suggestions() []Suggestion {
 	return out
 }
 
+// Contact is a user's contact as AgentPulse holds it. An empty field is
+// unset.
+type Contact struct {
+	Email       string
+	SlackUserID string
+	Phone       string
+}
+
+// ContactOf returns the user's contact and whether AgentPulse holds one.
+func (s *Server) ContactOf(tenantID, userID string) (Contact, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.contacts[tenantID+"/"+userID]
+	return c, ok
+}
+
+// ContactPuts returns how many contact replaces were accepted, including
+// ones that changed nothing.
+func (s *Server) ContactPuts() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.contactPuts
+}
+
 // --- handlers --------------------------------------------------------------
+
+// handlePutContact is a full replace (40a): a field that is null or left out
+// is cleared, a contact with all three empty is deleted, and the same body
+// again changes nothing.
+func (s *Server) handlePutContact(w http.ResponseWriter, r *http.Request) {
+	tenant, user := r.PathValue("tenantId"), r.PathValue("userId")
+	if err := CheckTenant(tenant); err != nil {
+		badRequest(w, err)
+		return
+	}
+	body, ok := decodeObject(w, r)
+	if !ok {
+		return
+	}
+	var c Contact
+	for field, dst := range map[string]*string{"email": &c.Email, "slackUserId": &c.SlackUserID, "phone": &c.Phone} {
+		switch v := body[field].(type) {
+		case nil:
+		case string:
+			*dst = v
+		default:
+			badRequest(w, fmt.Errorf("%s must be a string or null", field))
+			return
+		}
+	}
+	key := tenant + "/" + user
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.contactPuts++
+	if c == (Contact{}) {
+		delete(s.contacts, key)
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
+		return
+	}
+	s.contacts[key] = c
+	writeJSON(w, http.StatusOK, map[string]any{"email": c.Email, "slackUserId": c.SlackUserID, "phone": c.Phone})
+}
 
 func (s *Server) handleNotify(w http.ResponseWriter, r *http.Request) {
 	body, ok := decodeObject(w, r)

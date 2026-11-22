@@ -136,6 +136,20 @@ type WebhookDeliveryRepository interface {
 	DeleteBefore(ctx context.Context, cutoff time.Time) (int, error)
 }
 
+// ContactRepository stores people's contact details (AP-05), one row per
+// tenant and user.
+type ContactRepository interface {
+	// Get returns the stored contact, or ErrNotFound.
+	Get(ctx context.Context, tenantID, userID string) (domain.Contact, error)
+	// GetForUpdate locks the person's contact until the transaction ends,
+	// first creating an empty one if there is none, so that concurrent
+	// changes to one person's contact run one after the other. It requires
+	// a transaction.
+	GetForUpdate(ctx context.Context, tenantID, userID string) (domain.Contact, error)
+	// Save writes the contact's fields and updated_at.
+	Save(ctx context.Context, c domain.Contact) error
+}
+
 // ErrJobMoved is returned by AgentJobRepository.Update when the job is no
 // longer as the caller read it, because another worker or a recovery sweep
 // changed it.
@@ -236,6 +250,26 @@ type OutboxRepository interface {
 	DeleteDispatchedBefore(ctx context.Context, cutoff time.Time, limit int) (int, error)
 	// Get returns one row by ID. Used by tests and, from M12, admin tools.
 	Get(ctx context.Context, id uuid.UUID) (domain.OutboxEntry, error)
+	// Coalesce keeps one row per idempotency key for state that AgentPulse
+	// replaces whole, such as a person's contact, where only the latest
+	// value matters. It inserts e, or folds e's payload (and trace) into
+	// the row that has its key. A row that is pending, dispatched, or dead
+	// returns to pending, due at e's NextAttemptAt, with no attempts and no
+	// error. A row being sent keeps its claim and only takes the payload;
+	// the relay sees the change when it settles the claim with
+	// MarkDispatchedIfUnchanged or MarkDeadLetterIfUnchanged. So one key
+	// is never sent by two workers at once, and every send reads the
+	// latest payload.
+	Coalesce(ctx context.Context, e domain.OutboxEntry) error
+	// MarkDispatchedIfUnchanged settles a successful send of a coalesced
+	// row: dispatched if the row still holds sent, or, when a newer payload
+	// was folded in during the send, pending again, due at at, with no
+	// attempts. requeued reports the latter.
+	MarkDispatchedIfUnchanged(ctx context.Context, id uuid.UUID, claimedAt time.Time, sent []byte, at time.Time) (requeued bool, err error)
+	// MarkDeadLetterIfUnchanged is MarkDeadLetter for a coalesced row: a
+	// newer payload folded in during the failed send is not dead with it,
+	// and returns to pending, due at at, with no attempts.
+	MarkDeadLetterIfUnchanged(ctx context.Context, id uuid.UUID, claimedAt time.Time, sent []byte, attempts int, lastErr string, at time.Time) (requeued bool, err error)
 	// DeleteForAggregate removes every row for one task, in any status.
 	DeleteForAggregate(ctx context.Context, tenantID string, aggregateID uuid.UUID) (int, error)
 	// ListForAggregate returns every row for one task, oldest first.

@@ -72,6 +72,7 @@ func newEnv(t *testing.T, opts ...option) *env {
 	agentJobs := service.NewAgentJobService(b.Tx, b.AgentJobs, b.Tasks, registry, nil, clock)
 	d := Deps{
 		AgentJobs:     agentJobs,
+		Contacts:      service.NewContactService(b.Tx, b.Contacts, b.Outbox, 10, clock, nil),
 		Tasks:         tasks,
 		Workspaces:    service.NewWorkspaceService(b.Tx, b.Workspaces, b.Rules, client, clock),
 		Feedback:      feedback,

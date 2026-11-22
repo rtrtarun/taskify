@@ -373,3 +373,29 @@ func TestBreaker(t *testing.T) {
 		wg.Wait()
 	})
 }
+
+func TestPutContact(t *testing.T) {
+	mock, url := newMock(t)
+	c := New(url, "k")
+	email := "bob@example.com"
+	if err := c.PutContact(context.Background(), "tenant_acme", "usr bob", Contact{Email: &email}); err != nil {
+		t.Fatal(err)
+	}
+	reqs := mock.RequestsTo("PUT", "/v1/tenants/tenant_acme/users/usr bob/contact")
+	if len(reqs) != 1 {
+		t.Fatalf("requests = %v", mock.Requests())
+	}
+	// All three fields, every time, null when unset.
+	if got := string(reqs[0].Body); got != `{"email":"bob@example.com","slackUserId":null,"phone":null}` {
+		t.Errorf("body = %s", got)
+	}
+	if reqs[0].Header.Get("Authorization") != "Bearer k" || reqs[0].Header.Get("Content-Type") != "application/json" {
+		t.Errorf("headers = %v", reqs[0].Header)
+	}
+	if got, ok := mock.ContactOf("tenant_acme", "usr bob"); !ok || got.Email != email {
+		t.Errorf("stored = %+v, %v", got, ok)
+	}
+	if err := c.PutContact(context.Background(), "default", "u", Contact{}); err == nil || Retryable(err) {
+		t.Errorf("reserved tenant: %v", err)
+	}
+}

@@ -256,3 +256,31 @@ func TestPermanentDeleteStopsNotifications(t *testing.T) {
 		}
 	}
 }
+
+// TestContactReachesAgentPulse: a person's contact goes through the outbox
+// to AgentPulse's contact endpoint as a full replace (AP-05).
+func TestContactReachesAgentPulse(t *testing.T) {
+	h := start(t)
+	status, out := h.call("PUT", "/api/v1/me/contact", "usr_carol", "member",
+		map[string]any{"email": "carol@example.com", "slack_user_id": "U024BE7LH"}, nil)
+	if status != 200 || out["email"] != "carol@example.com" {
+		t.Fatalf("put contact: %d %v", status, out)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if c, ok := h.mock.ContactOf(tenant, "usr_carol"); ok && c.Email == "carol@example.com" && c.SlackUserID == "U024BE7LH" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the contact never reached AgentPulse: %v", h.mock.Requests())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	reqs := h.mock.RequestsTo("PUT", "/v1/tenants/"+tenant+"/users/usr_carol/contact")
+	if len(reqs) != 1 || string(reqs[0].Body) != `{"email":"carol@example.com","slackUserId":"U024BE7LH","phone":null}` {
+		t.Errorf("PUTs = %d", len(reqs))
+	}
+	if status, out := h.call("GET", "/api/v1/me/contact", "usr_carol", "member", nil, nil); status != 200 || out["slack_user_id"] != "U024BE7LH" {
+		t.Errorf("get contact: %d %v", status, out)
+	}
+}
