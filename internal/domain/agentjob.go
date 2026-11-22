@@ -358,3 +358,31 @@ func (s AgentSettings) Apply(p AgentSettingsPatch) (AgentSettings, error) {
 	}
 	return out, nil
 }
+
+// Person is the person a job without a task is for, such as a morning
+// brief's recipient (input_context.user_id), or "" for a job about a task or
+// about the whole tenant.
+func (j *AgentJob) Person() string {
+	if j.TaskID != nil {
+		return ""
+	}
+	var in struct {
+		UserID string `json:"user_id"`
+	}
+	_ = json.Unmarshal(j.InputContext, &in) // no readable person: about the tenant
+	return in.UserID
+}
+
+// VisibleTo reports whether a caller may see the job (owner decision,
+// 2026-11-23): a job on a task, any member of the tenant; a job for one
+// person, such as a morning brief, that person and admins; a job about the
+// whole tenant, such as a learning run, admins only. A caller who may not
+// see a job is told it does not exist.
+func (j *AgentJob) VisibleTo(userID string, admin bool) bool {
+	switch {
+	case admin, j.TaskID != nil:
+		return true
+	}
+	p := j.Person()
+	return p != "" && p == userID
+}

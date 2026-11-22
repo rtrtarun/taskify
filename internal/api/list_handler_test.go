@@ -70,7 +70,7 @@ func TestListAgentJobs(t *testing.T) {
 	if len(jobs) != 1 || jobs[0].(map[string]any)["id"] != ids[2] || r.json["next_cursor"] != nil {
 		t.Fatalf("second page: %s", r.raw)
 	}
-	r = e.do(req{method: "GET", path: "/api/v1/agent-jobs?agent_type=digest&status=pending"})
+	r = e.do(req{method: "GET", path: "/api/v1/agent-jobs?agent_type=digest&status=pending", as: "admin"}) // no person: admins only
 	if jobs, _ := r.json["agent_jobs"].([]any); len(jobs) != 1 || jobs[0].(map[string]any)["id"] != brief.ID.String() ||
 		jobs[0].(map[string]any)["task_id"] != nil {
 		t.Errorf("digest jobs: %s", r.raw)
@@ -309,5 +309,95 @@ func TestOutboxPages(t *testing.T) {
 	r = e.do(req{method: "GET", path: "/api/v1/admin/outbox?limit=2&cursor=" + r.json["next_cursor"].(string), as: "admin"})
 	if len(r.json["entries"].([]any)) != 1 || r.json["next_cursor"] != nil {
 		t.Fatalf("second page: %s", r.raw)
+	}
+}
+
+// TestAgentJobVisibility covers each kind of job against a member, the
+// person a job is for, and an admin (owner decision, 2026-11-23): a job on a
+// task is seen by every member, a brief by its person and admins, a job
+// about the tenant by admins only. Anything else is 404 and left out of
+// lists, paging included.
+func TestAgentJobVisibility(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	taskID := uuid.MustParse(e.createTask(nil)["id"].(string))
+	onTask := e.insertJob(&taskID, domain.AgentTriage, e.now)
+	brief, err := domain.NewBriefJob(domain.BriefRecipient{TenantID: tenant, UserID: "usr_bob", WorkspaceID: "ws_core"}, e.now, e.now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	learning, err := domain.NewLearningJob(domain.LearningTenant{TenantID: tenant, WorkspaceID: "ws_core"}, e.now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range []domain.AgentJob{brief, learning} {
+		if _, err := e.b.AgentJobs.Insert(ctx, j); err != nil {
+			t.Fatal(err)
+		}
+	}
+	carol := map[string]string{"Authorization": "Bearer " + token(t, tenant, "usr_carol", "member", time.Hour)}
+	type viewer struct {
+		name    string
+		as      string
+		headers map[string]string
+	}
+	member, owner, admin := viewer{"member", "none", carol}, viewer{"owner", "member", nil}, viewer{"admin", "admin", nil}
+	for _, tc := range []struct {
+		job     string
+		id      uuid.UUID
+		visible map[string]bool
+	}{
+		{"on a task", onTask.ID, map[string]bool{"member": true, "owner": true, "admin": true}},
+		{"a brief for usr_bob", brief.ID, map[string]bool{"member": false, "owner": true, "admin": true}},
+		{"about the tenant", learning.ID, map[string]bool{"member": false, "owner": false, "admin": true}},
+	} {
+		for _, v := range []viewer{member, owner, admin} {
+			r := e.do(req{method: "GET", path: "/api/v1/agent-jobs/" + tc.id.String(), as: v.as, headers: v.headers})
+			if want := tc.visible[v.name]; (r.status == 200) != want || (!want && (r.status != 404 || r.errCode() != CodeNotFound)) {
+				t.Errorf("GET %s as %s: %d %s", tc.job, v.name, r.status, r.raw)
+			}
+			if tc.visible[v.name] {
+				continue
+			}
+			// Deciding a job the caller may not see does not reveal it either.
+			for _, action := range []string{"apply", "dismiss"} {
+				r := e.do(req{method: "POST", path: "/api/v1/agent-jobs/" + tc.id.String() + "/" + action, as: v.as, headers: v.headers})
+				if r.status != 404 || r.errCode() != CodeNotFound {
+					t.Errorf("%s %s as %s: %d %s", action, tc.job, v.name, r.status, r.raw)
+				}
+			}
+		}
+	}
+	// The owner may see their brief but not decide it.
+	if r := e.do(req{method: "POST", path: "/api/v1/agent-jobs/" + brief.ID.String() + "/dismiss"}); r.status != 403 {
+		t.Errorf("owner dismisses their brief: %d %s", r.status, r.raw)
+	}
+
+	// Lists leave out what the caller may not see, and paging one at a time
+	// ends without a trace of it.
+	for _, tc := range []struct {
+		v    viewer
+		want []string
+	}{
+		{member, []string{onTask.ID.String()}},
+		{owner, []string{brief.ID.String(), onTask.ID.String()}},
+		{admin, []string{learning.ID.String(), brief.ID.String(), onTask.ID.String()}},
+	} {
+		var got []string
+		path := "/api/v1/agent-jobs?limit=1"
+		for {
+			r := e.do(req{method: "GET", path: path, as: tc.v.as, headers: tc.v.headers})
+			for _, j := range r.json["agent_jobs"].([]any) {
+				got = append(got, j.(map[string]any)["id"].(string))
+			}
+			next, _ := r.json["next_cursor"].(string)
+			if next == "" {
+				break
+			}
+			path = "/api/v1/agent-jobs?limit=1&cursor=" + next
+		}
+		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			t.Errorf("%s lists %v, want %v", tc.v.name, got, tc.want)
+		}
 	}
 }

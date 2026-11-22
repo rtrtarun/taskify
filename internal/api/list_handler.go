@@ -92,7 +92,7 @@ func (h *handlers) listAgentJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		f.TaskID = &id
 	}
-	page, err := h.agentJobs.List(r.Context(), f)
+	page, err := h.agentJobs.List(r.Context(), f, decider(r))
 	if err != nil {
 		h.fail(w, r, err)
 		return

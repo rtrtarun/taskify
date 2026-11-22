@@ -599,7 +599,9 @@ paths:
       operationId: listAgentJobs
       summary: List agent jobs
       description: |
-        The tenant's agent jobs, newest first, a page at a time. With
+        The agent jobs the caller may see, newest first, a page at a time
+        (see `getAgentJob`): a job the caller may not see is left out, and
+        neither the page nor its cursor reveals it. With
         `status=awaiting_approval` it feeds the approvals inbox.
       parameters:
         - name: status
@@ -641,6 +643,12 @@ paths:
       tags: [agent-jobs]
       operationId: getAgentJob
       summary: Get an agent job
+      description: |
+        Who may see a job depends on its kind (owner decision, 2026-11-23):
+        a job on a task, any member of the tenant; a morning brief, only
+        the person it is for, and admins; a job about the whole tenant,
+        such as a learning run, admins only. A job the caller may not see
+        answers `404`, as an unknown one does.
       responses:
         "200":
           description: The job.
@@ -666,7 +674,9 @@ paths:
       summary: Approve and apply a job's proposals
       description: |
         Allowed for the task's assignee, its creator, or an admin; a job
-        without a task, for an admin only. Repeating the decision changes
+        without a task, for an admin only. A job the caller may not see
+        (`getAgentJob`) answers `404`; one they may see but not decide,
+        `403`. Repeating the decision changes
         nothing (`changed: false`). `409` codes: `stale_version` (the task
         moved on since the proposal; the job fails), `already_decided`,
         `not_awaiting_approval`.

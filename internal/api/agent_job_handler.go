@@ -116,7 +116,7 @@ func (h *handlers) getAgentJob(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	job, err := h.agentJobs.Get(r.Context(), identity(r).TenantID, id)
+	job, err := h.agentJobs.Get(r.Context(), identity(r).TenantID, id, decider(r))
 	if err != nil {
 		h.fail(w, r, err)
 		return

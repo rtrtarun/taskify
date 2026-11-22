@@ -220,7 +220,7 @@ func TestDecisionBeforeTheJobAsks(t *testing.T) {
 		if _, _, err := jf.jobs.Apply(ctx, tenant, job.ID, assignee); !errors.Is(err, ErrNotAwaitingApproval) {
 			t.Errorf("Apply on a pending job = %v", err)
 		}
-		if got, err := jf.jobs.Get(ctx, tenant, job.ID); err != nil || got.ID != job.ID {
+		if got, err := jf.jobs.Get(ctx, tenant, job.ID, assignee); err != nil || got.ID != job.ID {
 			t.Errorf("Get = %v, %v", got, err)
 		}
 	})

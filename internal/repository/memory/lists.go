@@ -66,6 +66,7 @@ func (r *AgentJobRepo) List(ctx context.Context, f repository.AgentJobFilter) (p
 				f.Status != "" && j.Status != f.Status,
 				f.AgentType != "" && j.AgentType != f.AgentType,
 				f.TaskID != nil && (j.TaskID == nil || *j.TaskID != *f.TaskID),
+				f.Viewer != "" && !j.VisibleTo(f.Viewer, f.ViewerIsAdmin),
 				!afterCursor(j.CreatedAt, j.ID, f.After):
 				continue
 			}

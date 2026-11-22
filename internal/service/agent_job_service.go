@@ -64,9 +64,17 @@ func NewAgentJobService(tx repository.TxManager, jobs repository.AgentJobReposit
 
 func (s *AgentJobService) clock() time.Time { return s.now().UTC().Truncate(time.Microsecond) }
 
-// Get returns a job in the tenant.
-func (s *AgentJobService) Get(ctx context.Context, tenantID string, id uuid.UUID) (*domain.AgentJob, error) {
-	return s.jobs.Get(ctx, tenantID, id)
+// Get returns a job in the tenant that v may see (domain.AgentJob.VisibleTo);
+// any other is ErrNotFound, as an unknown job is.
+func (s *AgentJobService) Get(ctx context.Context, tenantID string, id uuid.UUID, v Decider) (*domain.AgentJob, error) {
+	job, err := s.jobs.Get(ctx, tenantID, id)
+	if err != nil {
+		return nil, err
+	}
+	if !job.VisibleTo(v.UserID, v.Admin) {
+		return nil, domain.ErrNotFound
+	}
+	return job, nil
 }
 
 // Brief is a morning brief as the digest agent stored it (M10-02).
@@ -239,6 +247,10 @@ func (s *AgentJobService) lockForDecision(ctx context.Context, tenantID string, 
 	job, err := s.jobs.GetForUpdate(ctx, tenantID, id)
 	if err != nil {
 		return nil, nil, err
+	}
+	if !job.VisibleTo(d.UserID, d.Admin) {
+		// A job d may not see is one d is not told exists.
+		return nil, nil, domain.ErrNotFound
 	}
 	if job.TaskID == nil {
 		// No task to own the decision: admins only.

@@ -1,0 +1,22 @@
+{
+  "description": "A job on a task is seen by every member of the tenant, in lists too, and by nobody outside it; an unknown job is 404.",
+  "rules": ["R7.7"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Shared work", "assignee_id": "usr_carol"}},
+      "expect": {"status": 201}, "capture": {"task": "id"}},
+    {"as": "admin", "request": {"method": "PATCH", "path": "/api/v1/workspaces/{{workspace}}/settings", "body": {
+      "agent_settings": {"agents_enabled": true, "require_hitl_for_all": false, "disabled_agents": ["triage", "blocker_investigator", "digest", "learning"]}}},
+      "expect": {"status": 200}},
+    {"request": {"method": "POST", "path": "/api/v1/tasks/{{task}}/decompose"}, "expect": {"status": 202}, "capture": {"job": "id"}},
+    {"name": "another member reads it", "as": {"user": "usr_dave"}, "request": {"method": "GET", "path": "/api/v1/agent-jobs/{{job}}"},
+      "expect": {"status": 200, "body": {"id": "{{job}}", "task_id": "{{task}}"}}},
+    {"name": "and lists it", "as": {"user": "usr_dave"}, "request": {"method": "GET", "path": "/api/v1/agent-jobs?task_id={{task}}"},
+      "expect": {"status": 200, "body": {"agent_jobs": [{"id": "{{job}}"}], "next_cursor": null}}},
+    {"name": "another tenant", "as": "other_tenant", "request": {"method": "GET", "path": "/api/v1/agent-jobs/{{job}}"},
+      "expect": {"status": 404, "error_code": "not_found"}},
+    {"name": "another tenant's list", "as": "other_tenant", "request": {"method": "GET", "path": "/api/v1/agent-jobs"},
+      "expect": {"status": 200, "body": {"agent_jobs": []}}},
+    {"name": "an unknown job", "request": {"method": "GET", "path": "/api/v1/agent-jobs/{{random_uuid}}"},
+      "expect": {"status": 404, "error_code": "not_found"}}
+  ]
+}

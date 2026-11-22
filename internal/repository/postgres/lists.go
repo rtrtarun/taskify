@@ -66,6 +66,10 @@ func (r *AgentJobRepo) List(ctx context.Context, f repository.AgentJobFilter) (r
 	if f.AgentType != "" {
 		q.where = append(q.where, "agent_type = "+q.arg(f.AgentType))
 	}
+	if f.Viewer != "" && !f.ViewerIsAdmin {
+		// domain.AgentJob.VisibleTo: a job on a task, or one for this person.
+		q.where = append(q.where, "(task_id IS NOT NULL OR input_context->>'user_id' = "+q.arg(f.Viewer)+")")
+	}
 	q.after(f.After)
 	jobs, err := r.query(ctx, q.sql("agent_jobs", jobColumns, f.Limit), q.args...)
 	if err != nil {

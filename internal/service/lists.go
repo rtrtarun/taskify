@@ -55,9 +55,15 @@ func (s *TaskService) ListSubtasks(ctx context.Context, tenantID string, parentI
 	return out, nil
 }
 
-// List returns a page of the tenant's agent jobs, newest first.
-func (s *AgentJobService) List(ctx context.Context, f repository.AgentJobFilter) (repository.AgentJobPage, error) {
+// List returns a page of the tenant's agent jobs that v may see, newest
+// first. A job v may not see is left out by the query itself, so neither the
+// page nor its cursor reveals it.
+func (s *AgentJobService) List(ctx context.Context, f repository.AgentJobFilter, v Decider) (repository.AgentJobPage, error) {
 	f.Limit = pageLimit(f.Limit)
+	f.Viewer, f.ViewerIsAdmin = v.UserID, v.Admin
+	if f.Viewer == "" && !f.ViewerIsAdmin {
+		return repository.AgentJobPage{}, fmt.Errorf("%w: a list of jobs needs a viewer", domain.ErrValidation)
+	}
 	if f.Status != "" && !f.Status.Valid() {
 		return repository.AgentJobPage{}, fmt.Errorf("%w: unknown job status %q", domain.ErrValidation, f.Status)
 	}

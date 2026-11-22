@@ -204,8 +204,12 @@ type AgentJobFilter struct {
 	Status    domain.JobStatus
 	TaskID    *uuid.UUID
 	AgentType string
-	Limit     int // must be positive
-	After     *ListCursor
+	// Viewer, when set, keeps only the jobs that person may see
+	// (domain.AgentJob.VisibleTo), every job when ViewerIsAdmin.
+	Viewer        string
+	ViewerIsAdmin bool
+	Limit         int // must be positive
+	After         *ListCursor
 }
 
 // AgentJobPage is one page of agent jobs, newest first. Next is nil on the
