@@ -2,6 +2,7 @@ package contract
 
 import (
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -73,5 +74,20 @@ func TestSchemaLookups(t *testing.T) {
 	err := ValidateEvent("contact.update", []byte(bad))
 	if err == nil || !strings.Contains(err.Error(), `missing property "phone"`) || !strings.Contains(err.Error(), "/email") {
 		t.Errorf("invalid contact: %v", err)
+	}
+}
+
+// TestR2ChecklistIsEmpty is M12-08: contract/TODO.md lists the R2 items
+// missing from the contract, and R2 is complete.
+func TestR2ChecklistIsEmpty(t *testing.T) {
+	raw, err := os.ReadFile("TODO.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "- [ ]") {
+		t.Error("contract/TODO.md has an unticked item")
+	}
+	if !strings.Contains(string(raw), "## Open\n\nNone.") {
+		t.Error("contract/TODO.md's open list is not empty")
 	}
 }
