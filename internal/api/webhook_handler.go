@@ -46,7 +46,9 @@ type webhookBody struct {
 	TaskID         string `json:"taskId"` // complete, snooze, and unblock
 	JobID          string `json:"jobId"`  // approve and reject
 	NotificationID string `json:"notificationId"`
-	Duration       string `json:"duration"`
+	// CallbackID is the same on every retry of one click (AP-06).
+	CallbackID string `json:"callbackId"`
+	Duration   string `json:"duration"`
 }
 
 // webhook authenticates by signature, not by JWT: the caller is AgentPulse,
@@ -68,7 +70,7 @@ func (h *handlers) webhook(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, badRequest("callback body is not valid JSON"))
 		return
 	}
-	cb := service.Callback{Key: sig, Action: body.Action, TenantID: body.TenantID, UserID: body.UserID,
+	cb := service.Callback{Key: sig, CallbackID: body.CallbackID, Action: body.Action, TenantID: body.TenantID, UserID: body.UserID,
 		NotificationID: body.NotificationID, Duration: body.Duration}
 	// A malformed ID names nothing; an absent one is for the service to judge.
 	for _, f := range []struct {

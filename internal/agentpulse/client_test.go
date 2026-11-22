@@ -43,7 +43,7 @@ func TestNotifySendsBodyAndHeaders(t *testing.T) {
 	if err := c.Notify(ctx, body); err != nil {
 		t.Fatal(err)
 	}
-	reqs := mock.RequestsTo("POST", "/notify")
+	reqs := mock.RequestsTo("POST", "/v1/notify")
 	if len(reqs) != 1 {
 		t.Fatalf("requests = %d", len(reqs))
 	}
@@ -70,7 +70,7 @@ func TestNotifyRewritesLegacyBypassKey(t *testing.T) {
 	if err := c.Notify(context.Background(), body); err != nil {
 		t.Fatal(err)
 	}
-	p := decode(t, mock.RequestsTo("POST", "/notify")[0])["payload"].(map[string]any)
+	p := decode(t, mock.RequestsTo("POST", "/v1/notify")[0])["payload"].(map[string]any)
 	if p["bypassDigest"] != true || p["bypass_digest"] != nil || p["taskId"] != "1" {
 		t.Errorf("payload = %v", p)
 	}
@@ -84,42 +84,90 @@ func TestOtherCalls(t *testing.T) {
 	c := New(url, "k")
 	ctx := context.Background()
 
+	// last returns the only request made since the previous call, checking
+	// its method, path, query, and exact body.
+	seen := 0
+	last := func(method, path, query, body string) {
+		t.Helper()
+		reqs := mock.Requests()
+		if len(reqs) != seen+1 {
+			t.Fatalf("%s %s: %d new requests, want 1", method, path, len(reqs)-seen)
+		}
+		r := reqs[seen]
+		seen++
+		if r.Method != method || r.Path != path || r.Query != query {
+			t.Errorf("request = %s %s?%s, want %s %s?%s", r.Method, r.Path, r.Query, method, path, query)
+		}
+		if strings.TrimSpace(string(r.Body)) != body {
+			t.Errorf("%s %s body:\n got %s\nwant %s", method, path, r.Body, body)
+		}
+		if r.Header.Get("Authorization") != "Bearer k" {
+			t.Errorf("%s %s: Authorization = %q", method, path, r.Header.Get("Authorization"))
+		}
+	}
+
+	mock.SeedNotification("n1", map[string]any{"tenantId": "t", "userId": "u"})
 	if err := c.RecordFeedback(ctx, Feedback{NotificationID: "n1", TenantID: "t", UserID: "u", Signal: "snoozed", SnoozeDuration: "2h"}); err != nil {
 		t.Fatal(err)
 	}
-	fb := decode(t, mock.RequestsTo("POST", "/feedback")[0])
-	if fb["notificationId"] != "n1" || fb["signal"] != "snoozed" || fb["snoozeDuration"] != "2h" || fb["taskId"] != nil {
-		t.Errorf("feedback body = %v", fb)
+	last("POST", "/v1/feedback", "", `{"notificationId":"n1","tenantId":"t","userId":"u","signal":"snoozed","snoozeDuration":"2h"}`)
+	// AP-12: without a notification, notificationId is left out, not sent
+	// empty.
+	if err := c.RecordFeedback(ctx, Feedback{TenantID: "t", UserID: "u", Signal: "dismissed", TaskID: "task-1"}); err != nil {
+		t.Fatal(err)
 	}
-	if err := c.RecordFeedback(ctx, Feedback{Signal: "shrug"}); err == nil {
+	last("POST", "/v1/feedback", "", `{"tenantId":"t","userId":"u","signal":"dismissed","taskId":"task-1"}`)
+	if err := c.RecordFeedback(ctx, Feedback{TenantID: "t", UserID: "u", Signal: "shrug"}); err == nil {
 		t.Error("an invalid signal was accepted")
 	}
+	seen++
 
 	id, err := c.CreateRule(ctx, Rule{TenantID: "t", Name: "low", MatchAny: []RuleMatch{{PayloadMatch: map[string]any{"priority": "p4_low"}}}, Channels: []string{"digest"}})
 	if err != nil || id == "" {
 		t.Fatalf("CreateRule = %q, %v", id, err)
 	}
-	rule := decode(t, mock.RequestsTo("POST", "/rules")[0])
-	match := rule["matchAny"].([]any)[0].(map[string]any)
-	if rule["tenantId"] != "t" || match["payloadMatch"].(map[string]any)["priority"] != "p4_low" || match["eventTypes"] != nil {
-		t.Errorf("rule body = %v", rule)
-	}
+	last("POST", "/v1/rules", "", `{"tenantId":"t","name":"low","matchAny":[{"payloadMatch":{"priority":"p4_low"}}],"channels":["digest"]}`)
 
-	sid := mock.SeedSuggestion(map[string]any{"tenantId": "t a", "proposedAdjustment": 5.0})
-	raw, err := c.ListLearningSuggestions(ctx, "t a")
+	raw, err := c.ListRules(ctx, "t")
+	if err != nil || !strings.Contains(string(raw), `"id":"`+id+`"`) {
+		t.Fatalf("ListRules = %s, %v", raw, err)
+	}
+	last("GET", "/v1/rules", "tenantId=t", "")
+
+	sid := mock.SeedSuggestion(map[string]any{"tenantId": "t.a-1", "proposedAdjustment": 5.0})
+	raw, err = c.ListLearningSuggestions(ctx, "t.a-1")
 	if err != nil || !strings.Contains(string(raw), sid) {
 		t.Fatalf("ListLearningSuggestions = %s, %v", raw, err)
 	}
-	if q := mock.RequestsTo("GET", "/learning/suggestions")[0].Query; q != "tenantId=t+a" {
-		t.Errorf("query = %q, want the tenant escaped", q)
-	}
-	raw, err = c.ReviewLearningSuggestion(ctx, sid, "approve", "usr_admin")
+	last("GET", "/v1/learning/suggestions", "tenantId=t.a-1", "")
+	raw, err = c.ReviewLearningSuggestion(ctx, "t.a-1", sid, "approve", "usr_admin")
 	if err != nil || !strings.Contains(string(raw), "APPROVED") {
 		t.Fatalf("ReviewLearningSuggestion = %s, %v", raw, err)
 	}
-	if _, err := c.ReviewLearningSuggestion(ctx, "missing", "approve", "u"); err == nil {
+	last("POST", "/v1/learning/suggestions/"+sid+"/decision", "", `{"decidedBy":"usr_admin","decision":"approve","tenantId":"t.a-1"}`)
+	if _, err := c.ReviewLearningSuggestion(ctx, "t.a-1", "missing", "approve", "u"); err == nil {
 		t.Error("unknown suggestion did not fail")
 	}
+	seen++
+	// Another tenant's suggestion is not found (AP-12).
+	other := mock.SeedSuggestion(map[string]any{"tenantId": "t", "proposedAdjustment": -5.0})
+	var se *StatusError
+	if _, err := c.ReviewLearningSuggestion(ctx, "t.a-1", other, "approve", "u"); !errors.As(err, &se) || se.Code != 404 {
+		t.Errorf("another tenant's suggestion: %v", err)
+	}
+	seen++
+
+	mock.SeedFeed("t", "usr 1", mockagentpulse.FeedItem{"id": "n2"}, mockagentpulse.FeedItem{"id": "n1"})
+	raw, err = c.InAppFeed(ctx, "t", "usr 1", 1, "")
+	if err != nil || !strings.Contains(string(raw), `"n2"`) || !strings.Contains(string(raw), `"nextCursor":"1"`) {
+		t.Fatalf("InAppFeed = %s, %v", raw, err)
+	}
+	last("GET", "/v1/tenants/t/users/usr 1/in-app-feed", "limit=1", "")
+	raw, err = c.InAppFeed(ctx, "t", "usr 1", 0, "1")
+	if err != nil || !strings.Contains(string(raw), `"n1"`) {
+		t.Fatalf("InAppFeed next page = %s, %v", raw, err)
+	}
+	last("GET", "/v1/tenants/t/users/usr 1/in-app-feed", "cursor=1", "")
 }
 
 func TestErrorClassification(t *testing.T) {
@@ -138,7 +186,7 @@ func TestErrorClassification(t *testing.T) {
 		{http.StatusUnauthorized, false},
 		{http.StatusUnprocessableEntity, false},
 	} {
-		mock.FailNext("POST", "/notify", tc.status, 1)
+		mock.FailNext("POST", "/v1/notify", tc.status, 1)
 		err := c.Notify(context.Background(), body)
 		var se *StatusError
 		if !errors.As(err, &se) || se.Code != tc.status {
@@ -188,7 +236,7 @@ func TestClientWithBreaker(t *testing.T) {
 	c := New(url, "k", WithBreaker(NewBreaker(20, 0.5, 10*time.Second).WithClock(clock)))
 	body := json.RawMessage(`{"idempotencyKey":"k","tenantId":"t","userId":"u","eventType":"e","title":"x","body":"y"}`)
 
-	mock.FailNext("POST", "/notify", http.StatusServiceUnavailable, -1)
+	mock.FailNext("POST", "/v1/notify", http.StatusServiceUnavailable, -1)
 	for i := 0; i < 20; i++ {
 		_ = c.Notify(context.Background(), body)
 	}
@@ -213,7 +261,7 @@ func TestClientWithBreaker(t *testing.T) {
 	}
 
 	// 4xx responses never open the breaker.
-	mock.FailNext("POST", "/notify", http.StatusBadRequest, -1)
+	mock.FailNext("POST", "/v1/notify", http.StatusBadRequest, -1)
 	for i := 0; i < 30; i++ {
 		_ = c.Notify(context.Background(), body)
 	}
@@ -338,4 +386,102 @@ func TestBreaker(t *testing.T) {
 		}
 		wg.Wait()
 	})
+}
+
+func TestPutContact(t *testing.T) {
+	mock, url := newMock(t)
+	c := New(url, "k")
+	email := "bob@example.com"
+	if err := c.PutContact(context.Background(), "tenant_acme", "usr bob", Contact{Email: &email}); err != nil {
+		t.Fatal(err)
+	}
+	reqs := mock.RequestsTo("PUT", "/v1/tenants/tenant_acme/users/usr bob/contact")
+	if len(reqs) != 1 {
+		t.Fatalf("requests = %v", mock.Requests())
+	}
+	// All three fields, every time, null when unset.
+	if got := string(reqs[0].Body); got != `{"email":"bob@example.com","slackUserId":null,"phone":null}` {
+		t.Errorf("body = %s", got)
+	}
+	if reqs[0].Header.Get("Authorization") != "Bearer k" || reqs[0].Header.Get("Content-Type") != "application/json" {
+		t.Errorf("headers = %v", reqs[0].Header)
+	}
+	if got, ok := mock.ContactOf("tenant_acme", "usr bob"); !ok || got.Email != email {
+		t.Errorf("stored = %+v, %v", got, ok)
+	}
+	if err := c.PutContact(context.Background(), "default", "u", Contact{}); err == nil || Retryable(err) {
+		t.Errorf("reserved tenant: %v", err)
+	}
+}
+
+// TestLearningCalls is M11-01: the exact requests for submitting a learning
+// suggestion, listing suggestions decoded, and reading feedback analytics.
+func TestLearningCalls(t *testing.T) {
+	mock, url := newMock(t)
+	c := New(url, "k")
+	ctx := context.Background()
+	docs := "docs"
+
+	id, err := c.SubmitLearningSuggestion(ctx, LearningSuggestion{TenantID: "tenant_acme",
+		EventPattern:      &EventPattern{EventType: "task.comment_added", Label: &docs},
+		CurrentAdjustment: 0, ProposedAdjustment: -10, SignalCount: 12, Rationale: "Comments on docs tasks are dismissed."})
+	if err != nil || id == "" {
+		t.Fatalf("SubmitLearningSuggestion = %q, %v", id, err)
+	}
+	sent := mock.RequestsTo("POST", "/v1/learning/suggestions")
+	want := `{"tenantId":"tenant_acme","eventPattern":{"eventType":"task.comment_added","label":"docs"},` +
+		`"currentAdjustment":0,"proposedAdjustment":-10,"signalCount":12,"rationale":"Comments on docs tasks are dismissed."}`
+	if len(sent) != 1 || strings.TrimSpace(string(sent[0].Body)) != want {
+		t.Fatalf("body:\n got %s\nwant %s", sent[0].Body, want)
+	}
+	// An unlabelled pattern sends label null, not nothing.
+	if _, err := c.SubmitLearningSuggestion(ctx, LearningSuggestion{TenantID: "tenant_acme",
+		EventPattern:       &EventPattern{EventType: "task.updated"},
+		ProposedAdjustment: -5, SignalCount: 5, Rationale: "r"}); err != nil {
+		t.Fatal(err)
+	}
+	sent = mock.RequestsTo("POST", "/v1/learning/suggestions")
+	if body := string(sent[1].Body); !strings.Contains(body, `"eventPattern":{"eventType":"task.updated","label":null}`) ||
+		strings.Contains(body, "ruleId") {
+		t.Errorf("unlabelled body = %s", body)
+	}
+	// AgentPulse's limits are its to enforce; the client reports the 400.
+	var se *StatusError
+	if _, err := c.SubmitLearningSuggestion(ctx, LearningSuggestion{TenantID: "tenant_acme",
+		EventPattern: &EventPattern{EventType: "task.updated"}, ProposedAdjustment: -25, SignalCount: 5, Rationale: "r"}); !errors.As(err, &se) ||
+		se.Code != http.StatusBadRequest || Retryable(err) {
+		t.Errorf("out of range: %v", err)
+	}
+
+	list, err := c.LearningSuggestions(ctx, "tenant_acme")
+	if err != nil || len(list) != 2 || list[0].ID != id || list[0].Status != SuggestionPending ||
+		list[0].Body.EventPattern == nil || *list[0].Body.EventPattern.Label != "docs" || list[0].Body.ProposedAdjustment != -10 {
+		t.Fatalf("LearningSuggestions = %+v, %v", list, err)
+	}
+	if r := mock.Requests(); r[len(r)-1].Path != "/v1/learning/suggestions" || r[len(r)-1].Query != "tenantId=tenant_acme" {
+		t.Errorf("list request = %s?%s", r[len(r)-1].Path, r[len(r)-1].Query)
+	}
+
+	// Feedback analytics: one notification on a docs task, dismissed.
+	mock.SeedNotification("ntf_1", map[string]any{"tenantId": "tenant_acme", "userId": "usr_bob", "eventType": "task.updated",
+		"payload": map[string]any{"taskId": "t1", "labels": []any{"docs"}}})
+	if err := c.RecordFeedback(ctx, Feedback{NotificationID: "ntf_1", TenantID: "tenant_acme", UserID: "usr_bob", Signal: "dismissed"}); err != nil {
+		t.Fatal(err)
+	}
+	since := time.Date(2026, 10, 23, 9, 30, 0, 0, time.FixedZone("x", 3600))
+	a, err := c.FeedbackAnalytics(ctx, "tenant_acme", since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := mock.Requests()[len(mock.Requests())-1]
+	if r.Method != "GET" || r.Path != "/v1/analytics/feedback" || r.Query != "tenantId=tenant_acme&since=2026-10-23T08%3A30%3A00Z" {
+		t.Errorf("analytics request = %s %s?%s", r.Method, r.Path, r.Query)
+	}
+	if !a.Since.Equal(since) || len(a.Groups) != 1 {
+		t.Fatalf("analytics = %+v", a)
+	}
+	g := a.Groups[0]
+	if g.EventType != "task.updated" || g.Label == nil || *g.Label != "docs" || g.Delivered != 1 || g.Dismissed != 1 || g.DistinctUsers != 1 {
+		t.Errorf("group = %+v", g)
+	}
 }

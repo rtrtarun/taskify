@@ -37,7 +37,9 @@ func (f *fixture) notification(t *testing.T, taskID uuid.UUID, eventType string)
 }
 
 func deferred(n domain.Notification) bool {
-	return slices.Equal(n.Channels, []string{domain.ChannelDigest}) && n.Payload["digestSummary"] == domain.DeferredDigestSummary &&
+	// The fixture's tasks are all "Fix checkout crash" (AP-07: the line names the task).
+	return slices.Equal(n.Channels, []string{domain.ChannelDigest}) &&
+		n.Payload["digestSummary"] == "Assigned to you: Fix checkout crash. Deferred to avoid context switching" &&
 		n.Payload["bypassDigest"] == nil
 }
 

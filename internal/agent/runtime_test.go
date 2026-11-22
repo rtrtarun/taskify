@@ -724,7 +724,7 @@ func TestProposalRequestsApprovalOnce(t *testing.T) {
 		f := newFixture(t, b, true)
 		task, job := f.task(t, "Needs a description") // unassigned: the creator decides
 		f.mock.Then(llm.Call("c1", "Describe", describe(task.ID, "proposed")), llm.Text("Proposed."))
-		if _, err := f.runtime(t, Config{PublicBaseURL: "https://taskify.test"}).RunOnce(ctx); err != nil {
+		if _, err := f.runtime(t, Config{PublicBaseURL: "https://taskify.test", AppBaseURL: "https://app.test"}).RunOnce(ctx); err != nil {
 			t.Fatal(err)
 		}
 		if got := f.job(t, job.ID); got.Status != domain.JobAwaitingApproval {
@@ -747,7 +747,9 @@ func TestProposalRequestsApprovalOnce(t *testing.T) {
 			t.Errorf("approval notification = %s %+v", e.EventType, n)
 		}
 		urls, _ := n.Payload["actionUrls"].(map[string]any)
-		if urls["approve"] != "https://taskify.test/api/v1/agent-jobs/"+job.ID.String()+"/apply" {
+		// view opens the task in the web app (AP-10).
+		if urls["approve"] != "https://taskify.test/api/v1/agent-jobs/"+job.ID.String()+"/apply" ||
+			urls["view"] != "https://app.test/tasks/"+task.ID.String() {
 			t.Errorf("actionUrls = %v", urls)
 		}
 

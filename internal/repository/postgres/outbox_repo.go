@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -142,6 +143,74 @@ func (r *OutboxRepo) Get(ctx context.Context, id uuid.UUID) (domain.OutboxEntry,
 		return domain.OutboxEntry{}, domain.ErrNotFound
 	}
 	return entries[0], nil
+}
+
+// Coalesce is one statement. ON CONFLICT DO UPDATE locks the existing row and
+// works on its latest version, so it serialises with the relay settling a
+// claim on the same row: whichever comes second sees the other's write.
+func (r *OutboxRepo) Coalesce(ctx context.Context, e domain.OutboxEntry) error {
+	trace := e.TraceContext
+	if trace == nil {
+		trace = map[string]string{}
+	}
+	_, err := r.db.q(ctx).Exec(ctx, `
+		INSERT INTO notification_outbox AS o (id, tenant_id, aggregate_id, event_type, idempotency_key,
+			payload, trace_context, status, attempts, max_attempts, next_attempt_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', 0, $8, $9, $10)
+		ON CONFLICT (idempotency_key) DO UPDATE SET
+			payload         = EXCLUDED.payload,
+			trace_context   = EXCLUDED.trace_context,
+			max_attempts    = EXCLUDED.max_attempts,
+			status          = CASE WHEN o.status = 'processing' THEN o.status ELSE 'pending' END,
+			attempts        = CASE WHEN o.status = 'processing' THEN o.attempts ELSE 0 END,
+			next_attempt_at = CASE WHEN o.status = 'processing' THEN o.next_attempt_at ELSE EXCLUDED.next_attempt_at END,
+			last_error      = CASE WHEN o.status = 'processing' THEN o.last_error END,
+			dispatched_at   = NULL`,
+		e.ID, e.TenantID, e.AggregateID, e.EventType, e.IdempotencyKey,
+		e.Payload, trace, e.MaxAttempts, e.NextAttemptAt, e.CreatedAt)
+	return mapErr(err)
+}
+
+// MarkDispatchedIfUnchanged compares payloads inside the UPDATE, on the row
+// version it locks: a Coalesce that committed while this statement waited is
+// seen, and one that comes after finds the row no longer processing.
+func (r *OutboxRepo) MarkDispatchedIfUnchanged(ctx context.Context, id uuid.UUID, claimedAt time.Time, sent []byte, at time.Time) (bool, error) {
+	return r.settleCoalesced(ctx, `
+		UPDATE notification_outbox SET
+			status          = CASE WHEN payload = $3::jsonb THEN 'dispatched' ELSE 'pending' END::outbox_status,
+			dispatched_at   = CASE WHEN payload = $3::jsonb THEN $4::timestamptz END,
+			attempts        = CASE WHEN payload = $3::jsonb THEN attempts ELSE 0 END,
+			next_attempt_at = CASE WHEN payload = $3::jsonb THEN next_attempt_at ELSE $4::timestamptz END,
+			last_error      = CASE WHEN payload = $3::jsonb THEN last_error END,
+			claimed_at      = NULL
+		WHERE `+fence+`
+		RETURNING status::text`, id, claimedAt, sent, at)
+}
+
+func (r *OutboxRepo) MarkDeadLetterIfUnchanged(ctx context.Context, id uuid.UUID, claimedAt time.Time, sent []byte, attempts int, lastErr string, at time.Time) (bool, error) {
+	return r.settleCoalesced(ctx, `
+		UPDATE notification_outbox SET
+			status          = CASE WHEN payload = $3::jsonb THEN 'dead_letter' ELSE 'pending' END::outbox_status,
+			attempts        = CASE WHEN payload = $3::jsonb THEN $5::int ELSE 0 END,
+			last_error      = CASE WHEN payload = $3::jsonb THEN $6::text END,
+			next_attempt_at = CASE WHEN payload = $3::jsonb THEN next_attempt_at ELSE $4::timestamptz END,
+			claimed_at      = NULL
+		WHERE `+fence+`
+		RETURNING status::text`, id, claimedAt, sent, at, attempts, truncateErr(lastErr))
+}
+
+// settleCoalesced runs a settle statement and reports whether it returned
+// the row to pending. A row no longer held by the claim is left alone.
+func (r *OutboxRepo) settleCoalesced(ctx context.Context, sql string, args ...any) (bool, error) {
+	var status string
+	err := r.db.q(ctx).QueryRow(ctx, sql, args...).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, mapErr(err)
+	}
+	return status == string(domain.OutboxPending), nil
 }
 
 func (r *OutboxRepo) DeleteForAggregate(ctx context.Context, tenantID string, aggregateID uuid.UUID) (int, error) {

@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"fmt"
@@ -183,6 +184,43 @@ func (r *DeliveryRepo) DeleteBefore(ctx context.Context, cutoff time.Time) (n in
 		for k, at := range s.deliveries {
 			if at.Before(cutoff) {
 				delete(s.deliveries, k)
+				n++
+			}
+		}
+		return nil
+	})
+	return n, err
+}
+
+// callbackKey is a tenant's AgentPulse callbackId.
+type callbackKey struct{ tenant, id string }
+
+func (r *DeliveryRepo) RecordCallback(ctx context.Context, tenantID, callbackID string, at time.Time) (fresh bool, err error) {
+	err = r.st.do(ctx, func(s *state) error {
+		k := callbackKey{tenantID, callbackID}
+		if _, seen := s.callbacks[k]; seen {
+			return nil
+		}
+		s.callbacks[k] = micro(at)
+		fresh = true
+		return nil
+	})
+	return fresh, err
+}
+
+func (r *DeliveryRepo) CallbackSeen(ctx context.Context, tenantID, callbackID string) (seen bool, err error) {
+	err = r.st.do(ctx, func(s *state) error {
+		_, seen = s.callbacks[callbackKey{tenantID, callbackID}]
+		return nil
+	})
+	return seen, err
+}
+
+func (r *DeliveryRepo) DeleteCallbacksBefore(ctx context.Context, cutoff time.Time) (n int, err error) {
+	err = r.st.do(ctx, func(s *state) error {
+		for k, at := range s.callbacks {
+			if at.Before(cutoff) {
+				delete(s.callbacks, k)
 				n++
 			}
 		}
@@ -594,6 +632,53 @@ func (r *OutboxRepo) MarkDeadLetter(ctx context.Context, id uuid.UUID, claimedAt
 	})
 }
 
+func (r *OutboxRepo) Coalesce(ctx context.Context, e domain.OutboxEntry) error {
+	return r.st.do(ctx, func(s *state) error {
+		trace := e.TraceContext
+		if trace == nil {
+			trace = map[string]string{}
+		}
+		if id, ok := s.outboxKeys[e.IdempotencyKey]; ok {
+			row := s.outbox[id]
+			row.Payload, row.TraceContext, row.MaxAttempts = slices.Clone(e.Payload), trace, e.MaxAttempts
+			if row.Status != domain.OutboxProcessing {
+				row.Status, row.Attempts, row.NextAttemptAt, row.LastError = domain.OutboxPending, 0, micro(e.NextAttemptAt), ""
+			}
+			row.DispatchedAt = nil
+			return nil
+		}
+		e.Status, e.Attempts, e.ClaimedAt, e.DispatchedAt, e.LastError = domain.OutboxPending, 0, nil, nil, ""
+		e.NextAttemptAt, e.CreatedAt = micro(e.NextAttemptAt), micro(e.CreatedAt)
+		e.Payload, e.TraceContext = slices.Clone(e.Payload), trace
+		cp := e
+		s.outbox[e.ID] = &cp
+		s.outboxKeys[e.IdempotencyKey] = e.ID
+		return nil
+	})
+}
+
+func (r *OutboxRepo) MarkDispatchedIfUnchanged(ctx context.Context, id uuid.UUID, claimedAt time.Time, sent []byte, at time.Time) (requeued bool, err error) {
+	err = r.settle(ctx, id, claimedAt, func(e *domain.OutboxEntry) {
+		if bytes.Equal(e.Payload, sent) {
+			e.Status, e.DispatchedAt = domain.OutboxDispatched, microPtr(&at)
+			return
+		}
+		e.Status, e.Attempts, e.NextAttemptAt, e.LastError, requeued = domain.OutboxPending, 0, micro(at), "", true
+	})
+	return requeued, err
+}
+
+func (r *OutboxRepo) MarkDeadLetterIfUnchanged(ctx context.Context, id uuid.UUID, claimedAt time.Time, sent []byte, attempts int, lastErr string, at time.Time) (requeued bool, err error) {
+	err = r.settle(ctx, id, claimedAt, func(e *domain.OutboxEntry) {
+		if bytes.Equal(e.Payload, sent) {
+			e.Status, e.Attempts, e.LastError = domain.OutboxDeadLetter, attempts, lastErr
+			return
+		}
+		e.Status, e.Attempts, e.NextAttemptAt, e.LastError, requeued = domain.OutboxPending, 0, micro(at), "", true
+	})
+	return requeued, err
+}
+
 func (r *OutboxRepo) ReleaseExpiredLeases(ctx context.Context, olderThan time.Time) (n int, err error) {
 	err = r.st.do(ctx, func(s *state) error {
 		for _, e := range s.outbox {
@@ -687,6 +772,19 @@ func (r *TaskRepo) CountAssigned(ctx context.Context, tenantID, assigneeID strin
 		return nil
 	})
 	return n, err
+}
+
+func (r *TaskRepo) Existing(ctx context.Context, tenantID string, ids []uuid.UUID) (found []uuid.UUID, err error) {
+	found = []uuid.UUID{}
+	err = r.st.do(ctx, func(s *state) error {
+		for _, id := range ids {
+			if t, ok := s.tasks[id]; ok && t.TenantID == tenantID && !slices.Contains(found, id) {
+				found = append(found, id)
+			}
+		}
+		return nil
+	})
+	return found, err
 }
 
 func (r *TaskRepo) WorkspaceLabels(ctx context.Context, tenantID, workspaceID string, limit int) ([]string, error) {

@@ -212,6 +212,36 @@ func (r *AgentJobRepo) LatestBrief(ctx context.Context, tenantID, userID string)
 	return briefs[len(briefs)-1], nil
 }
 
+// LockBriefs needs no lock of its own: a transaction already holds the
+// store's.
+func (r *AgentJobRepo) LockBriefs(ctx context.Context, _ string, _ bool) error {
+	if !inTx(ctx) {
+		return repository.ErrTxRequired
+	}
+	return nil
+}
+
+func (r *AgentJobRepo) DeleteBriefsMentioning(ctx context.Context, tenantID string, taskID uuid.UUID) (ids []uuid.UUID, err error) {
+	ids = []uuid.UUID{}
+	err = r.st.do(ctx, func(s *state) error {
+		for id, j := range s.jobs {
+			if j.TenantID != tenantID || j.AgentType != domain.AgentDigest || j.TaskID != nil {
+				continue
+			}
+			var res map[string]json.RawMessage
+			if json.Unmarshal(j.ExecutionResult, &res) != nil || !domain.BriefMentions(res["report"], taskID) {
+				continue
+			}
+			delete(s.jobs, id)
+			delete(s.jobKeys, j.DedupKey)
+			s.runs = slices.DeleteFunc(s.runs, func(r domain.AgentRun) bool { return r.JobID == id })
+			ids = append(ids, id)
+		}
+		return nil
+	})
+	return ids, err
+}
+
 func (r *AgentJobRepo) InsertRun(ctx context.Context, run domain.AgentRun) error {
 	return r.st.do(ctx, func(s *state) error {
 		if s.jobs[run.JobID] == nil {

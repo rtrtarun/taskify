@@ -24,7 +24,7 @@ Sections 2 to 6 describe the Go service. Section 9 describes what is built aroun
 
 **Target:** a multi-tenant Go task service that emits task lifecycle events to AgentPulse through a transactional outbox, and runs background LLM agents that enrich, decompose, and unblock tasks under human-in-the-loop controls. Around it sit a language-neutral contract, a CLI, a web frontend, and a Python client SDK (section 9). There is one server, in Go.
 
-**Today (2026-11-21):** release R1 is built and released (v0.1.0 to v0.3.0): the task service, transactional outbox, relay, scheduler, REST API, webhooks, and observability in sections 2 to 6. Of R2, the agent runtime (M5), the human-in-the-loop bridge (M6), and the triage agent (M7) are built and released (v0.4.0 and v0.5.0), with the departures listed in [implementation/README.md](implementation/README.md) section 8. The decomposer, blocker, digest, and learning agents (M8 to M11) and everything in section 9 (R3) are still to be built. Progress per milestone is in [milestones.md](milestones.md).
+**Today (2026-11-22):** release R1 is built and released (v0.1.0 to v0.3.0): the task service, transactional outbox, relay, scheduler, REST API, webhooks, and observability in sections 2 to 6. R2 is built: the agent runtime (M5), the human-in-the-loop bridge (M6), and the triage agent (M7), released in v0.4.0 and v0.5.0, then the decomposer, blocker, digest, and learning agents (M8 to M11) and the AgentPulse `/v1/` alignment (AP), with the departures listed in [implementation/README.md](implementation/README.md) section 8. Everything in section 9 (R3) is still to be built. Progress per milestone is in [milestones.md](milestones.md).
 
 **Not verified:** the AgentPulse repository is not in this workspace. The AgentPulse field names and endpoints in this document come from [initial.md](archive/initial.md) and from the project owner's answers recorded in section 8.1. None has been read from AgentPulse code yet: task M0-07 checks them against the real contract once access is given (owner action O1).
 
@@ -205,7 +205,7 @@ sequenceDiagram
                 CB-->>R: rejected
                 R->>DB: set pending, next_attempt_at after cooldown, attempts unchanged
             else breaker closed
-                R->>AP: POST /notify with idempotencyKey and traceparent
+                R->>AP: POST /v1/notify with idempotencyKey and traceparent, or PUT the contact for a contact.update row
                 alt 2xx, or duplicate acknowledged
                     R->>DB: set dispatched, dispatched_at = now
                 else 4xx other than 429
@@ -253,7 +253,7 @@ Shown for orientation. Taskify does not implement this.
 
 ```mermaid
 flowchart LR
-    n["/notify request"] --> d{"idempotencyKey seen in Redis?"}
+    n["/v1/notify request"] --> d{"idempotencyKey seen in Redis?"}
     d -->|yes| drop["Acknowledge, do nothing"]
     d -->|no| p["Apply user preferences"]
     p --> r["Match payloadMatch rules"]
@@ -285,7 +285,7 @@ sequenceDiagram
         H->>S: CompleteTask(taskID, actor)
         S-->>H: ok, task.completed queued in outbox
         H->>F: RecordFeedback(acted)
-        F->>AP: POST /feedback
+        F->>AP: POST /v1/feedback
         H-->>AP: 200
     end
 ```
@@ -351,7 +351,7 @@ sequenceDiagram
     participant J as AgentJobService
 
     RT->>DB: job awaiting_approval, outbox agent.approval_requested
-    R->>AP: /notify with actionUrls approve and reject
+    R->>AP: /v1/notify with actionUrls approve and reject
     AP->>U: interactive notification
     U->>AP: clicks Approve
     AP->>H: signed callback, routed to apply
@@ -538,7 +538,10 @@ erDiagram
 | `notification_acks` | `000005` (R3) | `(tenant_id, user_id, notification_id)` primary key, `signal`, `acked_at`. Local read state for the in-app feed (section 9.6). Not shown in the diagram above; it references AgentPulse notification IDs, not Taskify rows. |
 | `workspace_rules` | `000003` | `(tenant_id, workspace_id, rule_key)` primary key, `agentpulse_rule_id`. Records which default AgentPulse rules a workspace has, so `bootstrap-rules` can be repeated without creating duplicates. |
 | `webhook_deliveries` | `000003` | Signature of each accepted AgentPulse callback, kept for an hour, so a replayed callback changes nothing. |
+| `webhook_callbacks` | `000007` | `(tenant_id, callback_id)` primary key, `received_at`. Each applied callback's `callbackId`, kept for 7 days, so a retry of one click, signed again, changes nothing (AP-06). |
+| `user_contacts` | `000007` | `(tenant_id, user_id)` primary key, nullable `email`, `slack_user_id`, `phone`, `updated_at`. The person's contact, forwarded to AgentPulse (AP-05). |
 | `agent_run_history` | `000004` | One row per model turn. Named in the AG-102 backlog item but not defined in the source; this definition is proposed here. |
+| `learning_suggestions` | `000008` | The learning suggestions Taskify submitted to AgentPulse (M11): tenant, learning job (foreign key, cascading), `event_type`, nullable `label`, current and proposed adjustments (each -20 to 20), `signal_count` (at least 5), `rationale`, `created_at`. Unique on job, event type, and label, so a job submits a pattern once; the learning agent leaves a pattern alone for 30 days after one was submitted (D57). |
 
 Indexes:
 
@@ -697,7 +700,9 @@ stateDiagram-v2
 | Due soon | `taskify:{tenant_id}:{task_id}:due_soon_24h` and `...:due_soon_1h` |
 | Overdue | `taskify:{tenant_id}:{task_id}:overdue:{YYYY-MM-DD}` |
 | Approval request | `taskify:{tenant_id}:{job_id}:agent.approval_requested` |
-| Agent job dedup | `{agent_type}:{task_id}:v{version}` for event-triggered jobs; `{agent_type}:{task_id}:stale:{YYYY-MM-DD}` for stale scans |
+| Contact forward (one row per person, reused for every change; D46) | `taskify:{tenant_id}:contact.update:{user_id}` |
+| Agent job dedup | `{agent_type}:{task_id}:v{version}` for event-triggered jobs; `{agent_type}:{task_id}:stale:{YYYY-MM-DD}` for stale scans; `digest:{tenant_id}:{user_id}:brief:{YYYY-MM-DD}` for morning briefs (D40); `learning:{tenant_id}:week:{YYYY-Www}` for the weekly learning job (D55) |
+| Learning suggestion (Taskify's own; AgentPulse takes no key for suggestions) | `taskify:{tenant_id}:{job_id}:learning.suggestion:{hash of event type and label}` |
 
 Changing `due_at` should reset `last_due_soon_notified_at`, and the due-soon key should then include the new due timestamp, otherwise a rescheduled task would never be reminded again. This is not covered in the source documents.
 
@@ -1014,6 +1019,7 @@ All routes are under `/api/v1`. Legacy `/tasks/` routes alias the task endpoints
 | `GET /notifications/in-app` | Current user's in-app feed, proxied from AgentPulse and enriched with task data | none | R3 |
 | `POST /notifications/{id}/ack` | Mark a notification read or dismissed | Local ack plus AgentPulse feedback | R3 |
 | `GET /me` | Current user, tenant, and role | none | R3 |
+| `GET /me/contact`, `PUT /me/contact` | The caller's own contact for AgentPulse: `email`, `slack_user_id`, `phone` (section 5.5) | `contact.update` outbox row | R2 (AP-05) |
 | `GET /events` | Server-Sent Events stream | none | Later (live updates Phase 2) |
 | `GET /healthz`, `GET /readyz`, `GET /metrics` | Operations (not under `/api/v1`) | none | R1 |
 
@@ -1023,10 +1029,12 @@ The R3 rows exist because the CLI and frontend need to list things that R1 and R
 
 **Permanent delete.** One transaction, in this order:
 
-1. Delete `agent_jobs` rows for the task (their run history cascades).
-2. Delete every `notification_outbox` row with that `aggregate_id`, in any status. The outbox has no foreign key to `tasks` and its `payload` holds the task title.
-3. Delete the task. Foreign keys cascade to `task_dependencies`, `task_watchers`, and `task_comments`.
-4. If no task row was deleted, return `ErrNotFound` and roll back.
+1. Take the tenant's brief lock exclusively (D48), then lock the task.
+2. Delete `agent_jobs` rows for the task (their run history cascades).
+3. Delete every `notification_outbox` row with that `aggregate_id`, in any status. The outbox has no foreign key to `tasks` and its `payload` holds the task title.
+4. Delete the morning briefs that name the task (AP-08): the digest jobs whose stored report lists it among its top items, pending approvals, or unblocked tasks, with their run history, and every outbox row of theirs, in any status.
+5. Delete the task. Foreign keys cascade to `task_dependencies`, `task_watchers`, and `task_comments`.
+6. If no task row was deleted, return `ErrNotFound` and roll back.
 
 Notes:
 
@@ -1046,45 +1054,79 @@ Error mapping:
 
 ### 5.5 AgentPulse contract used by Taskify
 
-The details below were supplied by the project owner (decisions 1, 5, 6). They have not been read from the AgentPulse repository, which is still not in this workspace, so M0 checks them against the SDK, the M37 `/notify` handler, and `14-learning-suggestions.json`. An example `/notify` body is in [initial.md](archive/initial.md) section 4.C.2.
+This is the `/v1/` API that AgentPulse builds in its milestone 40 (slices 40a to 40d), as agreed with AgentPulse on 2026-11-22 ([blockers.md](blockers.md), "Agreed with AgentPulse"). Taskify's client is `internal/agentpulse`, and the mock in `tests/mockagentpulse` serves the same paths and enforces AgentPulse's validation; any change to the contract changes the mock in the same commit. Task M0-07 runs the client and webhook tests against a real AgentPulse once these endpoints ship.
 
-`/notify` fields, all camelCase:
+**Transport.** Every call sends `Authorization: Bearer <AGENTPULSE_API_KEY>` (AgentPulse also accepts `X-API-Key`). JSON fields are camelCase. The health probe is `GET /healthz`.
+
+**Tenant IDs** match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, are compared case-sensitively, are never trimmed, and `default` is refused. Taskify applies the same rule to every identity it accepts (the JWT `tenant_id` claim, the development headers, `cmd/devtoken`) and in domain validation, so no tenant can exist in Taskify that AgentPulse would refuse.
+
+**User IDs** are 1 to 128 printable ASCII characters, space to tilde, since they appear in idempotency keys (AP-11). Taskify applies the rule to the JWT subject and the development headers (after trimming), `cmd/devtoken`, a task's creator, assignee, and watchers, a comment's author, a contact's owner, and a webhook callback's `userId`.
+
+**Tenant scoping.** Every call that names an object by ID (a rule, a learning suggestion, a notification) carries `tenantId`; AgentPulse answers `400` without it and `404` for another tenant's object, as for an unknown ID (AP-12).
+
+| Taskify call | AgentPulse endpoint | Body or query |
+| --- | --- | --- |
+| `Notify` (outbox relay) | `POST /v1/notify` | The fields below |
+| `PutContact` (outbox relay) | `PUT /v1/tenants/{t}/users/{u}/contact` | `{email, slackUserId, phone}` |
+| `RecordFeedback` | `POST /v1/feedback` | `{notificationId?, tenantId, userId, signal, snoozeDuration?, taskId?}`; `signal` is `acted`, `dismissed`, `snoozed`, or `muted`. At least one of `notificationId` and `taskId`; Taskify always sends the task and leaves `notificationId` out when it has none. Without a notification, AgentPulse counts the signal under the user's latest notification about the task (AP-12). A `notificationId` AgentPulse does not hold for the tenant answers `404`. |
+| `CreateRule` | `POST /v1/rules` | `{tenantId, name, attentionClass?, matchAny: [{eventTypes?, payloadMatch?}], channels, bypassDigest?}`, answered with `201 {"id"}` |
+| `ListRules` | `GET /v1/rules?tenantId=` | `{"rules": [...]}` |
+| `ListLearningSuggestions` | `GET /v1/learning/suggestions?tenantId=` | `{"suggestions": [{id, status, suggestion}]}` |
+| `SubmitLearningSuggestion` (M11, outbox relay) | `POST /v1/learning/suggestions` | `tenantId`, `ruleId` or `eventPattern` (`{eventType, label}`, `label` null for no label), `currentAdjustment`, `proposedAdjustment` (within ±20, AgentPulse's heuristic score shift for that scope), `signalCount` (at least 5 signals from at least 2 users), `rationale`. Stored as `PENDING_APPROVAL`; nothing changes until an admin decides. Taskify sends it from a `learning.suggestion` outbox row (D57). |
+| `LearningSuggestions` (M11) | `GET /v1/learning/suggestions?tenantId=` | The same list, decoded, for the learning agent: pending suggestions and the latest approved adjustment per pattern |
+| `ReviewLearningSuggestion` | `POST /v1/learning/suggestions/{id}/decision` | `{tenantId, decision: approve or reject, decidedBy}`; `404` for another tenant's suggestion (AP-12), `409` if already decided |
+| `FeedbackAnalytics` (M11) | `GET /v1/analytics/feedback?tenantId=&since=` | `{since, groups: [{eventType, label, delivered, acted, dismissed, muted, snoozed, distinctUsers}]}`, one group per event type and payload label, `label` null for notifications without one (R7, G16) |
+| `InAppFeed` (M14-06) | `GET /v1/tenants/{t}/users/{u}/in-app-feed?limit=&cursor=` | `{"notifications": [...], "nextCursor"}`, newest first; Taskify keeps read state |
+| Inbound | `POST /api/v1/webhooks/agentpulse` | See "Callbacks" below |
+
+`/v1/notify` fields:
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `idempotencyKey` | string, required | |
+| `idempotencyKey` | string, required | Up to 320 printable ASCII characters, stored as sent, unique per tenant. A repeat answers `200 {"id", "duplicate": true}`. |
 | `tenantId` | string, required | |
-| `userId` | string, required | Decided: `userId`, not `recipientId`. AgentPulse keys its budget and preferences on it. |
+| `userId` | string, required | The recipient. AgentPulse keys budget and preferences on `(tenantId, userId)`. |
+| `source` | string | `taskify` |
 | `eventType` | string, required | |
-| `title` | string, required | |
-| `body` | string, required | |
-| `channels` | string array | `slack`, `email`, `in_app`, `webhook`, and `digest` to force digest routing |
-| `priorityHint` | string | `critical`, `high`, `medium`, `low` |
-| `payload` | object | Free-form, plus the reserved keys below |
+| `title`, `body` | string, required | |
+| `channels` | string array | `slack`, `email`, `in_app`, `webhook`; `digest` alone delivers only in the user's digest |
+| `priorityHint` | string | `critical`, `high`, `medium`, `low`. Only an input to rules. Mapping: `p1_critical` → `critical`, `p2_high` → `high`, `p3_medium` → `medium`, `p4_low` → `low`. |
+| `payload` | object | Free-form and matchable by rules, plus the reserved keys below |
 
 Reserved `payload` keys:
 
 | Key | Effect |
 | --- | --- |
-| `bypassDigest: true` | Forces immediate dispatch. Taskify sets it for `p1_critical` and `task.blocked`. |
-| `digestSummary` | Text the digest renderer uses for this item. Without it, AgentPulse shows `title` and timestamp. |
-| `actionUrls` | Interactive actions |
+| `bypassDigest: true` | Keeps the item out of the digest. Budget and quiet hours still apply, and it never makes an item critical. Taskify sets it for `p1_critical` tasks, manual blocks, and `task.escalated`. |
+| `digestSummary` | The digest's line for this item. A held assignment reads `Assigned to you: {title}. Deferred to avoid context switching`; a morning brief carries its text. |
+| `actionUrls` | Action buttons, from the fixed set below |
+| `actionLabels` | Optional button text per action key |
 
-All payload keys are camelCase. `bypass_digest` is a legacy spelling: the serializer always writes `bypassDigest`, and if a legacy rule or config supplies `bypass_digest`, the client adapter rewrites it to `bypassDigest` before sending.
+All payload keys are camelCase. `bypass_digest` is a legacy spelling: the serializer always writes `bypassDigest`, and the client rewrites a legacy `bypass_digest` before sending.
 
-Learning suggestion body for `POST /learning/suggestions`: `tenantId`, `ruleId` or `eventPattern`, `currentAdjustment`, `proposedAdjustment` (within ±20), `signalCount` (at least 5 signals from at least 2 users), `rationale`. AgentPulse stores it as `PENDING_APPROVAL` and changes nothing until an admin decides.
+**Actions.** The `actionUrls` keys are fixed; from 40b an unknown key, or a key without the ID its callback needs, is refused with `400`. AgentPulse makes its own signed link for every key but `view`, which it uses as sent. A click opens a confirmation page, and the action runs when the button is pressed; each link works once and expires after 7 days. Without AgentPulse's `ACTIONS_PUBLIC_BASE_URL`, messages carry only the view link.
 
-| Taskify call | AgentPulse endpoint | Key fields |
-| --- | --- | --- |
-| `Notify` | `/notify` | `idempotencyKey`, `tenantId`, `userId`, `source`, `eventType`, `title`, `body`, `priorityHint`, `channels`, `payload` (including `actionUrls`) |
-| `RecordFeedback` | `/feedback` | notification ID, user, signal, optional snooze duration |
-| `CreateRule` | `/rules` | `payloadMatch` or `eventType`, `channels`, digest bypass |
-| `ListLearningSuggestions` | `/learning/suggestions` | tenant |
-| `SubmitLearningSuggestion` (R2) | `POST /learning/suggestions` | See the body above |
-| `ReviewLearningSuggestion` | `POST /learning/suggestions/{id}/decision` | `approve` or `reject` |
-| Inbound | `POST /api/v1/webhooks/agentpulse` | `X-AgentPulse-Signature`, timestamp, action name, task or job ID, user |
+| `actionUrls` key | Callback `action` | ID read from the payload | Default button text | Taskify sends it on |
+| --- | --- | --- | --- | --- |
+| `complete` | `complete` | `taskId` | Mark done | Task notifications while the task is open (D42) |
+| `snooze_2h` | `snooze`, with `duration: "2h"` | `taskId` | Snooze 2h | Task notifications while the task is open |
+| `approve` | `approve` | `jobId` | Approve | `agent.approval_requested` |
+| `reject` | `reject` | `jobId` | Reject | `agent.approval_requested` |
+| `unblock` | `unblock` | `taskId` | Unblock and set In Progress | `task.escalated` while the task is blocked |
+| `view` | none, a plain link | | View | With `APP_BASE_URL`, every notification about a task, to `{APP_BASE_URL}/tasks/{id}`, and `digest.morning_brief`, to `{APP_BASE_URL}/brief`. Without it, approvals (the job's API URL), escalations (the task's API URL), and the brief (`/api/v1/me/brief`) only (AP-10, D50) |
 
-Priority mapping for `priorityHint`: `p1_critical` → `critical`, `p2_high` → `high`, `p3_medium` → `medium`, `p4_low` → `low`.
+**Rules.** `matchAny` is native: a rule applies when any entry matches. A rule may set `attentionClass` (`critical`, `standard`, `background`); a critical rule needs a real condition, event types or payload values, in every entry. AgentPulse runs its own locked critical rules first, then the tenant's rules, then defaults to `standard`. Each workspace gets three default rules, scoped by `payload.workspaceId`: `critical-or-blocked` (critical, `bypassDigest`, matching `priority: p1_critical`, `status: blocked` with `blockedReason: manual`, or `eventTypes: ["task.escalated"]`), `assignments-and-mentions`, and `low-priority-digest`.
+
+**Contacts.** A person sets their own contact with `PUT /api/v1/me/contact` (`email`, `slack_user_id`, `phone`; an absent field is kept, `null` clears it) and reads it with `GET /api/v1/me/contact`. Taskify stores the latest contact per tenant and user (`user_contacts`) and forwards it through the outbox to `PUT /v1/tenants/{t}/users/{u}/contact`, always with all three fields. AgentPulse treats the PUT as a full replace: a `null` or missing field is cleared, a contact with all three empty is deleted, and the same body again changes nothing. A user with no contact gets in-app and digest delivery only. The formats are AgentPulse's, applied identically by Taskify (AP-12): `email` a plain address of at most 254 characters with no display name, `slack_user_id` `^[UW][A-Z0-9]+$` of at most 32 characters, `phone` `^\+[1-9][0-9]{1,14}$`; AgentPulse refuses a PUT with one bad field with a `400` naming it, which the relay dead-letters. Since AgentPulse applies PUTs in arrival order and keeps no version, each person has one outbox row, reused for every change: a change rewrites its payload; the relay never has one person's contact in flight twice; and a send that finishes after a newer change arrived returns the row to pending instead of marking it dispatched, so the newer contact is sent next (D46).
+
+**Callbacks.** When a person clicks an action, AgentPulse's delivery queue calls Taskify:
+
+- `POST {taskifyBaseUrl}/api/v1/webhooks/agentpulse`, which must be https and on AgentPulse's allow-list.
+- Headers `X-AgentPulse-Timestamp` (Unix seconds) and `X-AgentPulse-Signature: sha256=<hex HMAC-SHA256 of "<timestamp>.<raw body>">`, keyed with `AGENTPULSE_WEBHOOK_SECRET`. Timestamps more than 5 minutes from now are refused.
+- Body `{action, tenantId, userId, taskId (complete, snooze, unblock), jobId (approve, reject), notificationId, duration (snooze), callbackId}`.
+- `callbackId` is `cb-` and 32 hex digits, the same on every retry of one click while the timestamp and signature change. A callback is a duplicate when its `(tenantId, callbackId)` was seen before; without a `callbackId`, a byte-identical replay is recognised by its signature (D10). Taskify answers `200 {"status": "applied"}` or `{"status": "duplicate"}`, and forwards the matching feedback signal once.
+
+**Slack.** One Slack workspace per AgentPulse deployment for now; per-tenant workspaces come in a later AgentPulse milestone.
 
 ### 5.6 Event taxonomy
 
@@ -1122,7 +1164,7 @@ The actor is excluded from recipients: nobody is notified of their own action.
 | `ReassignTask` | Blocker | `task_id`, `assignee_id`, `reasoning` | Tier 2 |
 | `ShiftDueDate` | Blocker, Digest | `task_id`, `due_at`, `reasoning` | Tier 2 |
 | `ArchiveTask` | none by default | `task_id`, `reasoning` | Tier 2 |
-| `ProposeNotificationRule` | Learning | rule definition, evidence | Tier 2, decided by an admin |
+| `ProposeNotificationRule` | Learning | `pattern_id`, `proposed_adjustment` (-20 to 20), `rationale`; the scope and evidence come from Go code | Tier 2, decided by an admin at AgentPulse: the call itself runs at Tier 1, even under `require_hitl_for_all`, and only submits the suggestion, which AgentPulse holds as `PENDING_APPROVAL` until an admin decides through `/admin/learning/suggestions` (D54) |
 
 [agentic.md](archive/agentic.md) is inconsistent on due dates: section 1 requires approval only for shifts over 24 hours, section 4.C for any postponement. This document takes the stricter reading.
 
@@ -1141,7 +1183,7 @@ The actor is excluded from recipients: nobody is notified of their own action.
 | --- | --- | --- |
 | `agents_enabled` | At job enqueue, inside the task transaction | When false, no `agent_jobs` row is written. A skipped-job counter is incremented. |
 | `disabled_agents` | At job enqueue | Jobs for the listed agent types are not written. An explicit `POST /tasks/{id}/decompose` for a disabled agent returns an error instead of `202`. |
-| `require_hitl_for_all` | In the tool registry | Every tool call is treated as Tier 2, including ones a user requested explicitly. |
+| `require_hitl_for_all` | In the tool registry | Every tool call is treated as Tier 2, including ones a user requested explicitly, except `ProposeNotificationRule`, whose call only submits a suggestion that already waits for an admin (D54). |
 | `max_subtasks_per_decomposition` | In `CreateSubtaskDAG` | A larger proposal is rejected and the model is asked once to reduce it. |
 
 Defaults for a new workspace (decision 19): `agents_enabled: false`, `disabled_agents: []`, `require_hitl_for_all: true`, `max_subtasks_per_decomposition: 5`. Agents are opt-in so that no tenant incurs model costs or agent notifications without an admin choosing to. Note the second default: after an admin turns agents on, every agent action, including adding a label, still waits for approval until `require_hitl_for_all` is also turned off. The runtime checks the settings again when it claims a job, so a job queued before agents were switched off does not run.
@@ -1172,6 +1214,7 @@ Reasoning loop limits: 30-second timeout per model call; retry with exponential 
 | `PORT` | `8080` | HTTP listen port |
 | `DATABASE_URL` | required | PostgreSQL connection string |
 | `PUBLIC_BASE_URL` | required | Base for `actionUrls` in notifications |
+| `APP_BASE_URL` | none | The web app's address. When set, every notification about a task carries `actionUrls.view` `{APP_BASE_URL}/tasks/{id}`, and the morning brief `{APP_BASE_URL}/brief`; unset, task notifications carry no view link (AP-10) |
 | `AGENTPULSE_BASE_URL` | required | AgentPulse API |
 | `AGENTPULSE_API_KEY` | required | Outbound authentication |
 | `AGENTPULSE_WEBHOOK_SECRET` | required | HMAC key for inbound webhooks |
@@ -1253,8 +1296,8 @@ Logging: structured, with `request_id`, `tenant_id`, `task_id`, `job_id`, `trace
   - The source address check must use the connection's peer address. `X-Forwarded-For` is caller-controlled and must not be trusted for this.
   - The webhook endpoint is the one exception: it authenticates by HMAC signature, not by JWT.
 - **Approval ingress (decision 3).** Clicks in Slack or email reach Taskify only through the signed AgentPulse webhook. `POST /agent-jobs/{id}/apply` and `/dismiss` require a user JWT and are for the frontend and CLI.
-- **Tenant isolation.** Repositories take `tenant_id` from the request context, never from the request body, and every query filters on it. A task in another tenant returns `404`.
-- **Webhook authenticity.** `X-AgentPulse-Signature` is HMAC-SHA256 over timestamp and body, compared in constant time, with a 5-minute replay window.
+- **Tenant isolation.** Repositories take `tenant_id` from the request context, never from the request body, and every query filters on it. A task in another tenant returns `404`. A tenant ID must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` exactly as given (never trimmed, case-sensitive) and must not be `default`, at every entry point: the JWT claim, the development headers, `cmd/devtoken`, and a webhook's `tenantId` (AP-04, D44).
+- **Webhook authenticity.** `X-AgentPulse-Signature` is HMAC-SHA256 over timestamp and body, compared in constant time, with a 5-minute replay window. A retried click is recognised by its `(tenantId, callbackId)`, kept for 7 days; a callback without one, by its signature (AP-06, D47).
 - **Prompt injection.** Task titles, descriptions, and comments are user-controlled text that the model reads. The controls are structural, not prompt-based:
   - each agent sees only its own allowed tools;
   - tenant and task scope come from the job row, not from model arguments;
@@ -1748,7 +1791,7 @@ sequenceDiagram
     T-->>W: 200
 ```
 
-- The AgentPulse feed endpoint was given as `GET /internal/v1/tenants/{tenantId}/users/{userId}/in-app-feed`, with service-to-service authentication (mTLS or a shared secret). Both are to be verified in M0.
+- The AgentPulse feed endpoint is `GET /v1/tenants/{tenantId}/users/{userId}/in-app-feed?limit=&cursor=`, called with the same bearer key as the rest of the `/v1/` API (section 5.5; AgentPulse slice 40d). It is verified against a real AgentPulse in M0-07.
 - Tenant and user in that call come from the verified token, never from the request, so one user cannot read another's feed.
 - Ack state is stored in a small table, `notification_acks (tenant_id, user_id, notification_id, signal, acked_at)`, added in migration `000005`. The ack is saved locally first; if forwarding the feedback to AgentPulse fails, it is retried through the outbox instead of failing the click.
 - This is a synchronous call to AgentPulse on a read path. It has a short timeout and uses the circuit breaker. Task reads and writes do not depend on it.

@@ -30,6 +30,10 @@ type Config struct {
 
 	DatabaseURL   string
 	PublicBaseURL string
+	// AppBaseURL is the web app's address, without a trailing slash, or
+	// empty. Notifications link to {AppBaseURL}/tasks/{id} and
+	// {AppBaseURL}/brief as their view action (AP-10).
+	AppBaseURL string
 
 	AgentPulseBaseURL       string
 	AgentPulseAPIKey        string
@@ -105,6 +109,7 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 
 		DatabaseURL:   r.required("DATABASE_URL"),
 		PublicBaseURL: strings.TrimRight(r.requiredURL("PUBLIC_BASE_URL"), "/"),
+		AppBaseURL:    strings.TrimRight(r.optionalURL("APP_BASE_URL"), "/"),
 
 		AgentPulseBaseURL:       strings.TrimRight(r.requiredURL("AGENTPULSE_BASE_URL"), "/"),
 		AgentPulseAPIKey:        r.required("AGENTPULSE_API_KEY"),

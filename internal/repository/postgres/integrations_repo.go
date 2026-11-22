@@ -58,6 +58,32 @@ func (r *DeliveryRepo) Record(ctx context.Context, key string, at time.Time) (bo
 	return tag.RowsAffected() == 1, nil
 }
 
+func (r *DeliveryRepo) RecordCallback(ctx context.Context, tenantID, callbackID string, at time.Time) (bool, error) {
+	tag, err := r.db.q(ctx).Exec(ctx, `
+		INSERT INTO webhook_callbacks (tenant_id, callback_id, received_at) VALUES ($1, $2, $3)
+		ON CONFLICT (tenant_id, callback_id) DO NOTHING`, tenantID, callbackID, at)
+	if err != nil {
+		return false, mapErr(err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+func (r *DeliveryRepo) CallbackSeen(ctx context.Context, tenantID, callbackID string) (bool, error) {
+	var seen bool
+	err := r.db.q(ctx).QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM webhook_callbacks WHERE tenant_id = $1 AND callback_id = $2)`,
+		tenantID, callbackID).Scan(&seen)
+	return seen, mapErr(err)
+}
+
+func (r *DeliveryRepo) DeleteCallbacksBefore(ctx context.Context, cutoff time.Time) (int, error) {
+	tag, err := r.db.q(ctx).Exec(ctx, `DELETE FROM webhook_callbacks WHERE received_at < $1`, cutoff)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 func (r *DeliveryRepo) DeleteBefore(ctx context.Context, cutoff time.Time) (int, error) {
 	tag, err := r.db.q(ctx).Exec(ctx, `DELETE FROM webhook_deliveries WHERE received_at < $1`, cutoff)
 	if err != nil {

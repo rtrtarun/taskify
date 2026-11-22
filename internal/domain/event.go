@@ -33,6 +33,23 @@ const (
 // Source identifies Taskify to AgentPulse.
 const Source = "taskify"
 
+// The payload.actionUrls keys AgentPulse accepts (docs/blockers.md, "Agreed
+// with AgentPulse"); ActionUnblock, in escalation.go, is the sixth. A
+// notification uses no other key. AgentPulse makes its own signed link for
+// every key but view, which it uses as sent, and a click reaches the webhook
+// as the callback action of the same name (snooze_2h as snooze with duration
+// 2h). The callback's ID is read from the payload: taskId for complete,
+// snooze_2h, and unblock, jobId for approve and reject.
+const (
+	// ActionComplete is the "Mark done" button.
+	ActionComplete = "complete"
+	ActionSnooze2h = "snooze_2h"
+	ActionApprove  = "approve"
+	ActionReject   = "reject"
+	// ActionView is a plain link, used as sent.
+	ActionView = "view"
+)
+
 // Event is something that happened to a task. It carries a snapshot of the
 // task after the change, so a notification can be built from the event alone.
 type Event struct {
@@ -65,9 +82,16 @@ const (
 	// ChannelDigest, alone in channels, delivers a notification only in the
 	// recipient's digest.
 	ChannelDigest = "digest"
-	// DeferredDigestSummary is the digest line of a deferred notification.
+	// DeferredDigestSummary ends the digest line of a deferred notification,
+	// which DeferredDigestLine builds.
 	DeferredDigestSummary = "Deferred to avoid context switching"
 )
+
+// DeferredDigestLine is what the digest shows for an assignment held there
+// (AP-07): "Assigned to you: {title}. Deferred to avoid context switching".
+func DeferredDigestLine(title string) string {
+	return "Assigned to you: " + title + ". " + DeferredDigestSummary
+}
 
 // Deferrable reports whether the load gatekeeper may hold this event's
 // notification for the digest: an assignment (task.created with an
@@ -220,13 +244,13 @@ type Notification struct {
 // and preferences.
 var immediateChannels = []string{"slack", "email", "in_app"}
 
-// Notifications builds one /notify request per recipient. publicBaseURL is
-// the externally reachable address of Taskify, used for action links.
-func (e Event) Notifications(publicBaseURL string) []Notification {
+// Notifications builds one /notify request per recipient. links are the
+// addresses its action and view links are built from.
+func (e Event) Notifications(links Links) []Notification {
 	recipients := e.Recipients()
 	out := make([]Notification, 0, len(recipients))
 	for _, r := range recipients {
-		payload := e.payload(publicBaseURL)
+		payload := e.payload(links)
 		mentioned := e.Comment != nil && slices.Contains(e.Comment.Mentions, r)
 		if e.Type == EventTaskCommentAdded {
 			payload["isMentioned"] = mentioned
@@ -247,7 +271,7 @@ func (e Event) Notifications(publicBaseURL string) []Notification {
 			n.Channels = slices.Clone(immediateChannels)
 		case e.Deferred && e.Deferrable():
 			n.Channels = []string{ChannelDigest}
-			payload["digestSummary"] = DeferredDigestSummary
+			payload["digestSummary"] = DeferredDigestLine(e.Task.Title)
 		}
 		out = append(out, n)
 	}
@@ -288,9 +312,12 @@ func (e Event) priorityHint() string {
 	return p.Hint()
 }
 
-func (e Event) payload(publicBaseURL string) map[string]any {
+func (e Event) payload(links Links) map[string]any {
 	t := e.Task
-	taskURL := fmt.Sprintf("%s/api/v1/tasks/%s", publicBaseURL, t.ID)
+	taskURL := links.taskAPI(t.ID)
+	// view opens the task in the web app. Without APP_BASE_URL there is no
+	// page to open, and a task notification carries no view link (AP-10).
+	view := links.TaskView(t.ID)
 	p := map[string]any{
 		"taskId":      t.ID.String(),
 		"workspaceId": t.WorkspaceID,
@@ -300,10 +327,20 @@ func (e Event) payload(publicBaseURL string) map[string]any {
 		"actorId":     e.Actor.ID,
 		"actorKind":   string(e.Actor.Kind),
 		"version":     t.Version,
-		"actionUrls": map[string]string{
-			"acknowledge": taskURL + "/feedback?signal=acted",
-			"snooze_2h":   taskURL + "/feedback?signal=snoozed&duration=2h",
-		},
+	}
+	urls := map[string]string{}
+	if t.IsOpen() {
+		// "Mark done" and "Snooze 2h" while there is work left to do. The
+		// URLs name the matching Taskify endpoints; AgentPulse sends its own
+		// signed links and calls the webhook with taskId.
+		urls[ActionComplete] = taskURL + "/complete"
+		urls[ActionSnooze2h] = taskURL + "/feedback?signal=snoozed&duration=2h"
+	}
+	if view != "" {
+		urls[ActionView] = view
+	}
+	if len(urls) > 0 {
+		p["actionUrls"] = urls
 	}
 	if e.PreviousStatus != "" {
 		p["previousStatus"] = string(e.PreviousStatus)
@@ -325,14 +362,20 @@ func (e Event) payload(publicBaseURL string) map[string]any {
 		p["blockerStatus"] = string(e.Blocker.Status)
 	}
 	if j := e.Job; j != nil {
-		jobURL := fmt.Sprintf("%s/api/v1/agent-jobs/%s", publicBaseURL, j.ID)
+		jobURL := links.jobAPI(j.ID)
 		p["jobId"] = j.ID.String()
 		p["agentType"] = j.AgentType
 		p["proposedTools"] = append([]string{}, j.Tools...)
+		// view opens the task in the web app, or, without it, the job in
+		// the API as before AP-10.
+		jobView := view
+		if jobView == "" {
+			jobView = jobURL
+		}
 		p["actionUrls"] = map[string]string{
-			"approve": jobURL + "/apply",
-			"reject":  jobURL + "/dismiss",
-			"view":    jobURL,
+			ActionApprove: jobURL + "/apply",
+			ActionReject:  jobURL + "/dismiss",
+			ActionView:    jobView,
 		}
 	}
 	if x := e.Escalation; x != nil {
@@ -343,13 +386,15 @@ func (e Event) payload(publicBaseURL string) map[string]any {
 			blocking[i] = map[string]any{"taskId": b.ID.String(), "title": b.Title, "status": string(b.Status)}
 		}
 		p["blockingTasks"] = blocking
-		urls := map[string]string{"view": taskURL}
+		// view opens the escalated task: in the web app, or, without it, in
+		// the API as before AP-10.
+		escalation := map[string]string{ActionView: links.taskOrAPI(t.ID)}
 		if t.Status == StatusBlocked {
 			// The click reaches the webhook as action "unblock" for taskId.
-			urls[ActionUnblock] = taskURL
+			escalation[ActionUnblock] = taskURL
 			p["actionLabels"] = map[string]string{ActionUnblock: ActionUnblockLabel}
 		}
-		p["actionUrls"] = urls
+		p["actionUrls"] = escalation
 	}
 	if e.bypassDigest() {
 		p["bypassDigest"] = true

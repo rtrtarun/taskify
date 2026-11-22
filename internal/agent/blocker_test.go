@@ -213,7 +213,7 @@ func TestBlockerBriefAndEscalation(t *testing.T) {
 		if err != nil || len(events) != 2 {
 			t.Fatalf("FinishEvents = %v, %v", events, err)
 		}
-		entries, err := domain.NewOutboxEntries(events, "https://taskify.test", 10, f.clock.now())
+		entries, err := domain.NewOutboxEntries(events, domain.Links{API: "https://taskify.test"}, 10, f.clock.now())
 		if err != nil {
 			t.Fatal(err)
 		}

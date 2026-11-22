@@ -72,6 +72,7 @@ func newEnv(t *testing.T, opts ...option) *env {
 	agentJobs := service.NewAgentJobService(b.Tx, b.AgentJobs, b.Tasks, registry, nil, clock)
 	d := Deps{
 		AgentJobs:     agentJobs,
+		Contacts:      service.NewContactService(b.Tx, b.Contacts, b.Outbox, 10, clock, nil),
 		Tasks:         tasks,
 		Workspaces:    service.NewWorkspaceService(b.Tx, b.Workspaces, b.Rules, client, clock),
 		Feedback:      feedback,
@@ -508,6 +509,7 @@ func TestCompleteArchiveRestoreDelete(t *testing.T) {
 
 	// "Mark done" on a todo task by someone other than its creator, with a
 	// notification ID: one task.completed to the creator and one acted signal.
+	e.mock.SeedNotification("ntf_7", map[string]any{"tenantId": tenant, "userId": "usr_admin"})
 	r := e.do(req{method: "POST", path: path + "/complete", as: "admin", body: map[string]any{"notification_id": "ntf_7"}})
 	if r.status != 200 || r.json["status"] != "completed" || r.json["completed_at"] == nil {
 		t.Fatalf("complete: %d %s", r.status, r.raw)
@@ -587,6 +589,7 @@ func TestCommentsAndFeedback(t *testing.T) {
 	if r.status != 202 {
 		t.Fatalf("feedback from query: %d %s", r.status, r.raw)
 	}
+	e.mock.SeedNotification("ntf_3", map[string]any{"tenantId": tenant, "userId": "usr_bob"})
 	r = e.do(req{method: "POST", path: path + "/feedback", body: map[string]any{"signal": "dismissed", "notification_id": "ntf_3"}})
 	if r.status != 202 {
 		t.Fatalf("feedback from body: %d %s", r.status, r.raw)
@@ -598,7 +601,7 @@ func TestCommentsAndFeedback(t *testing.T) {
 	if r := e.do(req{method: "POST", path: path + "/feedback", body: map[string]any{"signal": "loved"}}); r.status != 422 {
 		t.Errorf("bad signal: %d", r.status)
 	}
-	e.mock.FailNext("POST", "/feedback", http.StatusServiceUnavailable, 1)
+	e.mock.FailNext("POST", "/v1/feedback", http.StatusServiceUnavailable, 1)
 	if r := e.do(req{method: "POST", path: path + "/feedback?signal=acted"}); r.status != 502 || r.errCode() != CodeUpstreamError {
 		t.Errorf("AgentPulse down: %d %s", r.status, r.raw)
 	}
@@ -645,6 +648,7 @@ func TestWebhook(t *testing.T) {
 	id := task["id"].(string)
 	now := e.now.Unix()
 	body := map[string]any{"action": "complete", "tenantId": tenant, "userId": "usr_carol", "taskId": id, "notificationId": "ntf_1", "extra": "ignored"}
+	e.mock.SeedNotification("ntf_1", map[string]any{"tenantId": tenant, "userId": "usr_carol"})
 
 	r := e.webhook(body, now, "")
 	if r.status != 200 || r.json["status"] != "applied" {
@@ -714,6 +718,7 @@ func TestWebhookUnblock(t *testing.T) {
 	}
 	now := e.now.Unix()
 	body := map[string]any{"action": "unblock", "tenantId": tenant, "userId": "usr_dave", "taskId": id, "notificationId": "ntf_esc"}
+	e.mock.SeedNotification("ntf_esc", map[string]any{"tenantId": tenant, "userId": "usr_dave"})
 	if r := e.webhook(body, now, ""); r.status != 200 || r.json["status"] != "applied" {
 		t.Fatalf("unblock callback: %d %s", r.status, r.raw)
 	}
@@ -787,7 +792,7 @@ func TestWorkspaces(t *testing.T) {
 	}
 
 	// AgentPulse down: the workspace is still created, and says so.
-	e.mock.FailNext("POST", "/rules", http.StatusServiceUnavailable, 1)
+	e.mock.FailNext("POST", "/v1/rules", http.StatusServiceUnavailable, 1)
 	r = e.do(req{method: "POST", path: "/api/v1/workspaces", as: "admin", body: map[string]any{"id": "ws_offline", "name": "Offline"}})
 	if r.status != 201 || r.json["rules_bootstrapped"] != false || r.json["rules_error"] == "" {
 		t.Errorf("create with AgentPulse down: %d %s", r.status, r.raw)
@@ -852,7 +857,7 @@ func TestWorkspaces(t *testing.T) {
 func TestLearningProxy(t *testing.T) {
 	e := newEnv(t)
 	id := e.mock.SeedSuggestion(map[string]any{"tenantId": tenant, "proposedAdjustment": -5.0})
-	e.mock.SeedSuggestion(map[string]any{"tenantId": "tenant_other", "proposedAdjustment": 3.0})
+	others := e.mock.SeedSuggestion(map[string]any{"tenantId": "tenant_other", "proposedAdjustment": 3.0})
 
 	r := e.do(req{method: "GET", path: "/api/v1/admin/learning/suggestions", as: "admin"})
 	if r.status != 200 || len(r.json["suggestions"].([]any)) != 1 {
@@ -862,8 +867,19 @@ func TestLearningProxy(t *testing.T) {
 	if r.status != 200 || r.json["status"] != "APPROVED" {
 		t.Fatalf("approve: %d %s", r.status, r.raw)
 	}
-	if sent := e.mock.RequestsTo("POST", "/learning/suggestions/"+id+"/decision"); len(sent) != 1 {
-		t.Errorf("decision requests = %d", len(sent))
+	sent := e.mock.RequestsTo("POST", "/v1/learning/suggestions/"+id+"/decision")
+	if len(sent) != 1 || !strings.Contains(string(sent[0].Body), `"tenantId":"`+tenant+`"`) {
+		t.Errorf("decision requests = %v", sent)
+	}
+	// AP-12: the decision names the admin's tenant, so another tenant's
+	// suggestion is not found and stays undecided.
+	if r := e.do(req{method: "POST", path: "/api/v1/admin/learning/suggestions/" + others + "/decision", as: "admin", body: map[string]any{"decision": "approve"}}); r.status != 404 {
+		t.Errorf("another tenant's suggestion: %d %s", r.status, r.raw)
+	}
+	for _, sg := range e.mock.Suggestions() {
+		if sg.ID == others && sg.Status != "PENDING_APPROVAL" {
+			t.Errorf("another tenant's suggestion was decided: %s", sg.Status)
+		}
 	}
 	if r := e.do(req{method: "POST", path: "/api/v1/admin/learning/suggestions/" + id + "/decision", as: "admin", body: map[string]any{"decision": "maybe"}}); r.status != 422 {
 		t.Errorf("bad decision: %d", r.status)
@@ -871,7 +887,7 @@ func TestLearningProxy(t *testing.T) {
 	if r := e.do(req{method: "POST", path: "/api/v1/admin/learning/suggestions/missing/decision", as: "admin", body: map[string]any{"decision": "reject"}}); r.status != 404 {
 		t.Errorf("unknown suggestion: %d %s", r.status, r.raw)
 	}
-	e.mock.FailNext("GET", "/learning/suggestions", http.StatusInternalServerError, 1)
+	e.mock.FailNext("GET", "/v1/learning/suggestions", http.StatusInternalServerError, 1)
 	if r := e.do(req{method: "GET", path: "/api/v1/admin/learning/suggestions", as: "admin"}); r.status != 502 {
 		t.Errorf("AgentPulse error: %d", r.status)
 	}
@@ -1071,7 +1087,7 @@ func TestEdgeCases(t *testing.T) {
 
 	// Completing from a notification still succeeds when feedback cannot be sent.
 	e.do(req{method: "PATCH", path: path, body: map[string]any{"version": 2, "status": "todo"}})
-	e.mock.FailNext("POST", "/feedback", http.StatusServiceUnavailable, 1)
+	e.mock.FailNext("POST", "/v1/feedback", http.StatusServiceUnavailable, 1)
 	if r := e.do(req{method: "POST", path: path + "/complete", as: "admin", body: map[string]any{"notification_id": "n"}}); r.status != 200 {
 		t.Errorf("complete with feedback down: %d %s", r.status, r.raw)
 	}

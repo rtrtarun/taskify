@@ -20,6 +20,8 @@ type Deps struct {
 	Workspaces *service.WorkspaceService
 	Feedback   *service.FeedbackService
 	Webhooks   *service.WebhookService
+	// Contacts serves /me/contact. Nil leaves those routes out.
+	Contacts *service.ContactService
 	// AgentJobs serves /agent-jobs. Nil leaves those routes out.
 	AgentJobs *service.AgentJobService
 	Learning  LearningClient
@@ -43,6 +45,7 @@ type handlers struct {
 	feedback      *service.FeedbackService
 	webhooks      *service.WebhookService
 	agentJobs     *service.AgentJobService
+	contacts      *service.ContactService
 	learning      LearningClient
 	webhookSecret string
 	version       string
@@ -74,7 +77,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 	limiter := newRateLimiter(d.RateLimit)
 	h := &handlers{
 		tasks: d.Tasks, workspaces: d.Workspaces, feedback: d.Feedback, webhooks: d.Webhooks, agentJobs: d.AgentJobs,
-		learning: d.Learning, webhookSecret: d.WebhookSecret, version: d.Version, logger: d.Logger, now: d.Now,
+		contacts: d.Contacts, learning: d.Learning, webhookSecret: d.WebhookSecret, version: d.Version, logger: d.Logger, now: d.Now,
 	}
 
 	r := chi.NewRouter()
@@ -108,6 +111,10 @@ func NewRouter(d Deps) (http.Handler, error) {
 			if h.agentJobs != nil {
 				r.Route("/agent-jobs", h.agentJobRoutes)
 				r.Get("/me/brief", h.getMyBrief)
+			}
+			if h.contacts != nil {
+				r.Get("/me/contact", h.getMyContact)
+				r.Put("/me/contact", h.putMyContact)
 			}
 			r.Group(h.adminRoutes)
 		})

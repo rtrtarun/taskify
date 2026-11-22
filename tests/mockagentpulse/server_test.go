@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -56,24 +57,30 @@ func notifyBody(key string) map[string]any {
 func TestNotifyDeduplicatesOnIdempotencyKey(t *testing.T) {
 	s, url := start(t)
 
-	status, first := do(t, "POST", url+"/notify", notifyBody("k1"))
+	status, first := do(t, "POST", url+"/v1/notify", notifyBody("k1"))
 	if status != http.StatusAccepted || first["duplicate"] != false {
 		t.Fatalf("first call: status %d body %v", status, first)
 	}
-	status, second := do(t, "POST", url+"/notify", notifyBody("k1"))
+	status, second := do(t, "POST", url+"/v1/notify", notifyBody("k1"))
 	if status != http.StatusOK || second["duplicate"] != true || second["id"] != first["id"] {
 		t.Fatalf("second call: status %d body %v", status, second)
 	}
-	do(t, "POST", url+"/notify", notifyBody("k2"))
+	do(t, "POST", url+"/v1/notify", notifyBody("k2"))
+	// Keys are unique per tenant: another tenant's k1 is a new notification.
+	other := notifyBody("k1")
+	other["tenantId"] = "tenant_other"
+	if status, _ := do(t, "POST", url+"/v1/notify", other); status != http.StatusAccepted {
+		t.Errorf("same key in another tenant: status %d", status)
+	}
 
-	if got := len(s.Notifications()); got != 2 {
-		t.Errorf("accepted notifications = %d, want 2", got)
+	if got := len(s.Notifications()); got != 3 {
+		t.Errorf("accepted notifications = %d, want 3", got)
 	}
 	if got := s.Duplicates(); got != 1 {
 		t.Errorf("duplicates = %d, want 1", got)
 	}
-	if got := len(s.RequestsTo("POST", "/notify")); got != 3 {
-		t.Errorf("recorded /notify requests = %d, want 3", got)
+	if got := len(s.RequestsTo("POST", "/v1/notify")); got != 4 {
+		t.Errorf("recorded /v1/notify requests = %d, want 4", got)
 	}
 }
 
@@ -84,7 +91,7 @@ func TestNotifyDedupUnderConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			do(t, "POST", url+"/notify", notifyBody(fmt.Sprintf("k%d", i%10)))
+			do(t, "POST", url+"/v1/notify", notifyBody(fmt.Sprintf("k%d", i%10)))
 		}(i)
 	}
 	wg.Wait()
@@ -96,22 +103,88 @@ func TestNotifyDedupUnderConcurrency(t *testing.T) {
 	}
 }
 
-func TestNotifyRejectsMissingField(t *testing.T) {
+// TestNotifyRefusesInvalidBodies covers AgentPulse's 40b rules: each invalid
+// case is a 400 whose message names it, and nothing is accepted.
+func TestNotifyRefusesInvalidBodies(t *testing.T) {
 	s, url := start(t)
-	body := notifyBody("k1")
-	delete(body, "userId")
-	if status, _ := do(t, "POST", url+"/notify", body); status != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", status)
+	with := func(change func(b map[string]any)) map[string]any {
+		b := notifyBody("k")
+		change(b)
+		return b
+	}
+	payload := func(p map[string]any) map[string]any {
+		return with(func(b map[string]any) { b["payload"] = p })
+	}
+	for name, tc := range map[string]struct {
+		body map[string]any
+		want string
+	}{
+		"missing userId":        {with(func(b map[string]any) { delete(b, "userId") }), "userId is required"},
+		"missing tenant":        {with(func(b map[string]any) { delete(b, "tenantId") }), "tenantId is required"},
+		"tenant with space":     {with(func(b map[string]any) { b["tenantId"] = "tenant acme" }), `tenantId "tenant acme" is invalid`},
+		"tenant padded":         {with(func(b map[string]any) { b["tenantId"] = " tenant_acme" }), `tenantId " tenant_acme" is invalid`},
+		"tenant leading dash":   {with(func(b map[string]any) { b["tenantId"] = "-acme" }), `tenantId "-acme" is invalid`},
+		"tenant too long":       {with(func(b map[string]any) { b["tenantId"] = strings.Repeat("a", 65) }), "is invalid"},
+		"tenant default":        {with(func(b map[string]any) { b["tenantId"] = "default" }), `tenantId "default" is reserved`},
+		"key too long":          {with(func(b map[string]any) { b["idempotencyKey"] = strings.Repeat("k", 321) }), "idempotencyKey must be 1 to 320 printable ASCII"},
+		"key not ASCII":         {with(func(b map[string]any) { b["idempotencyKey"] = "ké" }), "idempotencyKey must be 1 to 320 printable ASCII"},
+		"payload not an object": {with(func(b map[string]any) { b["payload"] = "x" }), "payload must be an object"},
+		"unknown action key":    {payload(map[string]any{"taskId": "t1", "actionUrls": map[string]any{"acknowledge": "https://x"}}), `payload.actionUrls key "acknowledge" is not supported`},
+		"complete without task": {payload(map[string]any{"actionUrls": map[string]any{"complete": "https://x"}}), "payload.actionUrls.complete needs payload.taskId"},
+		"snooze without task":   {payload(map[string]any{"actionUrls": map[string]any{"snooze_2h": "https://x"}}), "payload.actionUrls.snooze_2h needs payload.taskId"},
+		"unblock without task":  {payload(map[string]any{"jobId": "j1", "actionUrls": map[string]any{"unblock": "https://x"}}), "payload.actionUrls.unblock needs payload.taskId"},
+		"approve without job":   {payload(map[string]any{"taskId": "t1", "actionUrls": map[string]any{"approve": "https://x"}}), "payload.actionUrls.approve needs payload.jobId"},
+		"reject without job":    {payload(map[string]any{"taskId": "t1", "actionUrls": map[string]any{"reject": "https://x"}}), "payload.actionUrls.reject needs payload.jobId"},
+		"action URL not text":   {payload(map[string]any{"actionUrls": map[string]any{"view": 3}}), "payload.actionUrls.view must be a URL string"},
+		"actionUrls not object": {payload(map[string]any{"actionUrls": []any{"view"}}), "payload.actionUrls must be an object"},
+		"unknown label key":     {payload(map[string]any{"actionLabels": map[string]any{"acknowledge": "OK"}}), `payload.actionLabels key "acknowledge" is not supported`},
+	} {
+		status, out := do(t, "POST", url+"/v1/notify", tc.body)
+		msg, _ := out["error"].(string)
+		if status != http.StatusBadRequest || !strings.Contains(msg, tc.want) {
+			t.Errorf("%s: status %d error %q, want 400 naming %q", name, status, msg, tc.want)
+		}
 	}
 	if len(s.Notifications()) != 0 {
 		t.Error("an invalid notification was accepted")
 	}
 }
 
+func TestNotifyAcceptsValidActions(t *testing.T) {
+	s, url := start(t)
+	for name, p := range map[string]map[string]any{
+		"no actionUrls": {"taskId": "t1"},
+		"only view":     {"actionUrls": map[string]any{"view": "https://x/brief"}},
+		"task actions": {"taskId": "t1", "actionUrls": map[string]any{"complete": "https://x/c", "snooze_2h": "https://x/s", "unblock": "https://x/u", "view": "https://x"},
+			"actionLabels": map[string]any{"unblock": "Unblock and set In Progress"}},
+		"job actions": {"jobId": "j1", "actionUrls": map[string]any{"approve": "https://x/a", "reject": "https://x/r", "view": "https://x"}},
+		"null urls":   {"actionUrls": nil},
+	} {
+		b := notifyBody("k-" + name)
+		b["payload"] = p
+		if status, out := do(t, "POST", url+"/v1/notify", b); status != http.StatusAccepted {
+			t.Errorf("%s: status %d %v", name, status, out)
+		}
+	}
+	// Tenant IDs are case-sensitive and may use dots and hyphens.
+	for _, tenant := range []string{"Tenant.A-1_b", "Default", "a", strings.Repeat("z", 64)} {
+		b := notifyBody("k-" + tenant)
+		b["tenantId"] = tenant
+		if status, out := do(t, "POST", url+"/v1/notify", b); status != http.StatusAccepted {
+			t.Errorf("tenant %q: status %d %v", tenant, status, out)
+		}
+	}
+	if got := len(s.Notifications()); got != 9 {
+		t.Errorf("accepted = %d, want 9", got)
+	}
+}
+
 func TestRequestsAreRecorded(t *testing.T) {
 	s, url := start(t)
-	do(t, "POST", url+"/notify", notifyBody("k1"))
-	do(t, "GET", url+"/healthz", nil)
+	do(t, "POST", url+"/v1/notify", notifyBody("k1"))
+	if status, _ := do(t, "GET", url+"/healthz", nil); status != http.StatusOK {
+		t.Errorf("/healthz status = %d", status)
+	}
 
 	reqs := s.Requests()
 	if len(reqs) != 1 {
@@ -124,110 +197,288 @@ func TestRequestsAreRecorded(t *testing.T) {
 	if err := reqs[0].JSON(&got); err != nil || got["idempotencyKey"] != "k1" {
 		t.Errorf("recorded body = %v, err %v", got, err)
 	}
+	// The pre-v1 paths are gone.
+	for _, path := range []string{"/notify", "/feedback", "/rules"} {
+		if status, _ := do(t, "POST", url+path, notifyBody("old")); status != http.StatusNotFound {
+			t.Errorf("POST %s: status %d, want 404", path, status)
+		}
+	}
 }
 
 func TestScriptedFailures(t *testing.T) {
 	s, url := start(t)
-	s.FailNext("POST", "/notify", http.StatusServiceUnavailable, 3)
+	s.FailNext("POST", "/v1/notify", http.StatusServiceUnavailable, 3)
 
 	for i := 0; i < 3; i++ {
-		if status, _ := do(t, "POST", url+"/notify", notifyBody("k1")); status != http.StatusServiceUnavailable {
+		if status, _ := do(t, "POST", url+"/v1/notify", notifyBody("k1")); status != http.StatusServiceUnavailable {
 			t.Fatalf("call %d: status = %d, want 503", i+1, status)
 		}
 	}
 	if len(s.Notifications()) != 0 {
 		t.Fatal("a failed call was accepted")
 	}
-	if status, _ := do(t, "POST", url+"/notify", notifyBody("k1")); status != http.StatusAccepted {
+	if status, _ := do(t, "POST", url+"/v1/notify", notifyBody("k1")); status != http.StatusAccepted {
 		t.Fatalf("fourth call: status = %d, want 202", status)
 	}
-	if got := len(s.RequestsTo("POST", "/notify")); got != 4 {
+	if got := len(s.RequestsTo("POST", "/v1/notify")); got != 4 {
 		t.Errorf("recorded = %d, want 4 (failed calls are recorded too)", got)
 	}
 
 	// Other paths are unaffected, and a negative count fails until cleared.
-	s.FailNext("POST", "/notify", http.StatusInternalServerError, -1)
+	s.FailNext("POST", "/v1/notify", http.StatusInternalServerError, -1)
 	for i := 0; i < 5; i++ {
-		if status, _ := do(t, "POST", url+"/notify", notifyBody("k9")); status != http.StatusInternalServerError {
+		if status, _ := do(t, "POST", url+"/v1/notify", notifyBody("k9")); status != http.StatusInternalServerError {
 			t.Fatalf("status = %d, want 500", status)
 		}
 	}
-	if status, _ := do(t, "POST", url+"/feedback", map[string]any{"signal": "acted"}); status != http.StatusAccepted {
-		t.Fatalf("/feedback status = %d, want 202", status)
+	if status, _ := do(t, "POST", url+"/v1/feedback", feedbackBody("acted")); status != http.StatusAccepted {
+		t.Fatalf("/v1/feedback status = %d, want 202", status)
 	}
 	s.ClearFailures()
-	if status, _ := do(t, "POST", url+"/notify", notifyBody("k9")); status != http.StatusAccepted {
+	if status, _ := do(t, "POST", url+"/v1/notify", notifyBody("k9")); status != http.StatusAccepted {
 		t.Fatalf("after clear: status = %d, want 202", status)
 	}
 }
 
-func TestFeedbackAndRules(t *testing.T) {
-	s, url := start(t)
+func feedbackBody(signal string) map[string]any {
+	return map[string]any{"taskId": "task-1", "tenantId": "tenant_acme", "userId": "usr_1", "signal": signal}
+}
 
-	if status, _ := do(t, "POST", url+"/feedback", map[string]any{"signal": "shrugged"}); status != http.StatusBadRequest {
-		t.Errorf("unknown signal: status = %d, want 400", status)
-	}
+func TestFeedback(t *testing.T) {
+	s, url := start(t)
 	for _, sig := range []string{"acted", "dismissed", "snoozed", "muted"} {
-		if status, _ := do(t, "POST", url+"/feedback", map[string]any{"signal": sig, "notificationId": "n1"}); status != http.StatusAccepted {
+		if status, _ := do(t, "POST", url+"/v1/feedback", feedbackBody(sig)); status != http.StatusAccepted {
 			t.Errorf("signal %s: status = %d", sig, status)
+		}
+	}
+	for name, tc := range map[string]struct {
+		change func(b map[string]any)
+		want   string
+	}{
+		"unknown signal":          {func(b map[string]any) { b["signal"] = "shrugged" }, "signal must be"},
+		"no tenant":               {func(b map[string]any) { delete(b, "tenantId") }, "tenantId"},
+		"bad tenant":              {func(b map[string]any) { b["tenantId"] = "a/b" }, `tenantId "a/b" is invalid`},
+		"no user":                 {func(b map[string]any) { delete(b, "userId") }, "userId is required"},
+		"no notification or task": {func(b map[string]any) { delete(b, "taskId") }, "notificationId or taskId is required"},
+		"both empty":              {func(b map[string]any) { b["taskId"], b["notificationId"] = "", "" }, "notificationId or taskId is required"},
+		"numeric task":            {func(b map[string]any) { b["taskId"] = 7 }, "taskId must be a string"},
+	} {
+		b := feedbackBody("acted")
+		tc.change(b)
+		status, out := do(t, "POST", url+"/v1/feedback", b)
+		if msg, _ := out["error"].(string); status != http.StatusBadRequest || !strings.Contains(msg, tc.want) {
+			t.Errorf("%s: status %d error %q", name, status, msg)
 		}
 	}
 	if got := len(s.Feedback()); got != 4 {
 		t.Errorf("feedback = %d, want 4", got)
 	}
 
-	do(t, "POST", url+"/rules", map[string]any{"payloadMatch": map[string]any{"priority": "p4_low"}, "channels": []string{"digest"}})
-	if got := len(s.Rules()); got != 1 {
-		t.Errorf("rules = %d, want 1", got)
+	// AP-12: a named notification must be the tenant's own; an empty
+	// notificationId means none.
+	s.SeedNotification("n1", map[string]any{"tenantId": "tenant_acme", "userId": "usr_1"})
+	named := feedbackBody("dismissed")
+	named["notificationId"] = "n1"
+	delete(named, "taskId")
+	if status, out := do(t, "POST", url+"/v1/feedback", named); status != http.StatusAccepted {
+		t.Errorf("known notification: %d %v", status, out)
+	}
+	for name, id := range map[string]string{"unknown": "n404", "another tenant's": "n1"} {
+		b := feedbackBody("dismissed")
+		b["notificationId"] = id
+		if name != "unknown" {
+			b["tenantId"] = "tenant_other"
+		}
+		if status, out := do(t, "POST", url+"/v1/feedback", b); status != http.StatusNotFound {
+			t.Errorf("%s notification: %d %v", name, status, out)
+		}
+	}
+	empty := feedbackBody("muted")
+	empty["notificationId"] = ""
+	if status, out := do(t, "POST", url+"/v1/feedback", empty); status != http.StatusAccepted {
+		t.Errorf("empty notificationId with a task: %d %v", status, out)
+	}
+	if got := len(s.Feedback()); got != 6 {
+		t.Errorf("feedback = %d, want 6", got)
+	}
+}
+
+func ruleBody(tenant string) map[string]any {
+	return map[string]any{
+		"tenantId": tenant, "name": "low",
+		"matchAny": []any{map[string]any{"payloadMatch": map[string]any{"priority": "p4_low"}}},
+		"channels": []string{"digest"},
+	}
+}
+
+func TestRules(t *testing.T) {
+	s, url := start(t)
+	status, created := do(t, "POST", url+"/v1/rules", ruleBody("t1"))
+	if status != http.StatusCreated || created["id"] == "" {
+		t.Fatalf("create: %d %v", status, created)
+	}
+	critical := ruleBody("t1")
+	critical["attentionClass"] = "critical"
+	critical["matchAny"] = []any{map[string]any{"eventTypes": []any{"task.escalated"}}, map[string]any{"payloadMatch": map[string]any{"priority": "p1_critical"}}}
+	if status, out := do(t, "POST", url+"/v1/rules", critical); status != http.StatusCreated {
+		t.Fatalf("critical rule: %d %v", status, out)
+	}
+	do(t, "POST", url+"/v1/rules", ruleBody("t2"))
+	if got := len(s.Rules()); got != 3 {
+		t.Errorf("rules = %d, want 3", got)
+	}
+
+	_, list := do(t, "GET", url+"/v1/rules?tenantId=t1", nil)
+	rules, _ := list["rules"].([]any)
+	if len(rules) != 2 || rules[0].(map[string]any)["id"] != created["id"] {
+		t.Errorf("rules for t1 = %v", list)
+	}
+	if status, _ := do(t, "GET", url+"/v1/rules", nil); status != http.StatusBadRequest {
+		t.Errorf("list without a tenant: status %d", status)
+	}
+
+	for name, tc := range map[string]struct {
+		change func(b map[string]any)
+		want   string
+	}{
+		"bad tenant":     {func(b map[string]any) { b["tenantId"] = "default" }, "reserved"},
+		"no name":        {func(b map[string]any) { delete(b, "name") }, "name is required"},
+		"no entries":     {func(b map[string]any) { b["matchAny"] = []any{} }, "matchAny needs at least one entry"},
+		"unknown class":  {func(b map[string]any) { b["attentionClass"] = "urgent" }, "attentionClass must be"},
+		"empty critical": {func(b map[string]any) { b["attentionClass"] = "critical"; b["matchAny"] = []any{map[string]any{}} }, "matchAny[0] of a critical rule needs"},
+		"half critical": {func(b map[string]any) {
+			b["attentionClass"] = "critical"
+			b["matchAny"] = append(b["matchAny"].([]any), map[string]any{"eventTypes": []any{}})
+		}, "matchAny[1] of a critical rule needs"},
+		"entry not a map": {func(b map[string]any) { b["matchAny"] = []any{"x"} }, "matchAny[0] must be an object"},
+	} {
+		b := ruleBody("t1")
+		tc.change(b)
+		status, out := do(t, "POST", url+"/v1/rules", b)
+		if msg, _ := out["error"].(string); status != http.StatusBadRequest || !strings.Contains(msg, tc.want) {
+			t.Errorf("%s: status %d error %q", name, status, msg)
+		}
+	}
+	// A standard rule may have a catch-all entry.
+	open := ruleBody("t1")
+	open["attentionClass"] = "background"
+	open["matchAny"] = []any{map[string]any{}}
+	if status, out := do(t, "POST", url+"/v1/rules", open); status != http.StatusCreated {
+		t.Errorf("background catch-all: %d %v", status, out)
 	}
 }
 
 func TestLearningSuggestions(t *testing.T) {
 	s, url := start(t)
 
-	status, _ := do(t, "POST", url+"/learning/suggestions", map[string]any{"tenantId": "t1", "proposedAdjustment": 25})
-	if status != http.StatusBadRequest {
-		t.Fatalf("out-of-range adjustment: status = %d, want 400", status)
+	// R6: each field is checked, and the message names it.
+	for name, tc := range map[string]struct {
+		change func(b map[string]any)
+		want   string
+	}{
+		"bad tenant":           {func(b map[string]any) { b["tenantId"] = "t 1" }, "tenantId"},
+		"adjustment over 20":   {func(b map[string]any) { b["proposedAdjustment"] = 25 }, "proposedAdjustment must be"},
+		"adjustment under -20": {func(b map[string]any) { b["proposedAdjustment"] = -21 }, "proposedAdjustment must be"},
+		"current out of range": {func(b map[string]any) { b["currentAdjustment"] = 30 }, "currentAdjustment must be"},
+		"no current":           {func(b map[string]any) { delete(b, "currentAdjustment") }, "currentAdjustment must be"},
+		"four signals":         {func(b map[string]any) { b["signalCount"] = 4 }, "signalCount must be"},
+		"no scope":             {func(b map[string]any) { delete(b, "eventPattern") }, "ruleId or eventPattern"},
+		"no event type":        {func(b map[string]any) { b["eventPattern"] = map[string]any{"label": "docs"} }, "eventPattern.eventType"},
+		"numeric label":        {func(b map[string]any) { b["eventPattern"] = map[string]any{"eventType": "e", "label": 3} }, "eventPattern.label"},
+		"no rationale":         {func(b map[string]any) { delete(b, "rationale") }, "rationale is required"},
+	} {
+		b := suggestionBody("t1")
+		tc.change(b)
+		status, out := do(t, "POST", url+"/v1/learning/suggestions", b)
+		if msg, _ := out["error"].(string); status != http.StatusBadRequest || !strings.Contains(msg, tc.want) {
+			t.Errorf("%s: status %d error %q", name, status, msg)
+		}
 	}
+	byRule := suggestionBody("t1")
+	delete(byRule, "eventPattern")
+	byRule["ruleId"] = "rule_1"
+	if status, out := do(t, "POST", url+"/v1/learning/suggestions", byRule); status != http.StatusCreated {
+		t.Errorf("by rule: %d %v", status, out)
+	}
+	unlabelled := suggestionBody("t1")
+	unlabelled["eventPattern"] = map[string]any{"eventType": "task.updated", "label": nil}
+	if status, out := do(t, "POST", url+"/v1/learning/suggestions", unlabelled); status != http.StatusCreated {
+		t.Errorf("unlabelled: %d %v", status, out)
+	}
+	s.Reset()
 
-	status, created := do(t, "POST", url+"/learning/suggestions", map[string]any{"tenantId": "t1", "proposedAdjustment": -10, "signalCount": 6})
+	status, created := do(t, "POST", url+"/v1/learning/suggestions", suggestionBody("t1"))
 	if status != http.StatusCreated || created["status"] != "PENDING_APPROVAL" {
 		t.Fatalf("create: status %d body %v", status, created)
 	}
 	id := created["id"].(string)
-	s.SeedSuggestion(map[string]any{"tenantId": "t2", "proposedAdjustment": 5.0})
+	other := s.SeedSuggestion(map[string]any{"tenantId": "t2", "proposedAdjustment": 5.0})
 
-	_, list := do(t, "GET", url+"/learning/suggestions?tenantId=t1", nil)
+	_, list := do(t, "GET", url+"/v1/learning/suggestions?tenantId=t1", nil)
 	if got := len(list["suggestions"].([]any)); got != 1 {
 		t.Errorf("suggestions for t1 = %d, want 1", got)
 	}
+	if status, _ := do(t, "GET", url+"/v1/learning/suggestions", nil); status != http.StatusBadRequest {
+		t.Errorf("list without a tenant: status = %d, want 400", status)
+	}
 
-	if status, _ := do(t, "POST", url+"/learning/suggestions/"+id+"/decision", map[string]any{"decision": "maybe"}); status != http.StatusBadRequest {
+	if status, _ := do(t, "POST", url+"/v1/learning/suggestions/"+id+"/decision", map[string]any{"tenantId": "t1", "decision": "maybe"}); status != http.StatusBadRequest {
 		t.Errorf("bad decision: status = %d, want 400", status)
 	}
-	status, decided := do(t, "POST", url+"/learning/suggestions/"+id+"/decision", map[string]any{"decision": "approve"})
+	// AP-12: a decision names its tenant, and another tenant's suggestion
+	// is not found.
+	for name, body := range map[string]map[string]any{
+		"no tenant":  {"decision": "approve"},
+		"bad tenant": {"tenantId": "default", "decision": "approve"},
+	} {
+		if status, _ := do(t, "POST", url+"/v1/learning/suggestions/"+id+"/decision", body); status != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", name, status)
+		}
+	}
+	for _, sid := range []string{id, other} {
+		body := map[string]any{"tenantId": "t2", "decision": "approve"}
+		if sid == other {
+			body["tenantId"] = "t1"
+		}
+		if status, _ := do(t, "POST", url+"/v1/learning/suggestions/"+sid+"/decision", body); status != http.StatusNotFound {
+			t.Errorf("another tenant's suggestion %s: status = %d, want 404", sid, status)
+		}
+	}
+	status, decided := do(t, "POST", url+"/v1/learning/suggestions/"+id+"/decision", map[string]any{"tenantId": "t1", "decision": "approve"})
 	if status != http.StatusOK || decided["status"] != "APPROVED" {
 		t.Fatalf("approve: status %d body %v", status, decided)
 	}
-	if status, _ := do(t, "POST", url+"/learning/suggestions/"+id+"/decision", map[string]any{"decision": "reject"}); status != http.StatusConflict {
+	if status, _ := do(t, "POST", url+"/v1/learning/suggestions/"+id+"/decision", map[string]any{"tenantId": "t1", "decision": "reject"}); status != http.StatusConflict {
 		t.Errorf("second decision: status = %d, want 409", status)
 	}
-	if status, _ := do(t, "POST", url+"/learning/suggestions/nope/decision", map[string]any{"decision": "approve"}); status != http.StatusNotFound {
+	if status, _ := do(t, "POST", url+"/v1/learning/suggestions/nope/decision", map[string]any{"tenantId": "t1", "decision": "approve"}); status != http.StatusNotFound {
 		t.Errorf("unknown id: status = %d, want 404", status)
 	}
 }
 
 func TestInAppFeedAndReset(t *testing.T) {
 	s, url := start(t)
-	s.SeedFeed("t1", "u1", FeedItem{"id": "n1", "title": "hello"})
+	s.SeedFeed("t1", "u1", FeedItem{"id": "n3"}, FeedItem{"id": "n2"}, FeedItem{"id": "n1"})
 
-	_, mine := do(t, "GET", url+"/internal/v1/tenants/t1/users/u1/in-app-feed", nil)
-	if got := len(mine["notifications"].([]any)); got != 1 {
-		t.Errorf("feed for u1 = %d, want 1", got)
+	_, page := do(t, "GET", url+"/v1/tenants/t1/users/u1/in-app-feed?limit=2", nil)
+	if got := page["notifications"].([]any); len(got) != 2 || got[0].(map[string]any)["id"] != "n3" || page["nextCursor"] != "2" {
+		t.Errorf("first page = %v", page)
 	}
-	_, other := do(t, "GET", url+"/internal/v1/tenants/t1/users/u2/in-app-feed", nil)
+	_, rest := do(t, "GET", url+"/v1/tenants/t1/users/u1/in-app-feed?limit=2&cursor=2", nil)
+	if got := rest["notifications"].([]any); len(got) != 1 || got[0].(map[string]any)["id"] != "n1" || rest["nextCursor"] != nil {
+		t.Errorf("second page = %v", rest)
+	}
+	_, other := do(t, "GET", url+"/v1/tenants/t1/users/u2/in-app-feed", nil)
 	if got := len(other["notifications"].([]any)); got != 0 {
 		t.Errorf("feed for u2 = %d, want 0", got)
+	}
+	for _, path := range []string{"/v1/tenants/default/users/u1/in-app-feed", "/v1/tenants/t1/users/u1/in-app-feed?limit=0", "/v1/tenants/t1/users/u1/in-app-feed?cursor=x"} {
+		if status, _ := do(t, "GET", url+path, nil); status != http.StatusBadRequest {
+			t.Errorf("GET %s: status %d, want 400", path, status)
+		}
+	}
+	if status, _ := do(t, "GET", url+"/internal/v1/tenants/t1/users/u1/in-app-feed", nil); status != http.StatusNotFound {
+		t.Errorf("the pre-v1 feed path: status %d, want 404", status)
 	}
 
 	s.Reset()
@@ -238,18 +489,166 @@ func TestInAppFeedAndReset(t *testing.T) {
 
 func TestSetDelay(t *testing.T) {
 	s, url := start(t)
-	s.SetDelay("POST", "/notify", 150*time.Millisecond)
+	s.SetDelay("POST", "/v1/notify", 150*time.Millisecond)
 	began := time.Now()
-	if status, _ := do(t, "POST", url+"/notify", notifyBody("slow")); status != http.StatusAccepted {
+	if status, _ := do(t, "POST", url+"/v1/notify", notifyBody("slow")); status != http.StatusAccepted {
 		t.Fatalf("status = %d", status)
 	}
 	if elapsed := time.Since(began); elapsed < 150*time.Millisecond {
 		t.Errorf("answered after %v, want at least 150ms", elapsed)
 	}
-	s.SetDelay("POST", "/notify", 0)
+	s.SetDelay("POST", "/v1/notify", 0)
 	began = time.Now()
-	do(t, "POST", url+"/notify", notifyBody("fast"))
+	do(t, "POST", url+"/v1/notify", notifyBody("fast"))
 	if time.Since(began) > 100*time.Millisecond {
 		t.Error("the delay was not removed")
+	}
+}
+
+// TestContactIsAFullReplace covers 40a's contact semantics.
+func TestContactIsAFullReplace(t *testing.T) {
+	s, url := start(t)
+	path := url + "/v1/tenants/t1/users/u1/contact"
+	if status, _ := do(t, "PUT", path, map[string]any{"email": "a@example.com", "slackUserId": "U1", "phone": nil}); status != http.StatusOK {
+		t.Fatalf("first put: %d", status)
+	}
+	if c, ok := s.ContactOf("t1", "u1"); !ok || c != (Contact{Email: "a@example.com", SlackUserID: "U1"}) {
+		t.Errorf("contact = %+v, %v", c, ok)
+	}
+	// The same body again changes nothing.
+	do(t, "PUT", path, map[string]any{"email": "a@example.com", "slackUserId": "U1", "phone": nil})
+	if c, _ := s.ContactOf("t1", "u1"); c != (Contact{Email: "a@example.com", SlackUserID: "U1"}) {
+		t.Errorf("after repeat = %+v", c)
+	}
+	// A field left out is cleared.
+	do(t, "PUT", path, map[string]any{"phone": "+14155550123"})
+	if c, _ := s.ContactOf("t1", "u1"); c != (Contact{Phone: "+14155550123"}) {
+		t.Errorf("after replace = %+v", c)
+	}
+	// All three empty deletes it.
+	if status, out := do(t, "PUT", path, map[string]any{"email": nil, "slackUserId": nil, "phone": nil}); status != http.StatusOK || out["deleted"] != true {
+		t.Errorf("delete: %d %v", status, out)
+	}
+	if _, ok := s.ContactOf("t1", "u1"); ok {
+		t.Error("an empty contact was kept")
+	}
+	if got := s.ContactPuts(); got != 4 {
+		t.Errorf("puts = %d, want 4", got)
+	}
+	for name, tc := range map[string]struct {
+		path string
+		body any
+	}{
+		"reserved tenant": {url + "/v1/tenants/default/users/u1/contact", map[string]any{"email": "a@example.com"}},
+		"number field":    {path, map[string]any{"phone": 4155550123}},
+		"not an object":   {path, []string{"x"}},
+	} {
+		if status, _ := do(t, "PUT", tc.path, tc.body); status != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", name, status)
+		}
+	}
+	// AP-12: one field in a bad format refuses the whole PUT, naming it and
+	// not echoing the value.
+	for field, body := range map[string]map[string]any{
+		"email":       {"email": "Bob <bob@example.com>", "phone": "+14155550123"},
+		"slackUserId": {"email": "bob@example.com", "slackUserId": "U" + strings.Repeat("A", 32)},
+		"phone":       {"email": "bob@example.com", "phone": "+0123"},
+	} {
+		status, out := do(t, "PUT", path, body)
+		msg, _ := out["error"].(string)
+		if status != http.StatusBadRequest || !strings.HasPrefix(msg, field+" must be") || strings.Contains(msg, "bob") {
+			t.Errorf("bad %s: %d %q", field, status, msg)
+		}
+	}
+	if _, ok := s.ContactOf("t1", "u1"); ok || s.ContactPuts() != 4 {
+		t.Error("a refused put was stored or counted")
+	}
+}
+
+func suggestionBody(tenant string) map[string]any {
+	return map[string]any{"tenantId": tenant, "eventPattern": map[string]any{"eventType": "task.comment_added", "label": "docs"},
+		"currentAdjustment": 0, "proposedAdjustment": -10, "signalCount": 6, "rationale": "Dismissed consistently."}
+}
+
+// TestFeedbackAnalytics covers R7: counts per event type and label since a
+// time, a signal counted under the notification it names or, without one,
+// the user's latest notification about its task (AP-12), and distinct users.
+func TestFeedbackAnalytics(t *testing.T) {
+	s, url := start(t)
+	now := time.Date(2026, 11, 22, 9, 0, 0, 0, time.UTC)
+	s.SetClock(func() time.Time { return now })
+	notify := func(key, user, eventType, task string, labels ...any) string {
+		t.Helper()
+		b := notifyBody(key)
+		b["userId"], b["eventType"] = user, eventType
+		b["payload"] = map[string]any{"taskId": task, "labels": labels}
+		status, out := do(t, "POST", url+"/v1/notify", b)
+		if status != http.StatusAccepted {
+			t.Fatalf("notify: %d %v", status, out)
+		}
+		return out["id"].(string)
+	}
+	feedback := func(user, signal, notification, task string) {
+		t.Helper()
+		b := map[string]any{"tenantId": "tenant_acme", "userId": user, "signal": signal}
+		if notification != "" {
+			b["notificationId"] = notification
+		}
+		if task != "" {
+			b["taskId"] = task
+		}
+		if status, out := do(t, "POST", url+"/v1/feedback", b); status != http.StatusAccepted {
+			t.Fatalf("feedback: %d %v", status, out)
+		}
+	}
+
+	// Outside the window: counted neither as delivered nor as feedback.
+	old := notify("k0", "usr_1", "task.updated", "t0", "docs")
+	feedback("usr_1", "dismissed", old, "")
+	now = now.Add(31 * 24 * time.Hour)
+	since := now.Add(-30 * 24 * time.Hour)
+
+	a := notify("k1", "usr_1", "task.updated", "t1", "docs", "backend")
+	notify("k2", "usr_2", "task.updated", "t2", "docs")
+	notify("k3", "usr_2", "task.updated", "t2b") // no labels
+	notify("k4", "usr_3", "task.created", "t3", "docs")
+	feedback("usr_1", "dismissed", a, "")
+	feedback("usr_1", "muted", a, "")
+	feedback("usr_2", "dismissed", "", "t2") // linked to usr_2's notification about t2
+	feedback("usr_2", "acted", "", "t9")     // about no notification: stored, not counted
+	feedback("usr_3", "snoozed", "", "t3")
+
+	status, out := do(t, "GET", url+"/v1/analytics/feedback?tenantId=tenant_acme&since="+since.Format(time.RFC3339), nil)
+	if status != http.StatusOK || out["since"] != since.Format(time.RFC3339) {
+		t.Fatalf("analytics: %d %v", status, out)
+	}
+	var got []string
+	for _, raw := range out["groups"].([]any) {
+		g := raw.(map[string]any)
+		got = append(got, fmt.Sprintf("%v/%v d%v a%v x%v m%v s%v u%v", g["eventType"], g["label"], g["delivered"], g["acted"],
+			g["dismissed"], g["muted"], g["snoozed"], g["distinctUsers"]))
+	}
+	want := []string{
+		"task.created/docs d1 a0 x0 m0 s1 u1",
+		"task.updated/<nil> d1 a0 x0 m0 s0 u0",
+		"task.updated/backend d1 a0 x1 m1 s0 u1",
+		"task.updated/docs d2 a0 x2 m1 s0 u2",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("groups:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if len(s.Feedback()) != 6 {
+		t.Errorf("stored feedback = %d, want 6 (uncounted signals are stored too)", len(s.Feedback()))
+	}
+
+	// Another tenant sees nothing, and both parameters are required.
+	_, other := do(t, "GET", url+"/v1/analytics/feedback?tenantId=tenant_other&since="+since.Format(time.RFC3339), nil)
+	if groups := other["groups"].([]any); len(groups) != 0 {
+		t.Errorf("another tenant's groups = %v", groups)
+	}
+	for _, q := range []string{"since=" + since.Format(time.RFC3339), "tenantId=tenant_acme", "tenantId=tenant_acme&since=yesterday"} {
+		if status, _ := do(t, "GET", url+"/v1/analytics/feedback?"+q, nil); status != http.StatusBadRequest {
+			t.Errorf("?%s: status %d, want 400", q, status)
+		}
 	}
 }

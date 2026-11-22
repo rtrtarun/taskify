@@ -14,7 +14,7 @@ func TestApprovalRequestedEvent(t *testing.T) {
 	if e.Actor.Kind != ActorAgent || e.Actor.ID != "agent:triage" {
 		t.Errorf("actor = %+v", e.Actor)
 	}
-	ns := e.Notifications("https://taskify.test")
+	ns := e.Notifications(Links{API: "https://taskify.test"})
 	if len(ns) != 1 || ns[0].UserID != "usr_bob" {
 		t.Fatalf("notifications = %+v", ns)
 	}
@@ -37,7 +37,7 @@ func TestApprovalRequestedEvent(t *testing.T) {
 
 	// Unassigned: the creator decides.
 	unassigned := newTaskT(t, "Loose end", "", "")
-	if ns := NewApprovalRequestedEvent(unassigned, job, []string{"X"}, t0).Notifications("https://t"); len(ns) != 1 ||
+	if ns := NewApprovalRequestedEvent(unassigned, job, []string{"X"}, t0).Notifications(Links{API: "https://t"}); len(ns) != 1 ||
 		ns[0].UserID != unassigned.CreatorID || !strings.Contains(ns[0].Body, "1 change ") {
 		t.Errorf("unassigned = %+v", ns)
 	}

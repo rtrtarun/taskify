@@ -14,9 +14,11 @@ import (
 
 // SchedulerConfig tunes the deadline scheduler.
 type SchedulerConfig struct {
-	Interval          time.Duration // default 1m
-	BatchSize         int           // tasks per transaction; default 100
-	PublicBaseURL     string
+	Interval      time.Duration // default 1m
+	BatchSize     int           // tasks per transaction; default 100
+	PublicBaseURL string
+	// AppBaseURL is the web app's address, or empty (AP-10).
+	AppBaseURL        string
 	OutboxMaxAttempts int // default 10
 	Now               func() time.Time
 	Logger            *slog.Logger
@@ -35,11 +37,16 @@ type SchedulerConfig struct {
 	// BriefHourUTC is the hour, 0 to 23, at which briefs are due
 	// (DIGEST_BRIEF_HOUR_UTC). There is no per-user time zone.
 	BriefHourUTC int
+	// Learning turns on the weekly learning job: one per tenant per ISO week
+	// (G16), for tenants with a workspace that allows the learning agent. It
+	// needs Jobs and Workspaces.
+	Learning   bool
+	Workspaces repository.WorkspaceRepository
 }
 
 // Scheduler writes task.due_soon and task.overdue events, queues
 // blocker_investigator jobs for stale tasks (section 3.3), and queues the
-// day's morning briefs.
+// day's morning briefs and the week's learning jobs.
 //
 // Replicas may run it at the same time: each batch claims its tasks with
 // SKIP LOCKED and marks them in the same transaction, and the unique
@@ -57,6 +64,9 @@ type Scheduler struct {
 	// briefed is the last day whose brief scan ran to the end in this
 	// process; later ticks that day skip the scan.
 	briefed string
+	// learned is the last ISO week whose learning scan ran to the end in
+	// this process.
+	learned string
 }
 
 // NewScheduler returns a scheduler.
@@ -135,7 +145,73 @@ func (s *Scheduler) Tick(ctx context.Context) (int, error) {
 			s.cfg.Logger.Info("deadline scheduler: queued morning briefs", "briefs", n)
 		}
 	}
+	if s.cfg.Jobs != nil && s.cfg.Workspaces != nil && s.cfg.Learning {
+		n, err := s.learning(ctx, now)
+		if err != nil {
+			return total, err
+		}
+		if n > 0 {
+			s.cfg.Logger.Info("deadline scheduler: queued learning jobs", "tenants", n)
+		}
+	}
 	return total, nil
+}
+
+// learning queues the week's learning jobs and returns how many it queued:
+// one per tenant per ISO week, from the first tick of the week (G16). As for
+// briefs, the first scan of the week that runs to the end is remembered, a
+// scan by another replica or after a restart finds the jobs queued and adds
+// none, settings are checked by the query, and the jobs are queued whatever
+// AGENTS_ENABLED is.
+func (s *Scheduler) learning(ctx context.Context, now time.Time) (int, error) {
+	week := domain.LearningWeek(now)
+	s.mu.Lock()
+	done := s.learned == week
+	s.mu.Unlock()
+	if done {
+		return 0, nil
+	}
+	queued := 0
+	for {
+		found, created := 0, 0
+		err := s.tx.WithTx(ctx, func(ctx context.Context) error {
+			found, created = 0, 0 // a retried transaction starts again
+			tenants, err := s.cfg.Workspaces.ListLearningTenants(ctx, week, s.cfg.BatchSize)
+			if err != nil {
+				return err
+			}
+			found = len(tenants)
+			for _, lt := range tenants {
+				job, err := domain.NewLearningJob(lt, now)
+				if err != nil {
+					return err
+				}
+				ok, err := s.cfg.Jobs.Insert(ctx, job)
+				if err != nil {
+					return err
+				}
+				if ok {
+					created++
+				}
+			}
+			return nil
+		})
+		queued += created
+		if err != nil {
+			return queued, err
+		}
+		if found < s.cfg.BatchSize {
+			break
+		}
+		if created == 0 {
+			// Another replica's scan holds this batch; look again next tick.
+			return queued, nil
+		}
+	}
+	s.mu.Lock()
+	s.learned = week
+	s.mu.Unlock()
+	return queued, nil
 }
 
 // briefs queues the day's morning briefs once the brief hour has passed
@@ -287,7 +363,7 @@ func (s *Scheduler) batch(
 				return err
 			}
 		}
-		entries, err := domain.NewOutboxEntries(events, s.cfg.PublicBaseURL, s.cfg.OutboxMaxAttempts, now)
+		entries, err := domain.NewOutboxEntries(events, domain.Links{API: s.cfg.PublicBaseURL, App: s.cfg.AppBaseURL}, s.cfg.OutboxMaxAttempts, now)
 		if err != nil {
 			return err
 		}

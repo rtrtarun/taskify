@@ -166,7 +166,7 @@ func TestBlockedNotificationMatchesContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ns := events[0].Notifications(baseURL)
+	ns := events[0].Notifications(Links{API: baseURL})
 	if len(ns) != 1 {
 		t.Fatalf("notifications = %d, want 1", len(ns))
 	}
@@ -228,8 +228,11 @@ func TestBlockedNotificationMatchesContract(t *testing.T) {
 		t.Errorf("payload.labels = %v", labels)
 	}
 	urls := p["actionUrls"].(map[string]any)
-	if want := baseURL + "/api/v1/tasks/" + id + "/feedback?signal=acted"; urls["acknowledge"] != want {
-		t.Errorf("actionUrls.acknowledge = %v", urls["acknowledge"])
+	if want := baseURL + "/api/v1/tasks/" + id + "/complete"; urls["complete"] != want {
+		t.Errorf("actionUrls.complete = %v", urls["complete"])
+	}
+	if len(urls) != 2 {
+		t.Errorf("actionUrls = %v, want complete and snooze_2h only", urls)
 	}
 	if want := baseURL + "/api/v1/tasks/" + id + "/feedback?signal=snoozed&duration=2h"; urls["snooze_2h"] != want {
 		t.Errorf("actionUrls.snooze_2h = %v", urls["snooze_2h"])
@@ -252,7 +255,7 @@ func TestNotificationRouting(t *testing.T) {
 		if err != nil || len(events) == 0 {
 			t.Fatalf("Apply: events %v err %v", events, err)
 		}
-		return events[0].Notifications(baseURL)[0]
+		return events[0].Notifications(Links{API: baseURL})[0]
 	}
 
 	t.Run("an ordinary update leaves routing to AgentPulse", func(t *testing.T) {
@@ -340,10 +343,10 @@ func TestDeferredAssignment(t *testing.T) {
 
 	t.Run("a deferred assignment goes to the digest only, with the note", func(t *testing.T) {
 		e := assigned(t, PriorityHigh, alice)
-		plain := e.Notifications(baseURL)[0]
+		plain := e.Notifications(Links{API: baseURL})[0]
 		e.Deferred = true
-		n := e.Notifications(baseURL)[0]
-		if !slices.Equal(n.Channels, []string{"digest"}) || n.Payload["digestSummary"] != "Deferred to avoid context switching" {
+		n := e.Notifications(Links{API: baseURL})[0]
+		if !slices.Equal(n.Channels, []string{"digest"}) || n.Payload["digestSummary"] != "Assigned to you: x. Deferred to avoid context switching" {
 			t.Errorf("channels %v digestSummary %v", n.Channels, n.Payload["digestSummary"])
 		}
 		if n.Payload["bypassDigest"] != nil || n.PriorityHint != "high" {
@@ -361,13 +364,13 @@ func TestDeferredAssignment(t *testing.T) {
 	t.Run("a critical event keeps bypassDigest even if marked deferred", func(t *testing.T) {
 		e := assigned(t, PriorityCritical, alice)
 		e.Deferred = true
-		n := e.Notifications(baseURL)[0]
+		n := e.Notifications(Links{API: baseURL})[0]
 		if n.Payload["bypassDigest"] != true || slices.Contains(n.Channels, "digest") || n.Payload["digestSummary"] != nil {
 			t.Errorf("channels %v payload %v", n.Channels, n.Payload)
 		}
 		b := blockEvents[0]
 		b.Deferred = true
-		if n := b.Notifications(baseURL)[0]; n.Payload["bypassDigest"] != true || n.Payload["digestSummary"] != nil {
+		if n := b.Notifications(Links{API: baseURL})[0]; n.Payload["bypassDigest"] != true || n.Payload["digestSummary"] != nil {
 			t.Errorf("a manual block was deferred: %v", n.Payload)
 		}
 	})
@@ -397,7 +400,7 @@ func TestNotificationTextForEveryEvent(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for _, e := range events {
-		ns := e.Notifications(baseURL)
+		ns := e.Notifications(Links{API: baseURL})
 		if len(ns) == 0 {
 			t.Errorf("%s: no notifications", e)
 			continue
@@ -412,7 +415,7 @@ func TestNotificationTextForEveryEvent(t *testing.T) {
 		seen[n.Title] = true
 	}
 
-	if e := NewDueSoonEvent(task, DueWindow1h, t0); e.Notifications(baseURL)[0].Payload["dueWindow"] != "1h" {
+	if e := NewDueSoonEvent(task, DueWindow1h, t0); e.Notifications(Links{API: baseURL})[0].Payload["dueWindow"] != "1h" {
 		t.Error("due-soon payload is missing dueWindow")
 	}
 	if e := NewDueSoonEvent(task, DueWindow24h, t0); e.Actor.Kind != ActorSystem {
@@ -424,7 +427,7 @@ func TestNotificationTextForEveryEvent(t *testing.T) {
 
 	// A task without a due date still renders.
 	task.DueAt = nil
-	if body := NewOverdueEvent(task, t0).Notifications(baseURL)[0].Body; !strings.Contains(body, "unknown time") {
+	if body := NewOverdueEvent(task, t0).Notifications(Links{API: baseURL})[0].Body; !strings.Contains(body, "unknown time") {
 		t.Errorf("body = %q", body)
 	}
 }
@@ -476,7 +479,7 @@ func TestNewComment(t *testing.T) {
 		}
 
 		flags := map[string]any{}
-		for _, n := range events[0].Notifications(baseURL) {
+		for _, n := range events[0].Notifications(Links{API: baseURL}) {
 			flags[n.UserID] = n.Payload["isMentioned"]
 			if n.Payload["commentId"] != c.ID.String() {
 				t.Errorf("commentId = %v", n.Payload["commentId"])
@@ -511,7 +514,7 @@ func TestNewComment(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		body := events[0].Notifications(baseURL)[0].Body
+		body := events[0].Notifications(Links{API: baseURL})[0].Body
 		if !strings.HasSuffix(body, "...") || len([]rune(body)) > 320 {
 			t.Errorf("body length = %d runes", len([]rune(body)))
 		}

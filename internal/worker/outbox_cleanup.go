@@ -14,9 +14,12 @@ type CleanupConfig struct {
 	Retention time.Duration // dispatched rows older than this are deleted; default 7 days
 	BatchSize int           // rows per delete; default 5000
 	// Deliveries, if set, also has webhook delivery records older than
-	// DeliveryRetention (default 1h) deleted.
+	// DeliveryRetention (default 1h) deleted, and AgentPulse callbackIds
+	// older than CallbackRetention (default 7 days, the life of an action
+	// link).
 	Deliveries        repository.WebhookDeliveryRepository
 	DeliveryRetention time.Duration
+	CallbackRetention time.Duration
 	Now               func() time.Time
 	Logger            *slog.Logger
 }
@@ -42,6 +45,9 @@ func NewCleanup(outbox repository.OutboxRepository, cfg CleanupConfig) *Cleanup 
 	}
 	if cfg.DeliveryRetention <= 0 {
 		cfg.DeliveryRetention = time.Hour
+	}
+	if cfg.CallbackRetention <= 0 {
+		cfg.CallbackRetention = 7 * 24 * time.Hour
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -77,6 +83,11 @@ func (c *Cleanup) RunOnce(ctx context.Context) (int, error) {
 		n, err := c.cfg.Deliveries.DeleteBefore(ctx, c.cfg.Now().Add(-c.cfg.DeliveryRetention))
 		if err != nil {
 			return 0, err
+		}
+		total += n
+		n, err = c.cfg.Deliveries.DeleteCallbacksBefore(ctx, c.cfg.Now().Add(-c.cfg.CallbackRetention))
+		if err != nil {
+			return total, err
 		}
 		total += n
 	}

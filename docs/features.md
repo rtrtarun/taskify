@@ -10,7 +10,7 @@ People reach it through three front doors: the REST API, a **command-line tool**
 
 ## Before and after
 
-**Status (2026-11-21):** Layer 1 is built and released. Of Layer 2, the agent engine, human approval, and triage (A1) are built and released in v0.5.0; blocker chasing (A2), decomposition (A3), digests (A4), and learning (A5) are next. Layer 3 has not started. See [milestones.md](milestones.md).
+**Status (2026-11-22):** Layer 1 is built and released. Layer 2 is built: the agent engine, human approval, and triage (A1), released in v0.5.0, then blocker chasing (A2), decomposition (A3), digests (A4), and learning (A5). Its AgentPulse parts are signed off once AgentPulse ships its `/v1/` API. Layer 3 has not started. See [milestones.md](milestones.md).
 
 | Area | Before | After Layer 1 (attention-aware) | After Layer 2 (agentic) |
 | --- | --- | --- | --- |

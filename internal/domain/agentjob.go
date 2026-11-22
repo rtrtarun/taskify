@@ -123,9 +123,10 @@ type NewAgentJobInput struct {
 
 // NewAgentJob validates the input and returns a pending job.
 func NewAgentJob(in NewAgentJobInput, now time.Time) (AgentJob, error) {
+	if err := ValidateTenantID(in.TenantID); err != nil {
+		return AgentJob{}, err
+	}
 	switch {
-	case in.TenantID == "":
-		return AgentJob{}, invalid("agent job tenant_id is required")
 	case !ValidAgentType(in.AgentType):
 		return AgentJob{}, invalid("unknown agent type %q", in.AgentType)
 	case in.DedupKey == "":
