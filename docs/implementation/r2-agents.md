@@ -86,7 +86,7 @@ Goal: blocked and stale tasks are investigated and escalated (feature A2). This 
 
 ---
 
-## M10. Digest agent
+## M10. Digest agent (done)
 
 Goal: protect overloaded users and produce a morning brief (feature A4).
 
