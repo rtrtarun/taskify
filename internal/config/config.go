@@ -44,7 +44,9 @@ type Config struct {
 	OutboxPollInterval time.Duration
 	OutboxMaxAttempts  int
 	OutboxLease        time.Duration
-	SchedulerInterval  time.Duration
+	// OutboxRetryMaxDelay caps the backoff between attempts to send a row.
+	OutboxRetryMaxDelay time.Duration
+	SchedulerInterval   time.Duration
 
 	JWTAlgorithm string
 	JWTSecret    string
@@ -115,12 +117,13 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 		AgentPulseAPIKey:        r.required("AGENTPULSE_API_KEY"),
 		AgentPulseWebhookSecret: r.required("AGENTPULSE_WEBHOOK_SECRET"),
 
-		OutboxWorkers:      r.intRange("OUTBOX_WORKERS", 8, 1, 1024),
-		OutboxBatchSize:    r.intRange("OUTBOX_BATCH_SIZE", 100, 1, 10000),
-		OutboxPollInterval: r.duration("OUTBOX_POLL_INTERVAL", 200*time.Millisecond),
-		OutboxMaxAttempts:  r.intRange("OUTBOX_MAX_ATTEMPTS", 10, 1, 1000),
-		OutboxLease:        r.duration("OUTBOX_LEASE", 60*time.Second),
-		SchedulerInterval:  r.duration("SCHEDULER_INTERVAL", time.Minute),
+		OutboxWorkers:       r.intRange("OUTBOX_WORKERS", 8, 1, 1024),
+		OutboxBatchSize:     r.intRange("OUTBOX_BATCH_SIZE", 100, 1, 10000),
+		OutboxPollInterval:  r.duration("OUTBOX_POLL_INTERVAL", 200*time.Millisecond),
+		OutboxMaxAttempts:   r.intRange("OUTBOX_MAX_ATTEMPTS", 10, 1, 1000),
+		OutboxLease:         r.duration("OUTBOX_LEASE", 60*time.Second),
+		OutboxRetryMaxDelay: r.duration("OUTBOX_RETRY_MAX_DELAY", 60*time.Second),
+		SchedulerInterval:   r.duration("SCHEDULER_INTERVAL", time.Minute),
 
 		JWTAlgorithm: r.oneOf("JWT_ALGORITHM", JWTAlgHS256, JWTAlgHS256, JWTAlgRS256),
 		JWTSecret:    r.optional("JWT_SECRET"),

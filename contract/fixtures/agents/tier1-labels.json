@@ -1,0 +1,24 @@
+{
+  "description": "A scripted Tier 1 call changes the task at once, as the agent, records the run, and queues no further agent work.",
+  "rules": ["R7.1", "R7.3"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Checkout crashes", "assignee_id": "usr_carol"}},
+      "expect": {"status": 201}, "capture": {"task": "id"}},
+    {"name": "agents on, triage only, no approval", "as": "admin", "request": {"method": "PATCH", "path": "/api/v1/workspaces/{{workspace}}/settings", "body": {
+      "agent_settings": {"agents_enabled": true, "require_hitl_for_all": false, "disabled_agents": ["decomposer", "blocker_investigator", "digest", "learning"]}}},
+      "expect": {"status": 200, "body": {"agent_settings": {"agents_enabled": true, "require_hitl_for_all": false}}}},
+    {"name": "a person's edit queues triage", "mock": {"llm": [{"match": "{{task}}", "answers": [
+        {"tool_calls": [{"name": "UpdateTaskAttributes", "arguments": {"task_id": "{{task}}", "labels": ["checkout", "crash"], "reasoning": "The title names a crash in checkout."}}]},
+        {"content": "Labelled the task."}]}]},
+      "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "body": {"version": 1, "title": "Checkout crashes on submit"}},
+      "expect": {"status": 200, "body": {"version": 2}}},
+    {"name": "the agent's change", "eventually": {"timeout_seconds": 30}, "request": {"method": "GET", "path": "/api/v1/tasks/{{task}}"},
+      "expect": {"status": 200, "body": {"labels": ["checkout", "crash"], "version": 3}}},
+    {"name": "one job, completed", "eventually": {"timeout_seconds": 15}, "request": {"method": "GET", "path": "/api/v1/agent-jobs?task_id={{task}}"},
+      "expect": {"status": 200, "body": {"agent_jobs": [{"agent_type": "triage", "status": "completed", "proposed_actions": null}]}},
+      "capture": {"job": "agent_jobs.0.id"}},
+    {"name": "the run history", "request": {"method": "GET", "path": "/api/v1/tasks/{{task}}/agent-runs"},
+      "expect": {"status": 200, "body": {"agent_runs": [{"job": {"id": "{{job}}"}, "runs": {"$contains": [
+        {"turn": 1, "tool_name": "UpdateTaskAttributes", "tool_args": {"labels": ["checkout", "crash"]}, "created_at": "$timestamp"}]}}]}}}
+  ]
+}

@@ -85,6 +85,7 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 		BatchSize:    cfg.OutboxBatchSize,
 		PollInterval: cfg.OutboxPollInterval,
 		Lease:        cfg.OutboxLease,
+		Backoff:      worker.FullJitterUpTo(cfg.OutboxRetryMaxDelay),
 		Logger:       logger,
 		Metrics:      metrics,
 	})

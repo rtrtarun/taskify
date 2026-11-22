@@ -203,6 +203,7 @@ All settings are environment variables. In development, a `.env` file is also re
 | `OUTBOX_POLL_INTERVAL` | `200ms` | Relay poll period |
 | `OUTBOX_MAX_ATTEMPTS` | `10` | Attempts before a dead letter |
 | `OUTBOX_LEASE` | `60s` | A claimed row not settled in this time is retried |
+| `OUTBOX_RETRY_MAX_DELAY` | `60s` | Ceiling of the random backoff between attempts to send a row. The conformance target lowers it |
 | `SCHEDULER_INTERVAL` | `1m` | Deadline scan period |
 | `RATE_LIMIT_RPS`, `RATE_LIMIT_BURST` | `20`, `40` | Per-user request rate, per replica |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | Export traces over OTLP/HTTP; other `OTEL_*` variables apply |

@@ -1222,6 +1222,7 @@ Reasoning loop limits: 30-second timeout per model call; retry with exponential 
 | `OUTBOX_BATCH_SIZE` | `100` | Rows per claim |
 | `OUTBOX_POLL_INTERVAL` | `200ms` | Relay ticker |
 | `OUTBOX_MAX_ATTEMPTS` | `10` | Before dead-letter |
+| `OUTBOX_RETRY_MAX_DELAY` | `60s` | Ceiling of the full-jitter backoff between sends of a row; lowered for a conformance target (M12-06) |
 | `SCHEDULER_INTERVAL` | `1m` (proposed) | Deadline scan period |
 | `ENV` | `production` | `development` enables the header identity fallback |
 | `JWT_ALGORITHM` | `HS256` | `HS256` or `RS256` |

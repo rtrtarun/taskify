@@ -80,13 +80,23 @@ func (c *RelayConfig) defaults() {
 }
 
 // FullJitter is the default backoff: random(0, min(60s, 500ms * 2^attempts)).
-func FullJitter(attempts int) time.Duration {
-	const base, ceiling = 500 * time.Millisecond, 60 * time.Second
-	limit := ceiling
-	if attempts < 7 { // 500ms * 2^7 already exceeds 60s
-		limit = min(ceiling, base<<attempts)
+func FullJitter(attempts int) time.Duration { return FullJitterUpTo(60 * time.Second)(attempts) }
+
+// FullJitterUpTo is FullJitter with another ceiling, OUTBOX_RETRY_MAX_DELAY.
+// A conformance target lowers it so ten failed sends take seconds, not
+// minutes. A ceiling of zero or less means 60s.
+func FullJitterUpTo(ceiling time.Duration) func(attempts int) time.Duration {
+	if ceiling <= 0 {
+		ceiling = 60 * time.Second
 	}
-	return rand.N(limit + 1)
+	return func(attempts int) time.Duration {
+		const base = 500 * time.Millisecond
+		limit := ceiling
+		if attempts < 30 { // beyond, the shift overflows
+			limit = min(ceiling, base<<attempts)
+		}
+		return rand.N(limit + 1)
+	}
 }
 
 // Relay delivers outbox rows to AgentPulse.
