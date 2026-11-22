@@ -202,7 +202,7 @@ func TestFeedback(t *testing.T) {
 		if err := it.feedback.Record(ctx, other); !errors.Is(err, domain.ErrNotFound) {
 			t.Errorf("another tenant's task: error = %v", err)
 		}
-		it.mock.FailNext("POST", "/feedback", http.StatusServiceUnavailable, 1)
+		it.mock.FailNext("POST", "/v1/feedback", http.StatusServiceUnavailable, 1)
 		in.Signal, in.Duration = SignalActed, ""
 		if err := it.feedback.Record(ctx, in); !agentpulse.IsUpstream(err) {
 			t.Errorf("AgentPulse down: error = %v", err)
@@ -319,7 +319,7 @@ func TestWebhookFailuresAndValidation(t *testing.T) {
 		}
 
 		// Feedback failing does not undo or fail the action.
-		it.mock.FailNext("POST", "/feedback", http.StatusServiceUnavailable, 1)
+		it.mock.FailNext("POST", "/v1/feedback", http.StatusServiceUnavailable, 1)
 		dup, err := it.webhooks.Handle(ctx, Callback{Key: "sig-y", Action: ActionComplete, TenantID: tenant, UserID: bob.ID, TaskID: task.ID})
 		if err != nil || dup {
 			t.Fatalf("Handle with AgentPulse feedback down = %v, %v", dup, err)

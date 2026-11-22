@@ -296,7 +296,8 @@ func (b MorningBrief) Notification(publicBaseURL string) Notification {
 			"pendingApprovalsTotal": b.PendingApprovalsTotal,
 			"unblockedTasks":        tasks(b.UnblockedTasks),
 			"unblockedTotal":        b.UnblockedTotal,
-			"actionUrls":            map[string]string{"view": publicBaseURL + "/api/v1/me/brief"},
+			// Not about one task: a plain link only.
+			"actionUrls": map[string]string{ActionView: publicBaseURL + "/api/v1/me/brief"},
 		},
 	}
 }

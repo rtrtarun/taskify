@@ -598,7 +598,7 @@ func TestCommentsAndFeedback(t *testing.T) {
 	if r := e.do(req{method: "POST", path: path + "/feedback", body: map[string]any{"signal": "loved"}}); r.status != 422 {
 		t.Errorf("bad signal: %d", r.status)
 	}
-	e.mock.FailNext("POST", "/feedback", http.StatusServiceUnavailable, 1)
+	e.mock.FailNext("POST", "/v1/feedback", http.StatusServiceUnavailable, 1)
 	if r := e.do(req{method: "POST", path: path + "/feedback?signal=acted"}); r.status != 502 || r.errCode() != CodeUpstreamError {
 		t.Errorf("AgentPulse down: %d %s", r.status, r.raw)
 	}
@@ -787,7 +787,7 @@ func TestWorkspaces(t *testing.T) {
 	}
 
 	// AgentPulse down: the workspace is still created, and says so.
-	e.mock.FailNext("POST", "/rules", http.StatusServiceUnavailable, 1)
+	e.mock.FailNext("POST", "/v1/rules", http.StatusServiceUnavailable, 1)
 	r = e.do(req{method: "POST", path: "/api/v1/workspaces", as: "admin", body: map[string]any{"id": "ws_offline", "name": "Offline"}})
 	if r.status != 201 || r.json["rules_bootstrapped"] != false || r.json["rules_error"] == "" {
 		t.Errorf("create with AgentPulse down: %d %s", r.status, r.raw)
@@ -862,7 +862,7 @@ func TestLearningProxy(t *testing.T) {
 	if r.status != 200 || r.json["status"] != "APPROVED" {
 		t.Fatalf("approve: %d %s", r.status, r.raw)
 	}
-	if sent := e.mock.RequestsTo("POST", "/learning/suggestions/"+id+"/decision"); len(sent) != 1 {
+	if sent := e.mock.RequestsTo("POST", "/v1/learning/suggestions/"+id+"/decision"); len(sent) != 1 {
 		t.Errorf("decision requests = %d", len(sent))
 	}
 	if r := e.do(req{method: "POST", path: "/api/v1/admin/learning/suggestions/" + id + "/decision", as: "admin", body: map[string]any{"decision": "maybe"}}); r.status != 422 {
@@ -871,7 +871,7 @@ func TestLearningProxy(t *testing.T) {
 	if r := e.do(req{method: "POST", path: "/api/v1/admin/learning/suggestions/missing/decision", as: "admin", body: map[string]any{"decision": "reject"}}); r.status != 404 {
 		t.Errorf("unknown suggestion: %d %s", r.status, r.raw)
 	}
-	e.mock.FailNext("GET", "/learning/suggestions", http.StatusInternalServerError, 1)
+	e.mock.FailNext("GET", "/v1/learning/suggestions", http.StatusInternalServerError, 1)
 	if r := e.do(req{method: "GET", path: "/api/v1/admin/learning/suggestions", as: "admin"}); r.status != 502 {
 		t.Errorf("AgentPulse error: %d", r.status)
 	}
@@ -1071,7 +1071,7 @@ func TestEdgeCases(t *testing.T) {
 
 	// Completing from a notification still succeeds when feedback cannot be sent.
 	e.do(req{method: "PATCH", path: path, body: map[string]any{"version": 2, "status": "todo"}})
-	e.mock.FailNext("POST", "/feedback", http.StatusServiceUnavailable, 1)
+	e.mock.FailNext("POST", "/v1/feedback", http.StatusServiceUnavailable, 1)
 	if r := e.do(req{method: "POST", path: path + "/complete", as: "admin", body: map[string]any{"notification_id": "n"}}); r.status != 200 {
 		t.Errorf("complete with feedback down: %d %s", r.status, r.raw)
 	}

@@ -1,13 +1,14 @@
 // Package mockagentpulse is a stand-in for the AgentPulse notification-service.
 //
-// It implements the calls listed in docs/architecture.md section 5.5, records
-// every request so tests can assert on them, and can be scripted to fail.
+// It implements the /v1/ API that AgentPulse builds in its milestone 40, as
+// agreed in docs/blockers.md ("Agreed with AgentPulse"), records every request
+// so tests can assert on them, and can be scripted to fail. It enforces the
+// validation AgentPulse applies from slice 40b: tenant IDs, the fixed
+// actionUrls keys and the IDs each needs, and critical rule conditions. Any
+// later change to the contract changes this mock in the same commit.
 //
 // It must not import any Taskify server package: the conformance suite reuses
 // it as a black box.
-//
-// The shapes here follow the architecture document, not the AgentPulse source.
-// Task M0-07 checks them against the real contract.
 package mockagentpulse
 
 import (
@@ -16,6 +17,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -33,7 +39,7 @@ type Request struct {
 // JSON decodes the request body into v.
 func (r Request) JSON(v any) error { return json.Unmarshal(r.Body, v) }
 
-// Notification is an accepted /notify call, after deduplication.
+// Notification is an accepted /v1/notify call, after deduplication.
 type Notification struct {
 	ID   string
 	Body map[string]any
@@ -54,6 +60,11 @@ type failure struct {
 	remaining int
 }
 
+type storedRule struct {
+	id   string
+	body map[string]any
+}
+
 // Server is the mock. The zero value is not usable; call New.
 type Server struct {
 	mu            sync.Mutex
@@ -61,10 +72,10 @@ type Server struct {
 	requests      []Request
 	failures      map[string]*failure // key: "METHOD /path"
 	notifications []Notification
-	byKey         map[string]string // idempotencyKey -> notification ID
+	byKey         map[string]string // tenantId + "\x00" + idempotencyKey -> notification ID
 	duplicates    int
 	feedback      []map[string]any
-	rules         []map[string]any
+	rules         []storedRule
 	suggestions   []*Suggestion
 	feeds         map[string][]FeedItem // key: tenant + "/" + user
 	delays        map[string]time.Duration
@@ -84,14 +95,14 @@ func New() *Server {
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 	})
-	s.mux.HandleFunc("POST /notify", s.handleNotify)
-	s.mux.HandleFunc("POST /feedback", s.handleFeedback)
-	s.mux.HandleFunc("POST /rules", s.handleCreateRule)
-	s.mux.HandleFunc("GET /rules", s.handleListRules)
-	s.mux.HandleFunc("GET /learning/suggestions", s.handleListSuggestions)
-	s.mux.HandleFunc("POST /learning/suggestions", s.handleCreateSuggestion)
-	s.mux.HandleFunc("POST /learning/suggestions/{id}/decision", s.handleDecision)
-	s.mux.HandleFunc("GET /internal/v1/tenants/{tenantId}/users/{userId}/in-app-feed", s.handleFeed)
+	s.mux.HandleFunc("POST /v1/notify", s.handleNotify)
+	s.mux.HandleFunc("POST /v1/feedback", s.handleFeedback)
+	s.mux.HandleFunc("POST /v1/rules", s.handleCreateRule)
+	s.mux.HandleFunc("GET /v1/rules", s.handleListRules)
+	s.mux.HandleFunc("GET /v1/learning/suggestions", s.handleListSuggestions)
+	s.mux.HandleFunc("POST /v1/learning/suggestions", s.handleCreateSuggestion)
+	s.mux.HandleFunc("POST /v1/learning/suggestions/{id}/decision", s.handleDecision)
+	s.mux.HandleFunc("GET /v1/tenants/{tenantId}/users/{userId}/in-app-feed", s.handleFeed)
 	return s
 }
 
@@ -132,6 +143,172 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
+// --- the agreed rules ------------------------------------------------------
+
+// TenantPattern is the tenant ID rule AgentPulse enforces. IDs are compared
+// case-sensitively and never trimmed, and ReservedTenant is refused.
+const TenantPattern = `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`
+
+// ReservedTenant is the tenant ID AgentPulse keeps for itself.
+const ReservedTenant = "default"
+
+var tenantRe = regexp.MustCompile(TenantPattern)
+
+// CheckTenant returns why id is not an acceptable tenant ID, or nil.
+func CheckTenant(id string) error {
+	switch {
+	case id == ReservedTenant:
+		return fmt.Errorf("tenantId %q is reserved", id)
+	case !tenantRe.MatchString(id):
+		return fmt.Errorf("tenantId %q is invalid: it must match %s", id, TenantPattern)
+	}
+	return nil
+}
+
+// ActionKeys are the actionUrls keys AgentPulse accepts, each mapped to the
+// payload field holding the ID its callback carries. view is a plain link and
+// needs none.
+var ActionKeys = map[string]string{
+	"complete":  "taskId",
+	"snooze_2h": "taskId",
+	"unblock":   "taskId",
+	"approve":   "jobId",
+	"reject":    "jobId",
+	"view":      "",
+}
+
+func actionKeyList() string {
+	keys := make([]string, 0, len(ActionKeys))
+	for k := range ActionKeys {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
+}
+
+// MaxIdempotencyKey is the longest key AgentPulse stores.
+const MaxIdempotencyKey = 320
+
+// CheckNotify returns why AgentPulse would refuse a /v1/notify body with a
+// 400, or nil. The message names the field at fault.
+func CheckNotify(body map[string]any) error {
+	for _, field := range []string{"idempotencyKey", "tenantId", "userId", "eventType", "title", "body"} {
+		if v, _ := body[field].(string); v == "" {
+			return fmt.Errorf("%s is required", field)
+		}
+	}
+	if err := CheckTenant(body["tenantId"].(string)); err != nil {
+		return err
+	}
+	if key := body["idempotencyKey"].(string); len(key) > MaxIdempotencyKey || !printableASCII(key) {
+		return fmt.Errorf("idempotencyKey must be 1 to %d printable ASCII characters", MaxIdempotencyKey)
+	}
+	raw, present := body["payload"]
+	if !present || raw == nil {
+		return nil
+	}
+	payload, ok := raw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("payload must be an object")
+	}
+	return checkActions(payload)
+}
+
+// checkActions applies 40b's action rules: only the fixed keys, each with the
+// ID its callback needs, and labels only for those keys. A payload with no
+// actionUrls, or only view, is valid.
+func checkActions(payload map[string]any) error {
+	if raw, present := payload["actionUrls"]; present && raw != nil {
+		urls, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("payload.actionUrls must be an object of strings")
+		}
+		keys := make([]string, 0, len(urls))
+		for k := range urls {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			idField, known := ActionKeys[k]
+			if !known {
+				return fmt.Errorf("payload.actionUrls key %q is not supported; use one of %s", k, actionKeyList())
+			}
+			if v, isString := urls[k].(string); !isString || v == "" {
+				return fmt.Errorf("payload.actionUrls.%s must be a URL string", k)
+			}
+			if idField == "" {
+				continue
+			}
+			if id, _ := payload[idField].(string); id == "" {
+				return fmt.Errorf("payload.actionUrls.%s needs payload.%s", k, idField)
+			}
+		}
+	}
+	if raw, present := payload["actionLabels"]; present && raw != nil {
+		labels, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("payload.actionLabels must be an object of strings")
+		}
+		for k, v := range labels {
+			if _, known := ActionKeys[k]; !known {
+				return fmt.Errorf("payload.actionLabels key %q is not supported; use one of %s", k, actionKeyList())
+			}
+			if _, isString := v.(string); !isString {
+				return fmt.Errorf("payload.actionLabels.%s must be a string", k)
+			}
+		}
+	}
+	return nil
+}
+
+func printableASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] > 0x7e {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// Attention classes a rule may set.
+var attentionClasses = []string{"critical", "standard", "background"}
+
+// CheckRule returns why AgentPulse would refuse a /v1/rules body, or nil. A
+// critical rule needs a real condition, event types or payload values, in
+// every entry: an empty entry would make everything critical.
+func CheckRule(body map[string]any) error {
+	tenant, _ := body["tenantId"].(string)
+	if err := CheckTenant(tenant); err != nil {
+		return err
+	}
+	if name, _ := body["name"].(string); name == "" {
+		return fmt.Errorf("name is required")
+	}
+	class := ""
+	if raw, present := body["attentionClass"]; present && raw != nil {
+		class, _ = raw.(string)
+		if !slices.Contains(attentionClasses, class) {
+			return fmt.Errorf("attentionClass must be critical, standard, or background")
+		}
+	}
+	entries, _ := body["matchAny"].([]any)
+	if len(entries) == 0 {
+		return fmt.Errorf("matchAny needs at least one entry")
+	}
+	for i, raw := range entries {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("matchAny[%d] must be an object", i)
+		}
+		types, _ := entry["eventTypes"].([]any)
+		match, _ := entry["payloadMatch"].(map[string]any)
+		if class == "critical" && len(types) == 0 && len(match) == 0 {
+			return fmt.Errorf("matchAny[%d] of a critical rule needs eventTypes or payloadMatch", i)
+		}
+	}
+	return nil
+}
+
 // --- scripting -------------------------------------------------------------
 
 // FailNext makes the next n calls to method and path answer with status,
@@ -165,7 +342,8 @@ func (s *Server) SeedSuggestion(body map[string]any) string {
 	return s.addSuggestionLocked(body).ID
 }
 
-// SeedFeed sets the in-app feed returned for a tenant and user.
+// SeedFeed sets the in-app feed returned for a tenant and user, newest
+// first.
 func (s *Server) SeedFeed(tenantID, userID string, items ...FeedItem) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -208,7 +386,7 @@ func (s *Server) RequestsTo(method, path string) []Request {
 	return out
 }
 
-// Notifications returns accepted notifications: one per distinct
+// Notifications returns accepted notifications: one per distinct tenant and
 // idempotencyKey, in arrival order.
 func (s *Server) Notifications() []Notification {
 	s.mu.Lock()
@@ -216,25 +394,29 @@ func (s *Server) Notifications() []Notification {
 	return append([]Notification(nil), s.notifications...)
 }
 
-// Duplicates returns how many /notify calls were acknowledged as duplicates.
+// Duplicates returns how many /v1/notify calls were acknowledged as duplicates.
 func (s *Server) Duplicates() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.duplicates
 }
 
-// Feedback returns the bodies of accepted /feedback calls.
+// Feedback returns the bodies of accepted /v1/feedback calls.
 func (s *Server) Feedback() []map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]map[string]any(nil), s.feedback...)
 }
 
-// Rules returns the bodies of accepted /rules calls.
+// Rules returns the bodies of accepted /v1/rules calls.
 func (s *Server) Rules() []map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]map[string]any(nil), s.rules...)
+	out := make([]map[string]any, len(s.rules))
+	for i, r := range s.rules {
+		out[i] = r.body
+	}
+	return out
 }
 
 // Suggestions returns a copy of the stored learning suggestions.
@@ -255,13 +437,12 @@ func (s *Server) handleNotify(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	for _, field := range []string{"idempotencyKey", "tenantId", "userId", "eventType", "title", "body"} {
-		if v, _ := body[field].(string); v == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": field + " is required"})
-			return
-		}
+	if err := CheckNotify(body); err != nil {
+		badRequest(w, err)
+		return
 	}
-	key := body["idempotencyKey"].(string)
+	// Keys are unique per tenant, stored as sent.
+	key := body["tenantId"].(string) + "\x00" + body["idempotencyKey"].(string)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -281,10 +462,19 @@ func (s *Server) handleFeedback(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	tenant, _ := body["tenantId"].(string)
+	if err := CheckTenant(tenant); err != nil {
+		badRequest(w, err)
+		return
+	}
+	if user, _ := body["userId"].(string); user == "" {
+		badRequest(w, fmt.Errorf("userId is required"))
+		return
+	}
 	switch body["signal"] {
 	case "acted", "dismissed", "snoozed", "muted":
 	default:
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "signal must be acted, dismissed, snoozed, or muted"})
+		badRequest(w, fmt.Errorf("signal must be acted, dismissed, snoozed, or muted"))
 		return
 	}
 	s.mu.Lock()
@@ -298,22 +488,48 @@ func (s *Server) handleCreateRule(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if err := CheckRule(body); err != nil {
+		badRequest(w, err)
+		return
+	}
 	s.mu.Lock()
 	id := s.nextIDLocked("rule")
-	s.rules = append(s.rules, body)
+	s.rules = append(s.rules, storedRule{id: id, body: body})
 	s.mu.Unlock()
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 }
 
-func (s *Server) handleListRules(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"rules": s.Rules()})
+func (s *Server) handleListRules(w http.ResponseWriter, r *http.Request) {
+	tenant := r.URL.Query().Get("tenantId")
+	if err := CheckTenant(tenant); err != nil {
+		badRequest(w, err)
+		return
+	}
+	s.mu.Lock()
+	out := []map[string]any{}
+	for _, rule := range s.rules {
+		if rule.body["tenantId"] != tenant {
+			continue
+		}
+		m := map[string]any{"id": rule.id}
+		for k, v := range rule.body {
+			m[k] = v
+		}
+		out = append(out, m)
+	}
+	s.mu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"rules": out})
 }
 
 func (s *Server) handleListSuggestions(w http.ResponseWriter, r *http.Request) {
 	tenant := r.URL.Query().Get("tenantId")
+	if err := CheckTenant(tenant); err != nil {
+		badRequest(w, err)
+		return
+	}
 	out := []Suggestion{}
 	for _, sg := range s.Suggestions() {
-		if t, _ := sg.Body["tenantId"].(string); tenant == "" || t == tenant {
+		if t, _ := sg.Body["tenantId"].(string); t == tenant {
 			out = append(out, sg)
 		}
 	}
@@ -325,13 +541,14 @@ func (s *Server) handleCreateSuggestion(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if v, _ := body["tenantId"].(string); v == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "tenantId is required"})
+	tenant, _ := body["tenantId"].(string)
+	if err := CheckTenant(tenant); err != nil {
+		badRequest(w, err)
 		return
 	}
 	// AgentPulse bounds learned adjustments to plus or minus 20.
 	if adj, isNum := body["proposedAdjustment"].(float64); !isNum || adj < -20 || adj > 20 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "proposedAdjustment must be a number within -20 and 20"})
+		badRequest(w, fmt.Errorf("proposedAdjustment must be a number within -20 and 20"))
 		return
 	}
 	s.mu.Lock()
@@ -352,7 +569,7 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 	case "reject":
 		status = "REJECTED"
 	default:
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "decision must be approve or reject"})
+		badRequest(w, fmt.Errorf("decision must be approve or reject"))
 		return
 	}
 	id := r.PathValue("id")
@@ -374,12 +591,48 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusNotFound, map[string]any{"error": "suggestion not found"})
 }
 
+// Feed page sizes.
+const (
+	defaultFeedLimit = 20
+	maxFeedLimit     = 100
+)
+
+// handleFeed serves a user's feed newest first. The cursor is the position
+// of the next item, opaque to the caller.
 func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
-	key := r.PathValue("tenantId") + "/" + r.PathValue("userId")
+	tenant := r.PathValue("tenantId")
+	if err := CheckTenant(tenant); err != nil {
+		badRequest(w, err)
+		return
+	}
+	limit, start := defaultFeedLimit, 0
+	q := r.URL.Query()
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > maxFeedLimit {
+			badRequest(w, fmt.Errorf("limit must be 1 to %d", maxFeedLimit))
+			return
+		}
+		limit = n
+	}
+	if v := q.Get("cursor"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			badRequest(w, fmt.Errorf("cursor is invalid"))
+			return
+		}
+		start = n
+	}
 	s.mu.Lock()
-	items := append([]FeedItem{}, s.feeds[key]...)
+	all := s.feeds[tenant+"/"+r.PathValue("userId")]
 	s.mu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]any{"notifications": items})
+	start = min(start, len(all))
+	end := min(start+limit, len(all))
+	var next any
+	if end < len(all) {
+		next = strconv.Itoa(end)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"notifications": append([]FeedItem{}, all[start:end]...), "nextCursor": next})
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -398,10 +651,14 @@ func (s *Server) addSuggestionLocked(body map[string]any) *Suggestion {
 func decodeObject(w http.ResponseWriter, r *http.Request) (map[string]any, bool) {
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "body must be a JSON object"})
+		badRequest(w, fmt.Errorf("body must be a JSON object"))
 		return nil, false
 	}
 	return body, true
+}
+
+func badRequest(w http.ResponseWriter, err error) {
+	writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

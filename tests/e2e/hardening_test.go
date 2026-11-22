@@ -110,7 +110,7 @@ func TestCrashMidDispatch(t *testing.T) {
 	bin := buildServer(t)
 
 	mock := mockagentpulse.New()
-	mock.SetDelay("POST", "/notify", 40*time.Millisecond)
+	mock.SetDelay("POST", "/v1/notify", 40*time.Millisecond)
 	apSrv := httptest.NewServer(mock)
 	t.Cleanup(apSrv.Close)
 
@@ -166,7 +166,7 @@ func TestCrashMidDispatch(t *testing.T) {
 func TestGracefulShutdown(t *testing.T) {
 	db := repotest.NewDatabase(t)
 	mock := mockagentpulse.New()
-	mock.SetDelay("POST", "/notify", 200*time.Millisecond)
+	mock.SetDelay("POST", "/v1/notify", 200*time.Millisecond)
 	apSrv := httptest.NewServer(mock)
 	t.Cleanup(apSrv.Close)
 	seedOutbox(t, db, 40)

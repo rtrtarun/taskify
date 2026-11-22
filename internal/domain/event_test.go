@@ -228,8 +228,11 @@ func TestBlockedNotificationMatchesContract(t *testing.T) {
 		t.Errorf("payload.labels = %v", labels)
 	}
 	urls := p["actionUrls"].(map[string]any)
-	if want := baseURL + "/api/v1/tasks/" + id + "/feedback?signal=acted"; urls["acknowledge"] != want {
-		t.Errorf("actionUrls.acknowledge = %v", urls["acknowledge"])
+	if want := baseURL + "/api/v1/tasks/" + id + "/complete"; urls["complete"] != want {
+		t.Errorf("actionUrls.complete = %v", urls["complete"])
+	}
+	if len(urls) != 2 {
+		t.Errorf("actionUrls = %v, want complete and snooze_2h only", urls)
 	}
 	if want := baseURL + "/api/v1/tasks/" + id + "/feedback?signal=snoozed&duration=2h"; urls["snooze_2h"] != want {
 		t.Errorf("actionUrls.snooze_2h = %v", urls["snooze_2h"])

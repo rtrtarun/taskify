@@ -1,9 +1,10 @@
 // Package agentpulse is Taskify's client for the AgentPulse
 // notification-service.
 //
-// Request shapes follow docs/architecture.md section 5.5. They have not yet
-// been checked against the AgentPulse source (task M0-07), so every field name
-// lives in this package and a correction touches nothing else.
+// It calls the /v1/ API that AgentPulse builds in its milestone 40, as agreed
+// in docs/blockers.md and described in docs/architecture.md section 5.5.
+// Task M0-07 runs it against a real AgentPulse; until then every path and
+// field name lives in this package, so a correction touches nothing else.
 //
 // The client never retries: the outbox relay owns retry, and the synchronous
 // callers (feedback, admin proxies) surface the error to their own caller.
@@ -18,12 +19,22 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/rtrtarun/taskify/internal/observability"
+)
+
+// AgentPulse paths (docs/blockers.md, "Agreed with AgentPulse").
+const (
+	pathNotify      = "/v1/notify"
+	pathFeedback    = "/v1/feedback"
+	pathRules       = "/v1/rules"
+	pathSuggestions = "/v1/learning/suggestions"
+	pathTenants     = "/v1/tenants/"
 )
 
 // ErrCircuitOpen is returned without contacting AgentPulse while the circuit
@@ -117,13 +128,13 @@ func (c *Client) BreakerState() BreakerState {
 	return c.breaker.State()
 }
 
-// Notify sends a complete /notify body, as stored in the outbox.
+// Notify sends a complete /v1/notify body, as stored in the outbox.
 func (c *Client) Notify(ctx context.Context, body json.RawMessage) error {
 	body, err := normalizeNotify(body)
 	if err != nil {
 		return err
 	}
-	return c.do(ctx, http.MethodPost, "/notify", body, nil)
+	return c.do(ctx, http.MethodPost, pathNotify, body, nil)
 }
 
 // normalizeNotify rewrites the legacy payload key bypass_digest to
@@ -159,15 +170,14 @@ type Feedback struct {
 
 // RecordFeedback forwards a feedback signal.
 func (c *Client) RecordFeedback(ctx context.Context, fb Feedback) error {
-	return c.do(ctx, http.MethodPost, "/feedback", fb, nil)
+	return c.do(ctx, http.MethodPost, pathFeedback, fb, nil)
 }
 
 // Rule is an AgentPulse routing rule. It applies when any entry of MatchAny
 // matches: an entry matches when the event type is one of EventTypes (if
-// set) and every PayloadMatch key equals the payload's value.
-//
-// MatchAny is how Taskify expresses the "A or B" conditions of its default
-// rules. AgentPulse's real rule shape is unverified (task M0-07).
+// set) and every PayloadMatch key equals the payload's value. MatchAny is how
+// Taskify expresses the "A or B" conditions of its default rules; AgentPulse
+// supports it natively.
 type Rule struct {
 	TenantID     string      `json:"tenantId"`
 	Name         string      `json:"name"`
@@ -187,15 +197,23 @@ func (c *Client) CreateRule(ctx context.Context, r Rule) (string, error) {
 	var out struct {
 		ID string `json:"id"`
 	}
-	err := c.do(ctx, http.MethodPost, "/rules", r, &out)
+	err := c.do(ctx, http.MethodPost, pathRules, r, &out)
 	return out.ID, err
+}
+
+// ListRules returns the tenant's rules as AgentPulse sends them:
+// {"rules": [...]}.
+func (c *Client) ListRules(ctx context.Context, tenantID string) (json.RawMessage, error) {
+	var out json.RawMessage
+	err := c.do(ctx, http.MethodGet, pathRules+"?tenantId="+url.QueryEscape(tenantID), nil, &out)
+	return out, err
 }
 
 // ListLearningSuggestions returns AgentPulse's response unchanged, for the
 // admin proxy to relay.
 func (c *Client) ListLearningSuggestions(ctx context.Context, tenantID string) (json.RawMessage, error) {
 	var out json.RawMessage
-	err := c.do(ctx, http.MethodGet, "/learning/suggestions?tenantId="+url.QueryEscape(tenantID), nil, &out)
+	err := c.do(ctx, http.MethodGet, pathSuggestions+"?tenantId="+url.QueryEscape(tenantID), nil, &out)
 	return out, err
 }
 
@@ -204,8 +222,34 @@ func (c *Client) ListLearningSuggestions(ctx context.Context, tenantID string) (
 func (c *Client) ReviewLearningSuggestion(ctx context.Context, id, decision, decidedBy string) (json.RawMessage, error) {
 	var out json.RawMessage
 	body := map[string]string{"decision": decision, "decidedBy": decidedBy}
-	err := c.do(ctx, http.MethodPost, "/learning/suggestions/"+url.PathEscape(id)+"/decision", body, &out)
+	err := c.do(ctx, http.MethodPost, pathSuggestions+"/"+url.PathEscape(id)+"/decision", body, &out)
 	return out, err
+}
+
+// InAppFeed returns one page of a user's in-app feed, newest first, as
+// AgentPulse sends it: {"notifications": [...], "nextCursor"}. A limit of 0
+// leaves the page size to AgentPulse, and an empty cursor starts at the
+// newest.
+func (c *Client) InAppFeed(ctx context.Context, tenantID, userID string, limit int, cursor string) (json.RawMessage, error) {
+	q := url.Values{}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	if cursor != "" {
+		q.Set("cursor", cursor)
+	}
+	path := userPath(tenantID, userID) + "/in-app-feed"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	var out json.RawMessage
+	err := c.do(ctx, http.MethodGet, path, nil, &out)
+	return out, err
+}
+
+// userPath is /v1/tenants/{t}/users/{u}, each part escaped.
+func userPath(tenantID, userID string) string {
+	return pathTenants + url.PathEscape(tenantID) + "/users/" + url.PathEscape(userID)
 }
 
 const maxErrorBody = 200

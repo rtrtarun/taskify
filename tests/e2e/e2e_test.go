@@ -82,7 +82,7 @@ func testConfig(agentPulseURL string) config.Config {
 
 // notifyHeader returns a header of the first /notify request for eventType.
 func (h *harness) notifyHeader(eventType, header string) string {
-	for _, r := range h.mock.RequestsTo("POST", "/notify") {
+	for _, r := range h.mock.RequestsTo("POST", "/v1/notify") {
 		var body map[string]any
 		if r.JSON(&body) == nil && body["eventType"] == eventType {
 			return r.Header.Get(header)
@@ -184,7 +184,7 @@ func TestEndToEnd(t *testing.T) {
 	if payload["taskId"] != id || payload["workspaceId"] != "ws_e2e" || payload["bypassDigest"] != true || payload["actorId"] != "usr_bob" {
 		t.Errorf("notification payload = %v", payload)
 	}
-	if got := h.mock.RequestsTo("POST", "/notify")[0].Header.Get("Authorization"); got != "Bearer e2e-key" {
+	if got := h.mock.RequestsTo("POST", "/v1/notify")[0].Header.Get("Authorization"); got != "Bearer e2e-key" {
 		t.Errorf("AgentPulse auth header = %q", got)
 	}
 	// One trace from the client's request to the AgentPulse call.
@@ -240,7 +240,7 @@ func TestPermanentDeleteStopsNotifications(t *testing.T) {
 	h.call("POST", "/api/v1/workspaces", "usr_admin", "admin", map[string]any{"id": "ws_e2e", "name": "E2E"}, nil)
 
 	// With AgentPulse failing, notifications wait in the outbox.
-	h.mock.FailNext("POST", "/notify", http.StatusServiceUnavailable, -1)
+	h.mock.FailNext("POST", "/v1/notify", http.StatusServiceUnavailable, -1)
 	_, task := h.call("POST", "/api/v1/tasks", "usr_bob", "member", map[string]any{
 		"workspace_id": "ws_e2e", "title": "Contains personal data", "assignee_id": "usr_carol",
 	}, nil)

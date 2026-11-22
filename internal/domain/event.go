@@ -33,6 +33,23 @@ const (
 // Source identifies Taskify to AgentPulse.
 const Source = "taskify"
 
+// The payload.actionUrls keys AgentPulse accepts (docs/blockers.md, "Agreed
+// with AgentPulse"); ActionUnblock, in escalation.go, is the sixth. A
+// notification uses no other key. AgentPulse makes its own signed link for
+// every key but view, which it uses as sent, and a click reaches the webhook
+// as the callback action of the same name (snooze_2h as snooze with duration
+// 2h). The callback's ID is read from the payload: taskId for complete,
+// snooze_2h, and unblock, jobId for approve and reject.
+const (
+	// ActionComplete is the "Mark done" button.
+	ActionComplete = "complete"
+	ActionSnooze2h = "snooze_2h"
+	ActionApprove  = "approve"
+	ActionReject   = "reject"
+	// ActionView is a plain link, used as sent.
+	ActionView = "view"
+)
+
 // Event is something that happened to a task. It carries a snapshot of the
 // task after the change, so a notification can be built from the event alone.
 type Event struct {
@@ -300,10 +317,15 @@ func (e Event) payload(publicBaseURL string) map[string]any {
 		"actorId":     e.Actor.ID,
 		"actorKind":   string(e.Actor.Kind),
 		"version":     t.Version,
-		"actionUrls": map[string]string{
-			"acknowledge": taskURL + "/feedback?signal=acted",
-			"snooze_2h":   taskURL + "/feedback?signal=snoozed&duration=2h",
-		},
+	}
+	if t.IsOpen() {
+		// "Mark done" and "Snooze 2h" while there is work left to do. The
+		// URLs name the matching Taskify endpoints; AgentPulse sends its own
+		// signed links and calls the webhook with taskId.
+		p["actionUrls"] = map[string]string{
+			ActionComplete: taskURL + "/complete",
+			ActionSnooze2h: taskURL + "/feedback?signal=snoozed&duration=2h",
+		}
 	}
 	if e.PreviousStatus != "" {
 		p["previousStatus"] = string(e.PreviousStatus)
@@ -330,9 +352,9 @@ func (e Event) payload(publicBaseURL string) map[string]any {
 		p["agentType"] = j.AgentType
 		p["proposedTools"] = append([]string{}, j.Tools...)
 		p["actionUrls"] = map[string]string{
-			"approve": jobURL + "/apply",
-			"reject":  jobURL + "/dismiss",
-			"view":    jobURL,
+			ActionApprove: jobURL + "/apply",
+			ActionReject:  jobURL + "/dismiss",
+			ActionView:    jobURL,
 		}
 	}
 	if x := e.Escalation; x != nil {
@@ -343,7 +365,7 @@ func (e Event) payload(publicBaseURL string) map[string]any {
 			blocking[i] = map[string]any{"taskId": b.ID.String(), "title": b.Title, "status": string(b.Status)}
 		}
 		p["blockingTasks"] = blocking
-		urls := map[string]string{"view": taskURL}
+		urls := map[string]string{ActionView: taskURL}
 		if t.Status == StatusBlocked {
 			// The click reaches the webhook as action "unblock" for taskId.
 			urls[ActionUnblock] = taskURL
