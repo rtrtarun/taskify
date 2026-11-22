@@ -1,0 +1,9 @@
+{
+  "description": "A token whose tenant AgentPulse would refuse, such as default, is refused.",
+  "rules": ["R2.4"],
+  "workspace": {"skip": true},
+  "steps": [
+    {"as": {"user": "usr_bob", "tenant": "default"}, "request": {"method": "GET", "path": "/api/v1/me"}, "expect": {"status": 401, "error_code": "unauthorized"}},
+    {"as": {"user": "usr_bob", "tenant": "has space"}, "request": {"method": "GET", "path": "/api/v1/me"}, "expect": {"status": 401, "error_code": "unauthorized"}}
+  ]
+}

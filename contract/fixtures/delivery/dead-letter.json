@@ -1,0 +1,26 @@
+{
+  "description": "Ten failed sends put the row in dead letter; an admin's replay returns it to pending and the relay delivers it.",
+  "rules": ["R6.2", "R6.3"],
+  "steps": [
+    {"mock": {"agentpulse_fail": [{"method": "POST", "path": "/v1/notify", "status": 503, "count": 10}]},
+      "request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Unlucky", "assignee_id": "usr_carol"}},
+      "expect": {"status": 201},
+      "outbox": {"timeout_seconds": 120, "rows": [{"event_type": "task.created", "recipient": "usr_carol", "status": "dead_letter", "attempts": 10,
+        "capture": {"row": "id"}}]},
+      "agentpulse": {"notify_calls": 10, "notifications": []}},
+    {"name": "listed as dead letter", "as": "admin", "request": {"method": "GET", "path": "/api/v1/admin/outbox?status=dead_letter"},
+      "expect": {"status": 200, "body": {"entries": [{"id": "{{row}}", "status": "dead_letter", "attempts": 10, "last_error": "$nonempty",
+        "payload": {"eventType": "task.created", "userId": "usr_carol"}}], "next_cursor": null}}},
+    {"name": "a member may not replay", "request": {"method": "POST", "path": "/api/v1/admin/outbox/{{row}}/replay"},
+      "expect": {"status": 403, "error_code": "forbidden"}},
+    {"name": "another tenant may not", "as": "other_tenant", "request": {"method": "POST", "path": "/api/v1/admin/outbox/{{row}}/replay"},
+      "expect": {"status": 404, "error_code": "not_found"}},
+    {"name": "replay", "as": "admin", "request": {"method": "POST", "path": "/api/v1/admin/outbox/{{row}}/replay"},
+      "expect": {"status": 200, "body": {"id": "{{row}}", "status": "pending", "attempts": 0}},
+      "agentpulse": {"notifications": [{"eventType": "task.created", "userId": "usr_carol"}]}},
+    {"name": "delivered", "as": "admin", "request": {"method": "GET", "path": "/api/v1/admin/outbox?status=dispatched"},
+      "expect": {"status": 200, "body": {"entries": [{"id": "{{row}}", "dispatched_at": "$timestamp"}]}}},
+    {"name": "replay a delivered row", "as": "admin", "request": {"method": "POST", "path": "/api/v1/admin/outbox/{{row}}/replay"},
+      "expect": {"status": 409, "error_code": "not_dead_letter"}}
+  ]
+}

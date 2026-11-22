@@ -1,0 +1,16 @@
+{
+  "description": "Admin routes are 403 for members: workspaces, rules, learning suggestions, the outbox, and permanent delete.",
+  "rules": ["R2.3"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/workspaces", "body": {"id": "ws_more", "name": "More"}}, "expect": {"status": 403, "error_code": "forbidden"}},
+    {"request": {"method": "GET", "path": "/api/v1/workspaces/{{workspace}}/settings"}, "expect": {"status": 403, "error_code": "forbidden"}},
+    {"request": {"method": "POST", "path": "/api/v1/workspaces/{{workspace}}/bootstrap-rules"}, "expect": {"status": 403, "error_code": "forbidden"}},
+    {"request": {"method": "GET", "path": "/api/v1/admin/learning/suggestions"}, "expect": {"status": 403, "error_code": "forbidden"}},
+    {"request": {"method": "GET", "path": "/api/v1/admin/outbox"}, "expect": {"status": 403, "error_code": "forbidden"}},
+    {"request": {"method": "POST", "path": "/api/v1/admin/outbox/{{random_uuid}}/replay"}, "expect": {"status": 403, "error_code": "forbidden"}},
+    {"name": "an admin may", "as": "admin", "request": {"method": "GET", "path": "/api/v1/workspaces/{{workspace}}/settings"},
+      "expect": {"status": 200, "body": {"id": "{{workspace}}", "agent_settings": {"agents_enabled": false, "require_hitl_for_all": true}}}},
+    {"name": "bootstrap again changes nothing", "as": "admin", "request": {"method": "POST", "path": "/api/v1/workspaces/{{workspace}}/bootstrap-rules"},
+      "expect": {"status": 200, "body": {"rules": {"$length": 3}}}}
+  ]
+}

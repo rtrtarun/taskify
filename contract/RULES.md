@@ -1,6 +1,6 @@
 # Taskify contract rules
 
-The rules a schema cannot express. [openapi.yaml](openapi.yaml) is normative for paths, bodies, and status codes, [events/](events/) for outbox payloads, and [tools/](tools/) for what a model may request; this file is normative for everything else a client, a second server, or a reviewer needs (docs/architecture.md section 9.2). The Go server is the reference implementation. Each rule names the fixtures in [fixtures/](fixtures/) that encode it; the conformance runner (`tests/conformance`) executes them against any server.
+The rules a schema cannot express. [openapi.yaml](openapi.yaml) is normative for paths, bodies, and status codes, [events/](events/) for outbox payloads, and [tools/](tools/) for what a model may request; this file is normative for everything else a client, a second server, or a reviewer needs (docs/architecture.md section 9.2). The Go server is the reference implementation. Each rule names the fixtures in [fixtures/](fixtures/) that encode it, and the conformance runner (`tests/conformance`) executes them against any server; `TestRulesCiteFixtures` checks that every numbered rule cites one and that every cited fixture exists. The few cases no API call can reach on demand (scheduled briefs and learning, the blocker agent, and dependency links, which have no endpoint yet, G23) say which Go tests cover them.
 
 ## 1. Formatting
 
@@ -18,7 +18,7 @@ The rules a schema cannot express. [openapi.yaml](openapi.yaml) is normative for
 | --- | --- | --- |
 | R2.1 Credentials | A bearer JWT signed with the server's key (HS256 or RS256), with `sub` (the user), `tenant_id`, `exp`, and optional `role`. A missing, expired, or wrongly signed token is `401 unauthorized` with `WWW-Authenticate`. | `auth/*.json` |
 | R2.2 Development headers | `X-Tenant-ID`, `X-User-ID`, and `X-User-Role` stand in for a token only with `ENV=development` or from a trusted gateway address. Otherwise they are refused with `401`. A request that sends a token is judged on the token alone. | `auth/headers-refused.json` |
-| R2.3 Roles | `role: admin` is an admin; anything else is a member. Admin-only: workspaces, bootstrap-rules, learning suggestions, the outbox, and permanent delete. A member gets `403 forbidden`. | `auth/member-forbidden.json`, `outbox/member-forbidden.json` |
+| R2.3 Roles | `role: admin` is an admin; anything else is a member. Admin-only: workspaces, bootstrap-rules, learning suggestions, the outbox, and permanent delete. A member gets `403 forbidden`. | `auth/member-forbidden.json`, `delivery/dead-letter.json` |
 | R2.4 Tenant | The tenant comes from the identity only, never from a path, query, or body. Tenant IDs match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, other than `default`, case-sensitive and never trimmed. User IDs are 1 to 128 characters from space to tilde, after trimming. | `auth/bad-tenant.json` |
 | R2.5 Isolation | Another tenant's task, job, workspace, or outbox row answers `404 not_found`, as an unknown ID does. A malformed ID also answers `404`. | `tasks/tenant-isolation.json` |
 
@@ -68,15 +68,15 @@ R5.6, idempotency keys. AgentPulse keeps one notification per key and tenant, so
 | --- | --- | --- |
 | A change with one recipient | `taskify:{tenant_id}:{task_id}:{event_type}:v{version}` | `events/task-created.json` |
 | A change with several recipients | the same, then `:{user_id}` | `events/task-updated-watchers.json` |
-| Due soon | `taskify:{tenant_id}:{task_id}:due_soon_24h:{due_at as Unix seconds}`, and `due_soon_1h` | |
-| Overdue | `taskify:{tenant_id}:{task_id}:overdue:{YYYY-MM-DD}` | |
+| Due soon | `taskify:{tenant_id}:{task_id}:due_soon_24h:{due_at as Unix seconds}`, and `due_soon_1h` | `events/due-soon-and-overdue.json` |
+| Overdue | `taskify:{tenant_id}:{task_id}:overdue:{YYYY-MM-DD}` | `events/due-soon-and-overdue.json` |
 | Comment | `taskify:{tenant_id}:{task_id}:task.comment_added:{comment_id}`, then `:{user_id}` with several recipients | `events/comment-mention.json` |
-| Dependency notice | `taskify:{tenant_id}:{task_id}:{event_type}:{blocker_id}:v{blocker_version}` | |
+| Dependency notice | `taskify:{tenant_id}:{task_id}:{event_type}:{blocker_id}:v{blocker_version}` for `task.dependency_added`, `task.dependency_resolved`, and `task.dependency_reopened`; `task.unblocked` uses the first format | `agents/decompose.json` (unblocked); the others in Go tests only (`internal/domain`), as no API call adds a dependency yet (G23) |
 | Approval request | `taskify:{tenant_id}:{task_id}:agent.approval_requested:{job_id}` | `hitl/apply.json` |
-| Escalation | `taskify:{tenant_id}:{task_id}:task.escalated:{job_id}:{user_id}` | |
-| Morning brief | `taskify:{tenant_id}:{job_id}:digest.morning_brief` | |
+| Escalation | `taskify:{tenant_id}:{task_id}:task.escalated:{job_id}:{user_id}` | Go tests only (`internal/agent` blocker tests) |
+| Morning brief | `taskify:{tenant_id}:{job_id}:digest.morning_brief` | Go tests only (`internal/agent` digest tests): a brief runs at a fixed hour |
 | Contact | `taskify:{tenant_id}:contact.update:{user_id}`, one row per person, reused | `delivery/contact.json` |
-| Learning suggestion | `taskify:{tenant_id}:{job_id}:learning.suggestion:{hash}` | |
+| Learning suggestion | `taskify:{tenant_id}:{job_id}:learning.suggestion:{hash}` | Go tests only (`internal/agent` learning tests): the job runs weekly |
 
 ## 6. Delivery
 
@@ -93,11 +93,11 @@ R7.1, safety tiers. A Tier 1 call runs at once and is recorded in the task's age
 | Tool | Tier | Fixtures |
 | --- | --- | --- |
 | `UpdateTaskAttributes` | 1; 2 when it sets `priority` | `agents/tier1-labels.json`, `agents/tier2-priority.json` |
-| `LinkDependencies` | 1 | |
+| `LinkDependencies` | 1 | Go tests only (`internal/agent/tools`) |
 | `CreateSubtaskDAG` | 1 (a person asked for it) | `agents/decompose.json` |
-| `DraftResolutionComment` | 1 | |
-| `ReassignTask`, `ShiftDueDate`, `ArchiveTask` | 2 | |
-| `ProposeNotificationRule` | 1, decided by an admin at AgentPulse | |
+| `DraftResolutionComment` | 1 | Go tests only (`internal/agent/tools`) |
+| `ReassignTask`, `ShiftDueDate`, `ArchiveTask` | 2 | Go tests only (`internal/agent/tools`) |
+| `ProposeNotificationRule` | 1, decided by an admin at AgentPulse | Go tests only (`internal/agent/tools`) |
 
 | Rule | Detail | Fixtures |
 | --- | --- | --- |
@@ -125,6 +125,8 @@ R7.1, safety tiers. A Tier 1 call runs at once and is recorded in the task's age
 
 ## 10. Errors
 
+R10.1, the status of each error code:
+
 | Status | Codes |
 | --- | --- |
 | 400 | `invalid_request`: unparseable body, unknown field, bad query or header |
@@ -140,6 +142,8 @@ R7.1, safety tiers. A Tier 1 call runs at once and is recorded in the task's age
 | 500 | `internal_error`, with no detail |
 | 502 | `upstream_error`: AgentPulse failed the call |
 | 503 | `upstream_unavailable`: AgentPulse's circuit is open |
+
+Fixtures: `tasks/validation.json`, `tasks/update-needs-version.json`, `tasks/stale-version.json`, `auth/tokens.json`, `auth/member-forbidden.json`, `agents/decompose-disabled.json`, `hitl/*.json`, `delivery/dead-letter.json`.
 
 A client branches on `error.code` and treats a code it does not know by its status.
 

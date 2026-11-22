@@ -1,0 +1,24 @@
+{
+  "description": "Another tenant's task answers 404, as an unknown or malformed ID does, and is never listed.",
+  "rules": ["R2.4", "R2.5"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Private"}},
+      "expect": {"status": 201}, "capture": {"task": "id"}},
+    {"name": "read", "as": "other_tenant", "request": {"method": "GET", "path": "/api/v1/tasks/{{task}}"},
+      "expect": {"status": 404, "error_code": "not_found"}},
+    {"name": "update", "as": "other_tenant", "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "body": {"version": 1, "title": "Mine"}},
+      "expect": {"status": 404, "error_code": "not_found"}},
+    {"name": "comment", "as": "other_tenant", "request": {"method": "POST", "path": "/api/v1/tasks/{{task}}/comments", "body": {"body": "hi"}},
+      "expect": {"status": 404, "error_code": "not_found"}},
+    {"name": "complete", "as": "other_tenant", "request": {"method": "POST", "path": "/api/v1/tasks/{{task}}/complete"},
+      "expect": {"status": 404, "error_code": "not_found"}},
+    {"name": "list", "as": "other_tenant", "request": {"method": "GET", "path": "/api/v1/tasks"},
+      "expect": {"status": 200, "body": {"tasks": [], "next_cursor": null}}},
+    {"name": "unknown", "request": {"method": "GET", "path": "/api/v1/tasks/{{random_uuid}}"},
+      "expect": {"status": 404, "error_code": "not_found"}},
+    {"name": "malformed", "request": {"method": "GET", "path": "/api/v1/tasks/not-a-uuid"},
+      "expect": {"status": 404, "error_code": "not_found"}},
+    {"name": "still unchanged", "request": {"method": "GET", "path": "/api/v1/tasks/{{task}}"},
+      "expect": {"status": 200, "body": {"title": "Private", "version": 1, "comments": []}}}
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "description": "Complete, archive, and restore, each repeatable where the rules say so; lists leave out archived tasks unless asked.",
+  "rules": ["R4.3", "R4.4"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Lifecycle"}},
+      "expect": {"status": 201}, "capture": {"task": "id"}},
+    {"name": "complete", "request": {"method": "POST", "path": "/api/v1/tasks/{{task}}/complete"},
+      "expect": {"status": 200, "body": {"status": "completed", "completed_at": "$timestamp", "version": 2}}},
+    {"name": "complete again", "request": {"method": "POST", "path": "/api/v1/tasks/{{task}}/complete"},
+      "expect": {"status": 200, "body": {"status": "completed", "version": 2}}},
+    {"name": "archive", "request": {"method": "DELETE", "path": "/api/v1/tasks/{{task}}"},
+      "expect": {"status": 200, "body": {"status": "archived", "archived_at": "$timestamp", "completed_at": "$timestamp", "version": 3}}},
+    {"name": "archive again", "request": {"method": "DELETE", "path": "/api/v1/tasks/{{task}}?permanent=false"},
+      "expect": {"status": 200, "body": {"status": "archived", "version": 3}}},
+    {"name": "not listed", "request": {"method": "GET", "path": "/api/v1/tasks"},
+      "expect": {"status": 200, "body": {"tasks": []}}},
+    {"name": "listed as archived", "request": {"method": "GET", "path": "/api/v1/tasks?status=archived"},
+      "expect": {"status": 200, "body": {"tasks": [{"id": "{{task}}"}]}}},
+    {"name": "still fetchable", "request": {"method": "GET", "path": "/api/v1/tasks/{{task}}"},
+      "expect": {"status": 200, "body": {"status": "archived"}}},
+    {"name": "restore", "request": {"method": "POST", "path": "/api/v1/tasks/{{task}}/restore"},
+      "expect": {"status": 200, "body": {"status": "todo", "archived_at": null, "completed_at": null, "version": 4}}},
+    {"name": "restore a todo task", "request": {"method": "POST", "path": "/api/v1/tasks/{{task}}/restore"},
+      "expect": {"status": 422, "error_code": "invalid_transition"}}
+  ]
+}

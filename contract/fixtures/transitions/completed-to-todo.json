@@ -1,0 +1,8 @@
+{
+  "description": "completed to todo is not in the matrix (contract/RULES.md R4.1): 422 invalid_transition, and nothing changes.",
+  "rules": ["R3.1", "R4.1", "R4.2"],
+  "steps": [
+    {"name": "create", "request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Matrix", "assignee_id": "usr_carol"}}, "expect": {"status": 201, "body": {"status": "todo", "version": 1}}, "capture": {"task": "id"}}, {"name": "move to completed", "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "body": {"version": 1, "status": "completed"}}, "expect": {"status": 200, "body": {"status": "completed", "version": 2}}},
+    {"name": "completed to todo", "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "headers": {"If-Match": "\"2\""}, "body": {"status": "todo"}}, "expect": {"status": 422, "error_code": "invalid_transition"}, "outbox": {"rows": []}}, {"name": "unchanged", "request": {"method": "GET", "path": "/api/v1/tasks/{{task}}"}, "expect": {"status": 200, "body": {"status": "completed", "version": 2}}}
+  ]
+}

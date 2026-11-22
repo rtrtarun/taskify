@@ -1,0 +1,8 @@
+{
+  "description": "The development identity headers are refused on a production server reached directly; the target runs with ENV=production.",
+  "rules": ["R2.2"],
+  "workspace": {"skip": true},
+  "steps": [
+    {"as": "headers", "request": {"method": "GET", "path": "/api/v1/tasks"}, "expect": {"status": 401, "error_code": "unauthorized"}}
+  ]
+}

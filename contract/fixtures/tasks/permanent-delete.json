@@ -1,0 +1,20 @@
+{
+  "description": "Permanent delete is for admins, takes only true or false, and leaves nothing behind.",
+  "rules": ["R2.3", "R4.6"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Scrub me", "assignee_id": "usr_carol"}},
+      "expect": {"status": 201}, "capture": {"task": "id"},
+      "outbox": {"rows": [{"event_type": "task.created", "recipient": "usr_carol", "status": "dispatched"}]}},
+    {"request": {"method": "POST", "path": "/api/v1/tasks/{{task}}/comments", "body": {"body": "A secret"}}, "expect": {"status": 201}},
+    {"name": "by a member", "request": {"method": "DELETE", "path": "/api/v1/tasks/{{task}}?permanent=true"},
+      "expect": {"status": 403, "error_code": "forbidden"}},
+    {"name": "a bad flag", "as": "admin", "request": {"method": "DELETE", "path": "/api/v1/tasks/{{task}}?permanent=yes"},
+      "expect": {"status": 400, "error_code": "invalid_request"}},
+    {"name": "by an admin", "as": "admin", "request": {"method": "DELETE", "path": "/api/v1/tasks/{{task}}?permanent=true"},
+      "expect": {"status": 204}},
+    {"name": "gone", "request": {"method": "GET", "path": "/api/v1/tasks/{{task}}"},
+      "expect": {"status": 404, "error_code": "not_found"}},
+    {"name": "its outbox rows are gone", "as": "admin", "request": {"method": "GET", "path": "/api/v1/admin/outbox"},
+      "expect": {"status": 200, "body": {"entries": [], "next_cursor": null}}}
+  ]
+}
