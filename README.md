@@ -51,7 +51,7 @@ flowchart LR
     api -->|"one transaction"| pg[("PostgreSQL: tasks, outbox, agent jobs")]
     sched["Deadline scheduler"] --> pg
     relay["Outbox relay"] -->|"claim rows"| pg
-    relay -->|"/notify"| ap["AgentPulse"]
+    relay -->|"/v1/notify"| ap["AgentPulse"]
     ap -->|"Slack, email, in-app"| user["People"]
     user -->|"Mark done, Snooze, Approve"| ap
     ap -->|"signed webhook"| api
@@ -280,7 +280,7 @@ All routes are under `/api/v1` and need authentication, except the webhook. Fiel
 | `POST /tasks/{id}/complete` | Mark done; optional `{"notification_id": …}` is reported to AgentPulse as acted |
 | `DELETE /tasks/{id}` | Archive |
 | `POST /tasks/{id}/restore` | Restore an archived task |
-| `DELETE /tasks/{id}?permanent=true` | Delete for good, with its pending notifications (admin) |
+| `DELETE /tasks/{id}?permanent=true` | Delete for good, with its notifications and the morning briefs that name it (admin) |
 | `POST /tasks/{id}/comments` | Comment; `@username` mentions are notified |
 | `POST /tasks/{id}/feedback` | Forward `acted`, `dismissed`, `snoozed` (with `duration`), or `muted` to AgentPulse |
 | `POST /workspaces` | Create a workspace and register its default AgentPulse rules (admin) |
@@ -291,6 +291,8 @@ All routes are under `/api/v1` and need authentication, except the webhook. Fiel
 | `GET /agent-jobs/{id}` | An agent job: status, proposed actions, result |
 | `POST /agent-jobs/{id}/apply` | Approve a job's proposals (the task's assignee, its creator, or an admin). `409` if the task changed since (`stale_version`) or the job was decided the other way |
 | `POST /agent-jobs/{id}/dismiss` | Reject a job's proposals; nothing changes |
+| `GET /me/brief` | The caller's most recent morning brief |
+| `GET`, `PUT /me/contact` | The caller's own contact for AgentPulse: `email`, `slack_user_id`, `phone`. An absent field is kept and `null` clears it; each change is forwarded to AgentPulse |
 | `POST /webhooks/agentpulse` | AgentPulse callbacks, authenticated by signature |
 
 The original `/tasks/` routes still work and serve the same handlers.
@@ -299,7 +301,9 @@ The original `/tasks/` routes still work and serve the same handlers.
 
 **Errors** share one shape: `{"error": {"code": "…", "message": "…", "details": {…}}}`. Unparseable input is `400`, a rule violation `422`, a missing task (including one in another tenant) `404`.
 
-**Webhook signing.** AgentPulse sends `X-AgentPulse-Timestamp` (Unix seconds) and `X-AgentPulse-Signature`, the hex HMAC-SHA256 of `<timestamp>.<raw body>` keyed with `AGENTPULSE_WEBHOOK_SECRET`. Timestamps more than 5 minutes from now are rejected, and a replayed callback changes nothing. The body names the `action` (`complete`, `snooze`, `approve`, or `reject`), `tenantId`, `userId`, the `taskId` (complete, snooze) or `jobId` (approve, reject), and optionally `notificationId` and `duration`.
+**Webhook signing.** AgentPulse sends `X-AgentPulse-Timestamp` (Unix seconds) and `X-AgentPulse-Signature`, the hex HMAC-SHA256 of `<timestamp>.<raw body>` keyed with `AGENTPULSE_WEBHOOK_SECRET`. Timestamps more than 5 minutes from now are rejected. The body names the `action` (`complete`, `snooze`, `unblock`, `approve`, or `reject`), `tenantId`, `userId`, the `taskId` (complete, snooze, unblock) or `jobId` (approve, reject), and optionally `notificationId`, `duration`, and `callbackId`. A retry of one click carries the same `callbackId` and changes nothing; a callback without one is recognised by its signature when replayed.
+
+**Tenant IDs** match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` exactly as given (never trimmed, case-sensitive), and `default` is refused, as AgentPulse requires.
 
 ---
 
@@ -375,7 +379,7 @@ LLM_BASE_URL=http://localhost:11434/v1 LLM_MODEL=qwen2.5-coder:7b go test ./test
 
 **Known issues**
 
-- **The AgentPulse contract is unverified.** Request shapes, rule format, and webhook layout come from design notes and have only run against the mock AgentPulse in this repository (task M0-07, waiting on access).
+- **The AgentPulse contract is agreed but not yet run against AgentPulse.** Taskify follows the `/v1/` API that AgentPulse builds in its milestone 40 ([docs/blockers.md](docs/blockers.md)); until it ships, the client has only run against the mock AgentPulse in this repository, which enforces the agreed rules (task M0-07).
 - **The agents have not run against a real model in CI.** `TestLLMSmoke` exercises one; run it locally before relying on a particular model.
 - There is no endpoint for a person to add a dependency yet; agents and the service can. It arrives with the API contract (M12).
 - Approving from a notification decides as an ordinary member: AgentPulse does not send a role, so an admin who is neither assignee nor creator must use the API.

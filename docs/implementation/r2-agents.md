@@ -98,7 +98,7 @@ Goal: protect overloaded users and produce a morning brief (feature A4).
 
 ---
 
-## AP. AgentPulse v1 alignment
+## AP. AgentPulse v1 alignment (done)
 
 Goal: Taskify's AgentPulse integration matches the API AgentPulse is building in its milestone 40 (slices 40a to 40d), as agreed in [blockers.md](../blockers.md). The owner decided every point on 2026-11-22. AP runs before M11, because M11 uses the `/v1/` learning and analytics endpoints. AgentPulse's 40b refuses an unknown action key with a 400, so AP-02 must ship before 40b is deployed.
 
