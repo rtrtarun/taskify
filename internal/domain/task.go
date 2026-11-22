@@ -12,7 +12,6 @@ import (
 
 const (
 	maxTitleLen     = 255
-	maxTenantLen    = 64
 	maxWorkspaceLen = 64
 	maxUserIDLen    = 128
 	maxLabels       = 50
@@ -97,7 +96,7 @@ func NewTask(in NewTaskInput, actor Actor, now time.Time) (*Task, []Event, error
 	now = now.UTC()
 	t := &Task{
 		ID:          id,
-		TenantID:    strings.TrimSpace(in.TenantID),
+		TenantID:    in.TenantID, // never trimmed (AP-04)
 		WorkspaceID: strings.TrimSpace(in.WorkspaceID),
 		Title:       strings.TrimSpace(in.Title),
 		Description: in.Description,
@@ -346,11 +345,10 @@ func (e *TransitionError) Error() string {
 func (e *TransitionError) Is(target error) bool { return target == ErrInvalidStateTransition }
 
 func (t *Task) validate() error {
+	if err := ValidateTenantID(t.TenantID); err != nil {
+		return err
+	}
 	switch {
-	case t.TenantID == "":
-		return invalid("tenant_id is required")
-	case len(t.TenantID) > maxTenantLen:
-		return invalid("tenant_id must be at most %d characters", maxTenantLen)
 	case t.WorkspaceID == "":
 		return invalid("workspace_id is required")
 	case len(t.WorkspaceID) > maxWorkspaceLen:

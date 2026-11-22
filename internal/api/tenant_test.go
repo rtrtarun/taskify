@@ -1,0 +1,60 @@
+package api
+
+import (
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+)
+
+// TestTenantIDsAtEveryEntryPoint is AP-04: the JWT claim and the development
+// headers accept only AgentPulse's tenant pattern, exactly as given, and
+// refuse "default".
+func TestTenantIDsAtEveryEntryPoint(t *testing.T) {
+	e := newEnv(t, func(d *Deps) { d.Auth.Development = true })
+	valid := []string{tenant, "tenant_dev", "Acme.Corp-1", "a", "Default", strings.Repeat("t", 64)}
+	invalid := []string{"default", " tenant_acme", "tenant_acme ", "tenant acme", "-acme", "_acme", ".acme", "acme/1",
+		"ténant", strings.Repeat("t", 65)}
+
+	viaToken := func(tenantID string) resp {
+		return e.do(req{method: "GET", path: "/api/v1/tasks", as: "none",
+			headers: map[string]string{"Authorization": "Bearer " + token(t, tenantID, "usr_bob", "member", time.Hour)}})
+	}
+	viaHeaders := func(tenantID string) resp {
+		return e.do(req{method: "GET", path: "/api/v1/tasks", as: "none",
+			headers: map[string]string{HeaderTenantID: tenantID, HeaderUserID: "usr_bob"}})
+	}
+	for name, enter := range map[string]func(string) resp{"token": viaToken, "headers": viaHeaders} {
+		for _, id := range valid {
+			if r := enter(id); r.status != http.StatusOK {
+				t.Errorf("%s, tenant %q: %d %s", name, id, r.status, r.raw)
+			}
+		}
+		for _, id := range invalid {
+			r := enter(id)
+			if r.status != http.StatusUnauthorized || r.errCode() != CodeUnauthorized || !strings.Contains(string(r.raw), "tenant ID matching") {
+				t.Errorf("%s, tenant %q: %d %s", name, id, r.status, r.raw)
+			}
+		}
+	}
+
+	// Case matters: TENANT_ACME is another tenant and sees none of
+	// tenant_acme's tasks.
+	task := e.createTask(nil)
+	upper := e.do(req{method: "GET", path: "/api/v1/tasks/" + task["id"].(string), as: "none",
+		headers: map[string]string{"Authorization": "Bearer " + token(t, strings.ToUpper(tenant), "usr_bob", "admin", time.Hour)}})
+	if upper.status != http.StatusNotFound {
+		t.Errorf("another tenant by case: %d %s", upper.status, upper.raw)
+	}
+
+	// A webhook callback naming a tenant Taskify cannot have is refused.
+	for _, id := range []string{"default", " " + tenant, "tenant acme"} {
+		body := map[string]any{"action": "complete", "tenantId": id, "userId": "usr_carol", "taskId": task["id"]}
+		if r := e.webhook(body, e.now.Unix(), ""); r.status != http.StatusUnprocessableEntity {
+			t.Errorf("webhook tenant %q: %d %s", id, r.status, r.raw)
+		}
+	}
+	if got := e.do(req{method: "GET", path: "/api/v1/tasks/" + task["id"].(string)}); got.json["status"] != "todo" {
+		t.Errorf("a refused callback changed the task: %v", got.json["status"])
+	}
+}

@@ -172,10 +172,15 @@ func NewWebhookService(tx repository.TxManager, d repository.WebhookDeliveryRepo
 // forwarding failure is logged, not returned: the user's action has already
 // taken effect.
 func (s *WebhookService) Handle(ctx context.Context, cb Callback) (duplicate bool, err error) {
+	// The tenant comes from AgentPulse, not from a token: it must still be
+	// one Taskify could have (AP-04).
+	if err := domain.ValidateTenantID(cb.TenantID); err != nil {
+		return false, err
+	}
 	if cb.Action == ActionApprove || cb.Action == ActionReject {
 		return s.decide(ctx, cb)
 	}
-	if strings.TrimSpace(cb.TenantID) == "" || strings.TrimSpace(cb.UserID) == "" || cb.TaskID == uuid.Nil {
+	if strings.TrimSpace(cb.UserID) == "" || cb.TaskID == uuid.Nil {
 		return false, fmt.Errorf("%w: tenantId, userId, and taskId are required", domain.ErrValidation)
 	}
 	var signal string
@@ -237,7 +242,7 @@ func (s *WebhookService) Handle(ctx context.Context, cb Callback) (duplicate boo
 // when the decision changed the job, so a repeated callback sends no second
 // signal. duplicate reports a callback that changed nothing.
 func (s *WebhookService) decide(ctx context.Context, cb Callback) (duplicate bool, err error) {
-	if strings.TrimSpace(cb.TenantID) == "" || strings.TrimSpace(cb.UserID) == "" || cb.JobID == uuid.Nil {
+	if strings.TrimSpace(cb.UserID) == "" || cb.JobID == uuid.Nil {
 		return false, fmt.Errorf("%w: tenantId, userId, and jobId are required", domain.ErrValidation)
 	}
 	if s.agentJobs == nil {

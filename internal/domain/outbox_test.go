@@ -57,7 +57,7 @@ func TestNewOutboxEntries(t *testing.T) {
 }
 
 func TestNewWorkspace(t *testing.T) {
-	w, err := NewWorkspace(" tenant_acme ", "ws_core-1", "  Core  ", t0)
+	w, err := NewWorkspace("tenant_acme", " ws_core-1 ", "  Core  ", t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,13 +66,15 @@ func TestNewWorkspace(t *testing.T) {
 	}
 
 	cases := map[string][3]string{
-		"missing tenant": {"", "ws", "n"},
-		"long tenant":    {strings.Repeat("t", 65), "ws", "n"},
-		"empty id":       {"t", "", "n"},
-		"id with space":  {"t", "ws core", "n"},
-		"long id":        {"t", strings.Repeat("w", 65), "n"},
-		"missing name":   {"t", "ws", " "},
-		"long name":      {"t", "ws", strings.Repeat("n", 256)},
+		"missing tenant":  {"", "ws", "n"},
+		"long tenant":     {strings.Repeat("t", 65), "ws", "n"},
+		"padded tenant":   {" tenant_acme ", "ws", "n"},
+		"reserved tenant": {"default", "ws", "n"},
+		"empty id":        {"t", "", "n"},
+		"id with space":   {"t", "ws core", "n"},
+		"long id":         {"t", strings.Repeat("w", 65), "n"},
+		"missing name":    {"t", "ws", " "},
+		"long name":       {"t", "ws", strings.Repeat("n", 256)},
 	}
 	for name, in := range cases {
 		if _, err := NewWorkspace(in[0], in[1], in[2], t0); !errors.Is(err, ErrValidation) {
