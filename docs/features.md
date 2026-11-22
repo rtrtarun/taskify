@@ -10,7 +10,7 @@ People reach it through three front doors: the REST API, a **command-line tool**
 
 ## Before and after
 
-**Status (2026-11-22):** Layer 1 is built and released. Layer 2 is built: the agent engine, human approval, and triage (A1), released in v0.5.0, then blocker chasing (A2), decomposition (A3), digests (A4), and learning (A5). Its AgentPulse parts are signed off once AgentPulse ships its `/v1/` API. Layer 3 has not started. See [milestones.md](milestones.md).
+**Status (2026-11-23):** Layer 1 is built and released. Layer 2 is built: the agent engine, human approval, and triage (A1), released in v0.5.0, then blocker chasing (A2), decomposition (A3), digests (A4), and learning (A5). Its AgentPulse parts are signed off once AgentPulse ships its `/v1/` API. Layer 3 has started: its contract and conformance suite (M12) are built; the CLI, web frontend, and Python SDK have not started. See [milestones.md](milestones.md).
 
 | Area | Before | After Layer 1 (attention-aware) | After Layer 2 (agentic) |
 | --- | --- | --- | --- |
@@ -109,7 +109,7 @@ The model never touches the database. It can only request one of the registered 
 ### A5. Notification pruning agent
 
 - **Trigger:** A scheduled analysis of AgentPulse feedback data.
-- **What it does:** Looks for patterns such as "this user always dismisses comment alerts on `docs` tasks" and drafts a rule change, for example "suppress in-app alerts for the `docs` label and batch them weekly". The proposal appears in the admin panel as an M38 learning suggestion.
+- **What it does:** Looks for patterns such as "people keep dismissing comment alerts on `docs` tasks" and proposes a change of score for one event type and label, for example "lower the score of comment alerts on `docs` tasks by 10". It proposes only when at least half of the notifications in the pattern were dismissed or muted, with at least 5 signals from at least 2 users in 30 days. The proposal is a learning suggestion that an admin approves or rejects at AgentPulse; nothing changes until then.
 - **Why it helps:** Notification settings improve from real behaviour, and admins review a ready-made proposal instead of hand-writing rules.
 
 ## Layer 3: Clients and portability
