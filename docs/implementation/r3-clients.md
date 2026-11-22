@@ -11,7 +11,7 @@ Two rules apply to every task in this file:
 
 ---
 
-## M12. Contract and conformance suite
+## M12. Contract and conformance suite (done)
 
 Goal: the API is written down once, every client is generated from it, and the server is checked against it (feature C1).
 
