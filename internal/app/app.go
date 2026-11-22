@@ -181,6 +181,7 @@ func newAgentRuntime(cfg config.Config, db *postgres.DB, tasks *postgres.TaskRep
 	comments, workspaces := postgres.NewCommentRepo(db), postgres.NewWorkspaceRepo(db)
 	triage := agent.Triage{Tasks: tasks, Comments: comments}
 	decomposer := agent.Decomposer{Tasks: tasks, Comments: comments, Workspaces: workspaces}
+	blocker := agent.Blocker{Tasks: tasks, Comments: comments, Dependencies: postgres.NewDependencyRepo(db)}
 	return agent.New(agent.Deps{
 		Tx:         db,
 		Outbox:     postgres.NewOutboxRepo(db),
@@ -199,7 +200,7 @@ func newAgentRuntime(cfg config.Config, db *postgres.DB, tasks *postgres.TaskRep
 		PublicBaseURL:     cfg.PublicBaseURL,
 		OutboxMaxAttempts: cfg.OutboxMaxAttempts,
 		Wake:              wake,
-	}, triage, decomposer)
+	}, triage, decomposer, blocker)
 }
 
 // AgentsRunning reports whether the agent runtime is part of this instance.
