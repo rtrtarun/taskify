@@ -1,6 +1,6 @@
 # Blockers: the AgentPulse contract (O1)
 
-Status, 2026-11-22: **decided and agreed with AgentPulse. Its milestone 40 builds it under `/v1/`. Taskify's side is task group AP in [r2-agents.md](implementation/r2-agents.md), done: the client and the mock follow the agreed contract below, including the details AgentPulse confirmed afterwards (AP-12).**
+Status, 2026-11-22: **decided and agreed with AgentPulse. Its milestone 40 builds it under `/v1/`. Taskify's side is task group AP in [r2-agents.md](archive/r2-agents.md), done: the client and the mock follow the agreed contract below, including the details AgentPulse confirmed afterwards (AP-12). Waiting on AgentPulse to ship slices 40a to 40d, after which task M0-07 checks Taskify against it.**
 
 ## Background
 

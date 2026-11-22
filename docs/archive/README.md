@@ -7,5 +7,6 @@ Documents whose work is finished or whose content has been carried into the curr
 | [initial.md](initial.md) | The original proposal for Layer 1: integrating Taskify with AgentPulse | [architecture.md](../architecture.md) sections 2 to 6, and [features.md](../features.md) |
 | [agentic.md](agentic.md) | The original proposal for Layer 2: the agent backlog (`AG-` IDs) | [architecture.md](../architecture.md) sections 3.6 to 3.8 and 5.3 to 5.7, and [features.md](../features.md) |
 | [r1-task-service.md](r1-task-service.md) | The task list for release R1 (M0 to M4), now complete | [implementation/README.md](../implementation/README.md); open task M0-07 is owner action O1 there |
+| [r2-agents.md](r2-agents.md) | The task list for release R2 (M5 to M11, plus task group AP), now complete | [implementation/README.md](../implementation/README.md); final sign-off of the AgentPulse parts is task M0-07, tracked under owner action O1 there |
 
 Where the current documents depart from the proposals, [architecture.md](../architecture.md) section 7 and [implementation/README.md](../implementation/README.md) section 8 say how and why.

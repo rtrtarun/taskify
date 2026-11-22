@@ -12,9 +12,9 @@ This folder breaks the milestones in [milestones.md](../milestones.md) into task
 
 Task lists:
 
-- [r2-agents.md](r2-agents.md): M5 to M11, 33 tasks, plus AP (AgentPulse v1 alignment, 12 tasks) before M11. All are done: R2 is complete, with final sign-off of the AgentPulse parts waiting on M0-07.
 - [r3-clients.md](r3-clients.md): M12 to M15, 32 tasks. Not started.
 - R1 (M0 to M4, 40 tasks) is complete; its task list is archived in [archive/r1-task-service.md](../archive/r1-task-service.md). Its one open task, M0-07, is owner action O1 below.
+- R2 (M5 to M11, 33 tasks, plus AP, AgentPulse v1 alignment, 12 tasks) is complete; its task list is archived in [archive/r2-agents.md](../archive/r2-agents.md). Final sign-off of its AgentPulse parts is M0-07, under O1 below.
 
 Finished and superseded documents are kept in [docs/archive](../archive/README.md).
 
