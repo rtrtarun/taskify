@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -124,13 +125,20 @@ const (
 // Callback is an authenticated action from AgentPulse, such as a "Mark
 // done" click in Slack.
 type Callback struct {
-	// Key identifies the delivery; a repeated key is ignored. The webhook
-	// handler uses the request signature.
-	Key      string
-	Action   string
-	TenantID string
-	UserID   string
-	TaskID   uuid.UUID
+	// Key identifies the delivery when CallbackID is empty: a repeated key
+	// is ignored. The webhook handler uses the request signature, so only a
+	// byte-identical replay repeats it (D10).
+	//
+	// CallbackID, when AgentPulse sends one, identifies the click: it is the
+	// same on every retry of one click, while the timestamp and signature
+	// change. A callback is a duplicate when its tenant has seen the
+	// CallbackID before (AP-06).
+	Key        string
+	CallbackID string
+	Action     string
+	TenantID   string
+	UserID     string
+	TaskID     uuid.UUID
 	// JobID names the agent job, for approve and reject.
 	JobID          uuid.UUID
 	NotificationID string
@@ -165,17 +173,42 @@ func NewWebhookService(tx repository.TxManager, d repository.WebhookDeliveryRepo
 	return &WebhookService{tx: tx, deliveries: d, tasks: tasks, feedback: fb, logger: logger, now: now}
 }
 
+// callbackIDRe is the form of AgentPulse's callbackId.
+var callbackIDRe = regexp.MustCompile(`^cb-[0-9a-f]{32}$`)
+
+// CallbackRetention is how long a callbackId is remembered: the 7-day life
+// of an AgentPulse action link.
+const CallbackRetention = 7 * 24 * time.Hour
+
+// record stores the callback's identity, its CallbackID or else its Key,
+// and reports whether it was new.
+func (s *WebhookService) record(ctx context.Context, cb Callback) (bool, error) {
+	if cb.CallbackID != "" {
+		return s.deliveries.RecordCallback(ctx, cb.TenantID, cb.CallbackID, s.now().UTC())
+	}
+	return s.deliveries.Record(ctx, cb.Key, s.now().UTC())
+}
+
 // Handle applies a callback once. It records the delivery and changes the
 // task in one transaction, so a failed change can be retried and a repeated
-// delivery changes nothing; duplicate reports the latter. After the change
-// commits, the matching feedback signal is forwarded to AgentPulse. A
-// forwarding failure is logged, not returned: the user's action has already
-// taken effect.
+// delivery changes nothing; duplicate reports the latter. A delivery is the
+// tenant's callbackId when AgentPulse sends one, so a retry signed again
+// with a new timestamp is still a duplicate; without one it is the request
+// signature (D10). After the change commits, the matching feedback signal is
+// forwarded to AgentPulse. A forwarding failure is logged, not returned: the
+// user's action has already taken effect.
+//
+// Two deliveries of one callback at once, on any replicas, insert the same
+// record: the second insert waits for the first transaction and then finds
+// the record, so exactly one applies the change and forwards feedback.
 func (s *WebhookService) Handle(ctx context.Context, cb Callback) (duplicate bool, err error) {
 	// The tenant comes from AgentPulse, not from a token: it must still be
 	// one Taskify could have (AP-04).
 	if err := domain.ValidateTenantID(cb.TenantID); err != nil {
 		return false, err
+	}
+	if cb.CallbackID != "" && !callbackIDRe.MatchString(cb.CallbackID) {
+		return false, fmt.Errorf("%w: callbackId must be cb- and 32 lower-case hex digits", domain.ErrValidation)
 	}
 	if cb.Action == ActionApprove || cb.Action == ActionReject {
 		return s.decide(ctx, cb)
@@ -199,7 +232,7 @@ func (s *WebhookService) Handle(ctx context.Context, cb Callback) (duplicate boo
 
 	actor := domain.User(cb.UserID)
 	err = s.tx.WithTx(ctx, func(ctx context.Context) error {
-		fresh, err := s.deliveries.Record(ctx, cb.Key, s.now().UTC())
+		fresh, err := s.record(ctx, cb)
 		if err != nil {
 			return err
 		}
@@ -238,15 +271,27 @@ func (s *WebhookService) Handle(ctx context.Context, cb Callback) (duplicate boo
 // an admin, so a callback decides as a member.
 //
 // The decision is idempotent by itself: approving an approved job changes
-// nothing. The delivery is recorded after it, and feedback is forwarded only
-// when the decision changed the job, so a repeated callback sends no second
-// signal. duplicate reports a callback that changed nothing.
+// nothing. A callbackId seen before is a duplicate at once. Otherwise the
+// delivery is recorded after the decision, which commits on its own (a stale
+// approval fails the job and must stay failed), and feedback is forwarded
+// only when the decision changed the job, so a repeated callback sends no
+// second signal, even when two arrive at once: the job's row lock lets one
+// of them change it. duplicate reports a callback that changed nothing.
 func (s *WebhookService) decide(ctx context.Context, cb Callback) (duplicate bool, err error) {
 	if strings.TrimSpace(cb.UserID) == "" || cb.JobID == uuid.Nil {
 		return false, fmt.Errorf("%w: tenantId, userId, and jobId are required", domain.ErrValidation)
 	}
 	if s.agentJobs == nil {
 		return false, fmt.Errorf("%w: agent approvals are not available", domain.ErrValidation)
+	}
+	if cb.CallbackID != "" {
+		seen, err := s.deliveries.CallbackSeen(ctx, cb.TenantID, cb.CallbackID)
+		if err != nil {
+			return false, err
+		}
+		if seen {
+			return true, nil
+		}
 	}
 	who := Decider{UserID: cb.UserID}
 	var (
@@ -264,7 +309,7 @@ func (s *WebhookService) decide(ctx context.Context, cb Callback) (duplicate boo
 		return false, err
 	}
 	if err := s.tx.WithTx(ctx, func(ctx context.Context) error {
-		_, err := s.deliveries.Record(ctx, cb.Key, s.now().UTC())
+		_, err := s.record(ctx, cb)
 		return err
 	}); err != nil {
 		s.logger.Warn("webhook: decision applied but delivery not recorded", "job_id", cb.JobID, "error", err)

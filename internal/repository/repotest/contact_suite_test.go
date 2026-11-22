@@ -309,3 +309,66 @@ func TestOutboxCoalesceRacesSettle(t *testing.T) {
 		}
 	})
 }
+
+// TestWebhookCallbacks: callbackIds are remembered per tenant (AP-06), and
+// concurrent records of one ID report it new exactly once.
+func TestWebhookCallbacks(t *testing.T) {
+	each(t, func(t *testing.T, b Backend) {
+		const id = "cb-0123456789abcdef0123456789abcdef"
+		if seen, err := b.Deliveries.CallbackSeen(ctx, tenant, id); err != nil || seen {
+			t.Fatalf("seen before any record: %v, %v", seen, err)
+		}
+		if fresh, err := b.Deliveries.RecordCallback(ctx, tenant, id, t0); err != nil || !fresh {
+			t.Fatalf("first record = %v, %v", fresh, err)
+		}
+		if fresh, _ := b.Deliveries.RecordCallback(ctx, tenant, id, t0.Add(time.Hour)); fresh {
+			t.Error("a repeated callbackId was reported as new")
+		}
+		if seen, _ := b.Deliveries.CallbackSeen(ctx, tenant, id); !seen {
+			t.Error("a recorded callbackId is not seen")
+		}
+		// Another tenant's same ID is its own.
+		if fresh, _ := b.Deliveries.RecordCallback(ctx, "tenant_other", id, t0); !fresh {
+			t.Error("callbackIds are not scoped to the tenant")
+		}
+		// Signatures and callbackIds are separate records.
+		if fresh, _ := b.Deliveries.Record(ctx, id, t0); !fresh {
+			t.Error("a signature collided with a callbackId")
+		}
+		if n, err := b.Deliveries.DeleteCallbacksBefore(ctx, t0.Add(time.Minute)); err != nil || n != 2 {
+			t.Errorf("DeleteCallbacksBefore = %d, %v", n, err)
+		}
+		if seen, _ := b.Deliveries.CallbackSeen(ctx, tenant, id); seen {
+			t.Error("a deleted callbackId is still seen")
+		}
+
+		const racers = 8
+		var (
+			wg    sync.WaitGroup
+			mu    sync.Mutex
+			fresh int
+		)
+		for i := 0; i < racers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				err := b.Tx.WithTx(ctx, func(ctx context.Context) error {
+					ok, err := b.Deliveries.RecordCallback(ctx, tenant, "cb-ffffffffffffffffffffffffffffffff", t0)
+					if ok {
+						mu.Lock()
+						fresh++
+						mu.Unlock()
+					}
+					return err
+				})
+				if err != nil {
+					t.Error(err)
+				}
+			}()
+		}
+		wg.Wait()
+		if fresh != 1 {
+			t.Errorf("%d concurrent records reported new, want 1", fresh)
+		}
+	})
+}

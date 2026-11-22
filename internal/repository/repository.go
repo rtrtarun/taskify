@@ -134,6 +134,14 @@ type WebhookDeliveryRepository interface {
 	// the callback was already processed.
 	Record(ctx context.Context, key string, at time.Time) (bool, error)
 	DeleteBefore(ctx context.Context, cutoff time.Time) (int, error)
+	// RecordCallback stores an AgentPulse callbackId for the tenant and
+	// reports whether it was new (AP-06). A concurrent insert of the same
+	// pair waits for the first and then reports false.
+	RecordCallback(ctx context.Context, tenantID, callbackID string, at time.Time) (bool, error)
+	// CallbackSeen reports whether the tenant's callbackId is stored.
+	CallbackSeen(ctx context.Context, tenantID, callbackID string) (bool, error)
+	// DeleteCallbacksBefore removes callbackIds received before cutoff.
+	DeleteCallbacksBefore(ctx context.Context, cutoff time.Time) (int, error)
 }
 
 // ContactRepository stores people's contact details (AP-05), one row per

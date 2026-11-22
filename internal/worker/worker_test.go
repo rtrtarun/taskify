@@ -503,10 +503,24 @@ func TestCleanup(t *testing.T) {
 		if _, err := b.Deliveries.Record(ctx, "new-sig", now.Add(-time.Minute)); err != nil {
 			t.Fatal(err)
 		}
+		// callbackIds are kept for the 7-day life of an action link (AP-06).
+		const oldCB, newCB = "cb-00000000000000000000000000000001", "cb-00000000000000000000000000000002"
+		if _, err := b.Deliveries.RecordCallback(ctx, tenant, oldCB, now.Add(-8*24*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.Deliveries.RecordCallback(ctx, tenant, newCB, now.Add(-6*24*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
 		c := NewCleanup(b.Outbox, CleanupConfig{BatchSize: 2, Deliveries: b.Deliveries, Now: func() time.Time { return now }, Logger: quiet})
 		n, err := c.RunOnce(ctx)
-		if err != nil || n != 4 {
-			t.Fatalf("RunOnce = %d, %v; want 3 outbox rows and 1 delivery deleted", n, err)
+		if err != nil || n != 5 {
+			t.Fatalf("RunOnce = %d, %v; want 3 outbox rows, 1 delivery, and 1 callback deleted", n, err)
+		}
+		if seen, _ := b.Deliveries.CallbackSeen(ctx, tenant, oldCB); seen {
+			t.Error("an 8-day-old callbackId was kept")
+		}
+		if seen, _ := b.Deliveries.CallbackSeen(ctx, tenant, newCB); !seen {
+			t.Error("a 6-day-old callbackId was deleted")
 		}
 		if fresh, _ := b.Deliveries.Record(ctx, "new-sig", now); fresh {
 			t.Error("a delivery inside the replay window was deleted")

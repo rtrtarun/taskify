@@ -58,3 +58,30 @@ func TestTenantIDsAtEveryEntryPoint(t *testing.T) {
 		t.Errorf("a refused callback changed the task: %v", got.json["status"])
 	}
 }
+
+// TestWebhookCallbackID is AP-06 through HTTP: a retry of one click, signed
+// again with a new timestamp, is a duplicate and forwards no second
+// feedback; a byte-identical replay is still a duplicate.
+func TestWebhookCallbackID(t *testing.T) {
+	e := newEnv(t)
+	task := e.createTask(nil)
+	body := map[string]any{"action": "complete", "tenantId": tenant, "userId": "usr_carol", "taskId": task["id"],
+		"notificationId": "ntf_1", "callbackId": "cb-0123456789abcdef0123456789abcdef"}
+	now := e.now.Unix()
+	if r := e.webhook(body, now, ""); r.status != http.StatusOK || r.json["status"] != "applied" {
+		t.Fatalf("first delivery: %d %s", r.status, r.raw)
+	}
+	if r := e.webhook(body, now, ""); r.status != http.StatusOK || r.json["status"] != "duplicate" {
+		t.Errorf("byte-identical replay: %d %s", r.status, r.raw)
+	}
+	if r := e.webhook(body, now+30, ""); r.status != http.StatusOK || r.json["status"] != "duplicate" {
+		t.Errorf("retry signed again: %d %s", r.status, r.raw)
+	}
+	if fb := e.mock.Feedback(); len(fb) != 1 {
+		t.Errorf("feedback = %v, want one signal", fb)
+	}
+	body["callbackId"] = "not-a-callback-id"
+	if r := e.webhook(body, now, ""); r.status != http.StatusUnprocessableEntity {
+		t.Errorf("malformed callbackId: %d %s", r.status, r.raw)
+	}
+}

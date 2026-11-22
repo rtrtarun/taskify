@@ -192,6 +192,43 @@ func (r *DeliveryRepo) DeleteBefore(ctx context.Context, cutoff time.Time) (n in
 	return n, err
 }
 
+// callbackKey is a tenant's AgentPulse callbackId.
+type callbackKey struct{ tenant, id string }
+
+func (r *DeliveryRepo) RecordCallback(ctx context.Context, tenantID, callbackID string, at time.Time) (fresh bool, err error) {
+	err = r.st.do(ctx, func(s *state) error {
+		k := callbackKey{tenantID, callbackID}
+		if _, seen := s.callbacks[k]; seen {
+			return nil
+		}
+		s.callbacks[k] = micro(at)
+		fresh = true
+		return nil
+	})
+	return fresh, err
+}
+
+func (r *DeliveryRepo) CallbackSeen(ctx context.Context, tenantID, callbackID string) (seen bool, err error) {
+	err = r.st.do(ctx, func(s *state) error {
+		_, seen = s.callbacks[callbackKey{tenantID, callbackID}]
+		return nil
+	})
+	return seen, err
+}
+
+func (r *DeliveryRepo) DeleteCallbacksBefore(ctx context.Context, cutoff time.Time) (n int, err error) {
+	err = r.st.do(ctx, func(s *state) error {
+		for k, at := range s.callbacks {
+			if at.Before(cutoff) {
+				delete(s.callbacks, k)
+				n++
+			}
+		}
+		return nil
+	})
+	return n, err
+}
+
 // --- tasks -----------------------------------------------------------------
 
 func (r *TaskRepo) Create(ctx context.Context, t *domain.Task) error {
