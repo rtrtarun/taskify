@@ -1058,16 +1058,20 @@ This is the `/v1/` API that AgentPulse builds in its milestone 40 (slices 40a to
 
 **Tenant IDs** match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, are compared case-sensitively, are never trimmed, and `default` is refused. Taskify applies the same rule to every identity it accepts (the JWT `tenant_id` claim, the development headers, `cmd/devtoken`) and in domain validation, so no tenant can exist in Taskify that AgentPulse would refuse.
 
+**User IDs** are 1 to 128 printable ASCII characters, space to tilde, since they appear in idempotency keys (AP-11). Taskify applies the rule to the JWT subject and the development headers (after trimming), `cmd/devtoken`, a task's creator, assignee, and watchers, a comment's author, a contact's owner, and a webhook callback's `userId`.
+
+**Tenant scoping.** Every call that names an object by ID (a rule, a learning suggestion, a notification) carries `tenantId`; AgentPulse answers `400` without it and `404` for another tenant's object, as for an unknown ID (AP-12).
+
 | Taskify call | AgentPulse endpoint | Body or query |
 | --- | --- | --- |
 | `Notify` (outbox relay) | `POST /v1/notify` | The fields below |
 | `PutContact` (outbox relay) | `PUT /v1/tenants/{t}/users/{u}/contact` | `{email, slackUserId, phone}` |
-| `RecordFeedback` | `POST /v1/feedback` | `{notificationId, tenantId, userId, signal, snoozeDuration?, taskId?}`; `signal` is `acted`, `dismissed`, `snoozed`, or `muted` |
+| `RecordFeedback` | `POST /v1/feedback` | `{notificationId?, tenantId, userId, signal, snoozeDuration?, taskId?}`; `signal` is `acted`, `dismissed`, `snoozed`, or `muted`. At least one of `notificationId` and `taskId`; Taskify always sends the task and leaves `notificationId` out when it has none. Without a notification, AgentPulse counts the signal under the user's latest notification about the task (AP-12). A `notificationId` AgentPulse does not hold for the tenant answers `404`. |
 | `CreateRule` | `POST /v1/rules` | `{tenantId, name, attentionClass?, matchAny: [{eventTypes?, payloadMatch?}], channels, bypassDigest?}`, answered with `201 {"id"}` |
 | `ListRules` | `GET /v1/rules?tenantId=` | `{"rules": [...]}` |
 | `ListLearningSuggestions` | `GET /v1/learning/suggestions?tenantId=` | `{"suggestions": [{id, status, suggestion}]}` |
 | `SubmitLearningSuggestion` (M11) | `POST /v1/learning/suggestions` | `tenantId`, `ruleId` or `eventPattern`, `currentAdjustment`, `proposedAdjustment` (within ±20, AgentPulse's heuristic score shift for that scope), `signalCount` (at least 5 signals from at least 2 users), `rationale`. Stored as `PENDING_APPROVAL`; nothing changes until an admin decides. |
-| `ReviewLearningSuggestion` | `POST /v1/learning/suggestions/{id}/decision` | `{decision: approve or reject, decidedBy}`; `409` if already decided |
+| `ReviewLearningSuggestion` | `POST /v1/learning/suggestions/{id}/decision` | `{tenantId, decision: approve or reject, decidedBy}`; `404` for another tenant's suggestion (AP-12), `409` if already decided |
 | Feedback analytics (M11) | `GET /v1/analytics/feedback?tenantId=&since=` | Counts per event type and payload label |
 | `InAppFeed` (M14-06) | `GET /v1/tenants/{t}/users/{u}/in-app-feed?limit=&cursor=` | `{"notifications": [...], "nextCursor"}`, newest first; Taskify keeps read state |
 | Inbound | `POST /api/v1/webhooks/agentpulse` | See "Callbacks" below |
@@ -1106,11 +1110,11 @@ All payload keys are camelCase. `bypass_digest` is a legacy spelling: the serial
 | `approve` | `approve` | `jobId` | Approve | `agent.approval_requested` |
 | `reject` | `reject` | `jobId` | Reject | `agent.approval_requested` |
 | `unblock` | `unblock` | `taskId` | Unblock and set In Progress | `task.escalated` while the task is blocked |
-| `view` | none, a plain link | | View | Approvals, escalations, and `digest.morning_brief`, which carries nothing else |
+| `view` | none, a plain link | | View | With `APP_BASE_URL`, every notification about a task, to `{APP_BASE_URL}/tasks/{id}`, and `digest.morning_brief`, to `{APP_BASE_URL}/brief`. Without it, approvals (the job's API URL), escalations (the task's API URL), and the brief (`/api/v1/me/brief`) only (AP-10, D50) |
 
 **Rules.** `matchAny` is native: a rule applies when any entry matches. A rule may set `attentionClass` (`critical`, `standard`, `background`); a critical rule needs a real condition, event types or payload values, in every entry. AgentPulse runs its own locked critical rules first, then the tenant's rules, then defaults to `standard`. Each workspace gets three default rules, scoped by `payload.workspaceId`: `critical-or-blocked` (critical, `bypassDigest`, matching `priority: p1_critical`, `status: blocked` with `blockedReason: manual`, or `eventTypes: ["task.escalated"]`), `assignments-and-mentions`, and `low-priority-digest`.
 
-**Contacts.** A person sets their own contact with `PUT /api/v1/me/contact` (`email`, `slack_user_id`, `phone`; an absent field is kept, `null` clears it) and reads it with `GET /api/v1/me/contact`. Taskify stores the latest contact per tenant and user (`user_contacts`) and forwards it through the outbox to `PUT /v1/tenants/{t}/users/{u}/contact`, always with all three fields. AgentPulse treats the PUT as a full replace: a `null` or missing field is cleared, a contact with all three empty is deleted, and the same body again changes nothing. A user with no contact gets in-app and digest delivery only. Since AgentPulse applies PUTs in arrival order and keeps no version, each person has one outbox row, reused for every change: a change rewrites its payload; the relay never has one person's contact in flight twice; and a send that finishes after a newer change arrived returns the row to pending instead of marking it dispatched, so the newer contact is sent next (D46).
+**Contacts.** A person sets their own contact with `PUT /api/v1/me/contact` (`email`, `slack_user_id`, `phone`; an absent field is kept, `null` clears it) and reads it with `GET /api/v1/me/contact`. Taskify stores the latest contact per tenant and user (`user_contacts`) and forwards it through the outbox to `PUT /v1/tenants/{t}/users/{u}/contact`, always with all three fields. AgentPulse treats the PUT as a full replace: a `null` or missing field is cleared, a contact with all three empty is deleted, and the same body again changes nothing. A user with no contact gets in-app and digest delivery only. The formats are AgentPulse's, applied identically by Taskify (AP-12): `email` a plain address of at most 254 characters with no display name, `slack_user_id` `^[UW][A-Z0-9]+$` of at most 32 characters, `phone` `^\+[1-9][0-9]{1,14}$`; AgentPulse refuses a PUT with one bad field with a `400` naming it, which the relay dead-letters. Since AgentPulse applies PUTs in arrival order and keeps no version, each person has one outbox row, reused for every change: a change rewrites its payload; the relay never has one person's contact in flight twice; and a send that finishes after a newer change arrived returns the row to pending instead of marking it dispatched, so the newer contact is sent next (D46).
 
 **Callbacks.** When a person clicks an action, AgentPulse's delivery queue calls Taskify:
 
@@ -1207,6 +1211,7 @@ Reasoning loop limits: 30-second timeout per model call; retry with exponential 
 | `PORT` | `8080` | HTTP listen port |
 | `DATABASE_URL` | required | PostgreSQL connection string |
 | `PUBLIC_BASE_URL` | required | Base for `actionUrls` in notifications |
+| `APP_BASE_URL` | none | The web app's address. When set, every notification about a task carries `actionUrls.view` `{APP_BASE_URL}/tasks/{id}`, and the morning brief `{APP_BASE_URL}/brief`; unset, task notifications carry no view link (AP-10) |
 | `AGENTPULSE_BASE_URL` | required | AgentPulse API |
 | `AGENTPULSE_API_KEY` | required | Outbound authentication |
 | `AGENTPULSE_WEBHOOK_SECRET` | required | HMAC key for inbound webhooks |

@@ -1,6 +1,6 @@
 # Blockers: the AgentPulse contract (O1)
 
-Status, 2026-11-22: **decided and agreed with AgentPulse. Its milestone 40 builds it under `/v1/`. Taskify's side is task group AP in [r2-agents.md](implementation/r2-agents.md), done: the client and the mock follow the agreed contract below.**
+Status, 2026-11-22: **decided and agreed with AgentPulse. Its milestone 40 builds it under `/v1/`. Taskify's side is task group AP in [r2-agents.md](implementation/r2-agents.md), done: the client and the mock follow the agreed contract below, including the details AgentPulse confirmed afterwards (AP-12).**
 
 ## Background
 
@@ -161,6 +161,20 @@ Changes to the specification above:
   - Taskify's callback URL must be https and on AgentPulse's allow-list.
 - **Learning.** `proposedAdjustment` is AgentPulse's heuristic score shift for that scope, in the same unit as its own learned adjustments.
 - **Slack.** One Slack workspace per AgentPulse deployment for now. Per-tenant workspaces come in a later AgentPulse milestone.
+
+Confirmed by AgentPulse later on 2026-11-22 (Taskify's AP-12):
+
+- **Feedback without a notification.** In R4, `notificationId` is optional, and an empty string means the same as absent. At least one of `notificationId` and `taskId` is required.
+  - With no notification, AgentPulse links the feedback to that user's latest notification whose `payload.taskId` matches, and counts it in learning and analytics under that notification's event type and labels. If there is none, the feedback is stored but not counted.
+  - Taskify leaves `notificationId` out when it has none, rather than sending `""`, and always sends `taskId`.
+- **Tenant scoping.** Every `/v1/` call that names an object by ID (rules, learning suggestions, notifications) requires `tenantId`, answering `400` without it, and another tenant's object answers `404`, the same as an unknown ID.
+  - The R6 decision body is `{"tenantId", "decision", "decidedBy"}`, so Taskify's admin proxy can decide only the caller's tenant's suggestions.
+  - A feedback `notificationId` that the tenant does not hold answers `404`.
+- **Contact formats,** exactly as AgentPulse validates them, and Taskify validates the same:
+  - `email`: a plain address of at most 254 characters, with no display name;
+  - `slackUserId`: `^[UW][A-Z0-9]+$`, at most 32 characters;
+  - `phone`: `^\+[1-9][0-9]{1,14}$`.
+  - One bad field refuses the whole PUT with a `400` naming it. Taskify's relay treats that as permanent: the row goes to dead letter with the reason, without a retry.
 
 ## What happens in Taskify meanwhile
 
