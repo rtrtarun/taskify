@@ -14,9 +14,11 @@ import (
 
 // SchedulerConfig tunes the deadline scheduler.
 type SchedulerConfig struct {
-	Interval          time.Duration // default 1m
-	BatchSize         int           // tasks per transaction; default 100
-	PublicBaseURL     string
+	Interval      time.Duration // default 1m
+	BatchSize     int           // tasks per transaction; default 100
+	PublicBaseURL string
+	// AppBaseURL is the web app's address, or empty (AP-10).
+	AppBaseURL        string
 	OutboxMaxAttempts int // default 10
 	Now               func() time.Time
 	Logger            *slog.Logger
@@ -287,7 +289,7 @@ func (s *Scheduler) batch(
 				return err
 			}
 		}
-		entries, err := domain.NewOutboxEntries(events, s.cfg.PublicBaseURL, s.cfg.OutboxMaxAttempts, now)
+		entries, err := domain.NewOutboxEntries(events, domain.Links{API: s.cfg.PublicBaseURL, App: s.cfg.AppBaseURL}, s.cfg.OutboxMaxAttempts, now)
 		if err != nil {
 			return err
 		}

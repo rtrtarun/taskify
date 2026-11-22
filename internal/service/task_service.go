@@ -42,12 +42,20 @@ type Deps struct {
 
 // Config holds the settings that shape outbox rows.
 type Config struct {
-	PublicBaseURL     string
+	PublicBaseURL string
+	// AppBaseURL is the web app's address (APP_BASE_URL), or empty: with
+	// it, notifications link to the task's page there (AP-10).
+	AppBaseURL        string
 	OutboxMaxAttempts int
 	// DigestLoadThreshold is how many in_progress p1_critical tasks make an
 	// assignee overloaded, so that a non-critical assignment is held for
 	// their digest (DIGEST_LOAD_THRESHOLD, default 3, G14).
 	DigestLoadThreshold int
+}
+
+// links are the addresses notifications link to.
+func (c Config) links() domain.Links {
+	return domain.Links{API: c.PublicBaseURL, App: c.AppBaseURL}
 }
 
 // DefaultDigestLoadThreshold is the default of Config.DigestLoadThreshold.
@@ -419,7 +427,7 @@ func (s *TaskService) emit(ctx context.Context, events []domain.Event, now time.
 	if err := s.deferForLoad(ctx, events); err != nil {
 		return err
 	}
-	entries, err := domain.NewOutboxEntries(events, s.cfg.PublicBaseURL, s.cfg.OutboxMaxAttempts, now)
+	entries, err := domain.NewOutboxEntries(events, s.cfg.links(), s.cfg.OutboxMaxAttempts, now)
 	if err != nil {
 		return err
 	}

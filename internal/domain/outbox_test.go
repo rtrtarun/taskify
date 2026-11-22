@@ -16,7 +16,7 @@ func TestNewOutboxEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries, err := NewOutboxEntries(events, baseURL, 10, t0)
+	entries, err := NewOutboxEntries(events, Links{API: baseURL}, 10, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestNewOutboxEntries(t *testing.T) {
 		t.Errorf("recipients = %v", users)
 	}
 
-	none, err := NewOutboxEntries(nil, baseURL, 10, t0)
+	none, err := NewOutboxEntries(nil, Links{API: baseURL}, 10, t0)
 	if err != nil || len(none) != 0 {
 		t.Errorf("no events: entries %v err %v", none, err)
 	}

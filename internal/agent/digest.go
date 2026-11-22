@@ -193,14 +193,14 @@ func (r digestReport) Messages() []llm.Message {
 
 // Deliver completes the brief with the model's text: the job keeps it, and
 // one notification sends it on the digest channel.
-func (r digestReport) Deliver(text, publicBaseURL string) (json.RawMessage, []domain.Notification, error) {
+func (r digestReport) Deliver(text string, links domain.Links) (json.RawMessage, []domain.Notification, error) {
 	b := r.brief
 	b.Text = clip(strings.TrimSpace(text), domain.BriefTextMax)
 	result, err := json.Marshal(b)
 	if err != nil {
 		return nil, nil, err
 	}
-	return result, []domain.Notification{b.Notification(publicBaseURL)}, nil
+	return result, []domain.Notification{b.Notification(links)}, nil
 }
 
 // TaskIDs names the brief's tasks, so the runtime stores the brief only if

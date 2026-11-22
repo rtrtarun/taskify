@@ -38,7 +38,7 @@ func (f *fixture) storeBrief(t *testing.T, user string, day time.Time, tasks ...
 	if err := f.b.AgentJobs.Update(ctx, &job, domain.JobPending, prev); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := domain.NewNotificationEntries([]domain.Notification{brief.Notification("https://taskify.test")}, job.ID, 5, day)
+	entries, err := domain.NewNotificationEntries([]domain.Notification{brief.Notification(domain.Links{API: "https://taskify.test"})}, job.ID, 5, day)
 	if err != nil {
 		t.Fatal(err)
 	}

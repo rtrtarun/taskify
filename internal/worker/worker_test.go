@@ -702,3 +702,40 @@ func TestStaleScanOffWithoutJobs(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// TestSchedulerRemindersViewTheApp is AP-10's wiring for reminders: with
+// AppBaseURL, an overdue reminder views the task in the web app.
+func TestSchedulerRemindersViewTheApp(t *testing.T) {
+	f := newSchedFixture(t, repotest.Memory())
+	task := f.task(t, t0.Add(time.Hour), "usr_bob")
+	now := t0.Add(2 * time.Hour)
+	s := NewScheduler(f.b.Tx, f.b.Tasks, f.b.Outbox, SchedulerConfig{
+		PublicBaseURL: "https://taskify.test", AppBaseURL: "https://app.taskify.test", Logger: quiet,
+		Now: func() time.Time { return now },
+	})
+	if _, err := s.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := f.b.Outbox.ListForAggregate(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.EventType != domain.EventTaskOverdue {
+			continue
+		}
+		found = true
+		var n domain.Notification
+		if err := json.Unmarshal(e.Payload, &n); err != nil {
+			t.Fatal(err)
+		}
+		urls, _ := n.Payload["actionUrls"].(map[string]any)
+		if urls["view"] != "https://app.taskify.test/tasks/"+task.ID.String() {
+			t.Errorf("overdue actionUrls = %v", urls)
+		}
+	}
+	if !found {
+		t.Error("no overdue reminder was written")
+	}
+}

@@ -46,7 +46,7 @@ func TestDependencyBlockAndLift(t *testing.T) {
 	}
 	// A critical task still bypasses the digest; that is about its priority,
 	// not the block.
-	n := events[0].Notifications("https://t")[0]
+	n := events[0].Notifications(Links{API: "https://t"})[0]
 	if n.Payload["blockedReason"] != "dependency" || n.PriorityHint != "critical" {
 		t.Errorf("notification = %+v", n)
 	}
@@ -87,7 +87,7 @@ func TestDependencyNotices(t *testing.T) {
 		{EventTaskDependencyReopened, "high", "Dependency reopened: "},
 	} {
 		e := NewDependencyEvent(tc.typ, dep, blocker, t0)
-		ns := e.Notifications("https://t")
+		ns := e.Notifications(Links{API: "https://t"})
 		if len(ns) != 1 || ns[0].UserID != "usr_bob" {
 			t.Fatalf("%s: notifications = %+v", tc.typ, ns)
 		}
@@ -112,7 +112,7 @@ func TestDependencyNotices(t *testing.T) {
 	}
 
 	// An unassigned dependent notifies nobody.
-	if ns := NewDependencyEvent(EventTaskDependencyResolved, blocker, dep, t0).Notifications("https://t"); len(ns) != 0 {
+	if ns := NewDependencyEvent(EventTaskDependencyResolved, blocker, dep, t0).Notifications(Links{API: "https://t"}); len(ns) != 0 {
 		t.Errorf("unassigned: %+v", ns)
 	}
 }

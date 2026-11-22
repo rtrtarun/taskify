@@ -70,9 +70,11 @@ type Config struct {
 	Logger        *slog.Logger
 	// Metrics may be nil.
 	Metrics *observability.Metrics
-	// PublicBaseURL and OutboxMaxAttempts shape approval notifications, as
-	// for TaskService.
+	// PublicBaseURL, AppBaseURL, and OutboxMaxAttempts shape approval
+	// notifications and reports, as for TaskService. AppBaseURL is empty
+	// when APP_BASE_URL is not set (AP-10).
 	PublicBaseURL     string
+	AppBaseURL        string
 	OutboxMaxAttempts int
 	// Wake is called after an approval request is committed, so the relay
 	// sends it at once. Nil does nothing.
@@ -119,6 +121,11 @@ func (c *Config) defaults() {
 	if c.Logger == nil {
 		c.Logger = slog.Default()
 	}
+}
+
+// links are the addresses notifications link to.
+func (c *Config) links() domain.Links {
+	return domain.Links{API: c.PublicBaseURL, App: c.AppBaseURL}
 }
 
 // backoff returns the wait after failed attempt n.
@@ -427,7 +434,7 @@ func (ru *run) deliver() error {
 	if ru.stopped != stoppedFinal || strings.TrimSpace(ru.final) == "" {
 		return errors.New("the model wrote no report")
 	}
-	result, notes, err := ru.report.Deliver(ru.final, ru.rt.cfg.PublicBaseURL)
+	result, notes, err := ru.report.Deliver(ru.final, ru.rt.cfg.links())
 	if err != nil {
 		return permanent("report: %v", err)
 	}
@@ -806,7 +813,7 @@ type Report interface {
 	// no calls: the runtime writes both in the transaction that completes
 	// the job, so a report is stored and sent once, and never by a run that
 	// failed or will be retried.
-	Deliver(text, publicBaseURL string) (json.RawMessage, []domain.Notification, error)
+	Deliver(text string, links domain.Links) (json.RawMessage, []domain.Notification, error)
 }
 
 // save writes the job's next status, and reports whether it also wrote
@@ -905,7 +912,7 @@ func (r *Runtime) taskEvents(ctx context.Context, ru *run) ([]domain.OutboxEntry
 		}
 		events = append(events, more...)
 	}
-	return domain.NewOutboxEntries(events, r.cfg.PublicBaseURL, r.cfg.OutboxMaxAttempts, job.UpdatedAt)
+	return domain.NewOutboxEntries(events, r.cfg.links(), r.cfg.OutboxMaxAttempts, job.UpdatedAt)
 }
 
 // outcomeOf is the metric outcome of a run that ended with the job in status.

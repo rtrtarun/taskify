@@ -18,12 +18,21 @@ import (
 // TestEveryNotificationPassesAgentPulseActionChecks is AP-02's exit check:
 // every kind of notification Taskify builds is accepted by the mock, which
 // enforces AgentPulse's 40b rules (only the six action keys, each with the ID
-// its callback needs), and uses no key outside the six.
+// its callback needs), and uses no key outside the six. It runs without
+// APP_BASE_URL and with it, whose view links must pass the same checks
+// (AP-10).
 func TestEveryNotificationPassesAgentPulseActionChecks(t *testing.T) {
-	const (
-		tenant  = "tenant_acme"
-		baseURL = "https://taskify.test"
-	)
+	t.Run("without the app", func(t *testing.T) {
+		checkEveryNotification(t, domain.Links{API: "https://taskify.test"})
+	})
+	t.Run("with the app", func(t *testing.T) {
+		checkEveryNotification(t, domain.Links{API: "https://taskify.test", App: "https://app.taskify.test"})
+	})
+}
+
+func checkEveryNotification(t *testing.T, links domain.Links) {
+	const tenant = "tenant_acme"
+	baseURL := links.API
 	var (
 		alice = domain.User("usr_alice")
 		bob   = "usr_bob"
@@ -54,7 +63,7 @@ func TestEveryNotificationPassesAgentPulseActionChecks(t *testing.T) {
 	var notes []domain.Notification
 	addEvents := func(events ...domain.Event) {
 		for _, e := range events {
-			notes = append(notes, e.Notifications(baseURL)...)
+			notes = append(notes, e.Notifications(links)...)
 		}
 	}
 
@@ -134,7 +143,7 @@ func TestEveryNotificationPassesAgentPulseActionChecks(t *testing.T) {
 	addEvents(domain.NewEscalationEvents(stale, &investigation, []*domain.Task{owner}, t0)...)
 	brief := domain.MorningBrief{TenantID: tenant, JobID: uuid.New(), Date: "2026-11-22", UserID: bob, Text: "Two things today.",
 		TopItems: []domain.BriefTask{{ID: created.ID, Title: "Created", WorkspaceID: "ws_core", Status: domain.StatusTodo}}}
-	notes = append(notes, brief.Notification(baseURL))
+	notes = append(notes, brief.Notification(links))
 
 	mock := mockagentpulse.New()
 	srv := httptest.NewServer(mock)
@@ -166,6 +175,31 @@ func TestEveryNotificationPassesAgentPulseActionChecks(t *testing.T) {
 		// Open task notifications offer Mark done.
 		if n.EventType == domain.EventTaskCreated && urls[domain.ActionComplete] != baseURL+"/api/v1/tasks/"+created.ID.String()+"/complete" {
 			t.Errorf("task.created actionUrls = %v", urls)
+		}
+		// AP-10: with the app, every notification about a task views it
+		// there, and the brief views the brief page. Without it, only
+		// approvals, escalations, and the brief carry view, to the API.
+		taskID, _ := n.Payload["taskId"].(string)
+		view, hasView := urls[domain.ActionView]
+		switch {
+		case n.EventType == domain.EventDigestMorningBrief:
+			if view != links.BriefView() || len(urls) != 1 {
+				t.Errorf("brief actionUrls = %v", urls)
+			}
+		case links.App != "":
+			if view != links.App+"/tasks/"+taskID {
+				t.Errorf("%s to %s: view = %q, want the task's page", n.EventType, n.UserID, view)
+			}
+		case n.EventType == domain.EventAgentApprovalRequested:
+			if view != baseURL+"/api/v1/agent-jobs/"+n.Payload["jobId"].(string) {
+				t.Errorf("approval view = %q", view)
+			}
+		case n.EventType == domain.EventTaskEscalated:
+			if view != baseURL+"/api/v1/tasks/"+taskID {
+				t.Errorf("escalation view = %q", view)
+			}
+		case hasView:
+			t.Errorf("%s carries view %q without APP_BASE_URL", n.EventType, view)
 		}
 	}
 	for _, typ := range []string{
@@ -207,9 +241,51 @@ func TestFinishedTaskOffersNoActions(t *testing.T) {
 	if err != nil || len(events) != 1 {
 		t.Fatalf("complete: %v, %v", events, err)
 	}
-	for _, n := range events[0].Notifications("https://taskify.test") {
+	for _, n := range events[0].Notifications(domain.Links{API: "https://taskify.test"}) {
 		if urls, ok := n.Payload["actionUrls"]; ok {
 			t.Errorf("task.completed to %s offers %v", n.UserID, urls)
 		}
+	}
+}
+
+// TestViewLinksOpenTheApp is AP-10: with APP_BASE_URL set, a notification
+// about a task views {APP_BASE_URL}/tasks/{id}, whatever its status, next to
+// its other actions, and the morning brief views {APP_BASE_URL}/brief.
+func TestViewLinksOpenTheApp(t *testing.T) {
+	links := domain.Links{API: "https://api.taskify.test", App: "https://app.taskify.test"}
+	t0 := time.Date(2026, 11, 22, 9, 0, 0, 0, time.UTC)
+	task, events, err := domain.NewTask(domain.NewTaskInput{TenantID: "tenant_acme", WorkspaceID: "ws", Title: "x",
+		AssigneeID: "usr_bob"}, domain.User("usr_alice"), t0)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("NewTask: %v, %v", events, err)
+	}
+	page := "https://app.taskify.test/tasks/" + task.ID.String()
+	api := "https://api.taskify.test/api/v1/tasks/" + task.ID.String()
+	open := events[0].Notifications(links)[0].Payload["actionUrls"].(map[string]string)
+	if open[domain.ActionView] != page || open[domain.ActionComplete] != api+"/complete" || len(open) != 3 {
+		t.Errorf("open task actionUrls = %v", open)
+	}
+
+	done := domain.StatusCompleted
+	events, err = task.Apply(domain.Patch{Status: &done}, domain.User("usr_bob"), t0.Add(time.Hour))
+	if err != nil || len(events) != 1 {
+		t.Fatalf("complete: %v, %v", events, err)
+	}
+	for _, n := range events[0].Notifications(links) {
+		if urls := n.Payload["actionUrls"].(map[string]string); urls[domain.ActionView] != page || len(urls) != 1 {
+			t.Errorf("task.completed to %s: actionUrls = %v, want view only", n.UserID, urls)
+		}
+	}
+
+	// A trailing slash is trimmed by the configuration, not here: Links
+	// joins what it is given.
+	if got := (domain.Links{API: "https://api", App: "https://app"}).BriefView(); got != "https://app/brief" {
+		t.Errorf("BriefView = %q", got)
+	}
+	if got := (domain.Links{API: "https://api"}).BriefView(); got != "https://api/api/v1/me/brief" {
+		t.Errorf("BriefView without the app = %q", got)
+	}
+	if got := (domain.Links{API: "https://api"}).TaskView(task.ID); got != "" {
+		t.Errorf("TaskView without the app = %q", got)
 	}
 }

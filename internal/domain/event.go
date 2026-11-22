@@ -244,13 +244,13 @@ type Notification struct {
 // and preferences.
 var immediateChannels = []string{"slack", "email", "in_app"}
 
-// Notifications builds one /notify request per recipient. publicBaseURL is
-// the externally reachable address of Taskify, used for action links.
-func (e Event) Notifications(publicBaseURL string) []Notification {
+// Notifications builds one /notify request per recipient. links are the
+// addresses its action and view links are built from.
+func (e Event) Notifications(links Links) []Notification {
 	recipients := e.Recipients()
 	out := make([]Notification, 0, len(recipients))
 	for _, r := range recipients {
-		payload := e.payload(publicBaseURL)
+		payload := e.payload(links)
 		mentioned := e.Comment != nil && slices.Contains(e.Comment.Mentions, r)
 		if e.Type == EventTaskCommentAdded {
 			payload["isMentioned"] = mentioned
@@ -312,9 +312,12 @@ func (e Event) priorityHint() string {
 	return p.Hint()
 }
 
-func (e Event) payload(publicBaseURL string) map[string]any {
+func (e Event) payload(links Links) map[string]any {
 	t := e.Task
-	taskURL := fmt.Sprintf("%s/api/v1/tasks/%s", publicBaseURL, t.ID)
+	taskURL := links.taskAPI(t.ID)
+	// view opens the task in the web app. Without APP_BASE_URL there is no
+	// page to open, and a task notification carries no view link (AP-10).
+	view := links.TaskView(t.ID)
 	p := map[string]any{
 		"taskId":      t.ID.String(),
 		"workspaceId": t.WorkspaceID,
@@ -325,14 +328,19 @@ func (e Event) payload(publicBaseURL string) map[string]any {
 		"actorKind":   string(e.Actor.Kind),
 		"version":     t.Version,
 	}
+	urls := map[string]string{}
 	if t.IsOpen() {
 		// "Mark done" and "Snooze 2h" while there is work left to do. The
 		// URLs name the matching Taskify endpoints; AgentPulse sends its own
 		// signed links and calls the webhook with taskId.
-		p["actionUrls"] = map[string]string{
-			ActionComplete: taskURL + "/complete",
-			ActionSnooze2h: taskURL + "/feedback?signal=snoozed&duration=2h",
-		}
+		urls[ActionComplete] = taskURL + "/complete"
+		urls[ActionSnooze2h] = taskURL + "/feedback?signal=snoozed&duration=2h"
+	}
+	if view != "" {
+		urls[ActionView] = view
+	}
+	if len(urls) > 0 {
+		p["actionUrls"] = urls
 	}
 	if e.PreviousStatus != "" {
 		p["previousStatus"] = string(e.PreviousStatus)
@@ -354,14 +362,20 @@ func (e Event) payload(publicBaseURL string) map[string]any {
 		p["blockerStatus"] = string(e.Blocker.Status)
 	}
 	if j := e.Job; j != nil {
-		jobURL := fmt.Sprintf("%s/api/v1/agent-jobs/%s", publicBaseURL, j.ID)
+		jobURL := links.jobAPI(j.ID)
 		p["jobId"] = j.ID.String()
 		p["agentType"] = j.AgentType
 		p["proposedTools"] = append([]string{}, j.Tools...)
+		// view opens the task in the web app, or, without it, the job in
+		// the API as before AP-10.
+		jobView := view
+		if jobView == "" {
+			jobView = jobURL
+		}
 		p["actionUrls"] = map[string]string{
 			ActionApprove: jobURL + "/apply",
 			ActionReject:  jobURL + "/dismiss",
-			ActionView:    jobURL,
+			ActionView:    jobView,
 		}
 	}
 	if x := e.Escalation; x != nil {
@@ -372,13 +386,15 @@ func (e Event) payload(publicBaseURL string) map[string]any {
 			blocking[i] = map[string]any{"taskId": b.ID.String(), "title": b.Title, "status": string(b.Status)}
 		}
 		p["blockingTasks"] = blocking
-		urls := map[string]string{ActionView: taskURL}
+		// view opens the escalated task: in the web app, or, without it, in
+		// the API as before AP-10.
+		escalation := map[string]string{ActionView: links.taskOrAPI(t.ID)}
 		if t.Status == StatusBlocked {
 			// The click reaches the webhook as action "unblock" for taskId.
-			urls[ActionUnblock] = taskURL
+			escalation[ActionUnblock] = taskURL
 			p["actionLabels"] = map[string]string{ActionUnblock: ActionUnblockLabel}
 		}
-		p["actionUrls"] = urls
+		p["actionUrls"] = escalation
 	}
 	if e.bypassDigest() {
 		p["bypassDigest"] = true

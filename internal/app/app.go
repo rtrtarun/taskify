@@ -94,6 +94,7 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 		AgentJobs: postgres.NewAgentJobRepo(db),
 	}, service.Config{
 		PublicBaseURL:       cfg.PublicBaseURL,
+		AppBaseURL:          cfg.AppBaseURL,
 		OutboxMaxAttempts:   cfg.OutboxMaxAttempts,
 		DigestLoadThreshold: cfg.DigestLoadThreshold,
 	}, service.WithWake(relay.Wake), service.WithMetrics(metrics))
@@ -158,6 +159,7 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 		scheduler: worker.NewScheduler(db, tasks, outbox, worker.SchedulerConfig{
 			Interval:          cfg.SchedulerInterval,
 			PublicBaseURL:     cfg.PublicBaseURL,
+			AppBaseURL:        cfg.AppBaseURL,
 			OutboxMaxAttempts: cfg.OutboxMaxAttempts,
 			Logger:            logger,
 			Wake:              relay.Wake,
@@ -204,6 +206,7 @@ func newAgentRuntime(cfg config.Config, db *postgres.DB, tasks *postgres.TaskRep
 		Metrics:     metrics,
 
 		PublicBaseURL:     cfg.PublicBaseURL,
+		AppBaseURL:        cfg.AppBaseURL,
 		OutboxMaxAttempts: cfg.OutboxMaxAttempts,
 		Wake:              wake,
 	}, triage, decomposer, blocker, digest)
