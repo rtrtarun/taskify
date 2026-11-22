@@ -371,15 +371,43 @@ func TestRules(t *testing.T) {
 func TestLearningSuggestions(t *testing.T) {
 	s, url := start(t)
 
-	status, _ := do(t, "POST", url+"/v1/learning/suggestions", map[string]any{"tenantId": "t1", "proposedAdjustment": 25})
-	if status != http.StatusBadRequest {
-		t.Fatalf("out-of-range adjustment: status = %d, want 400", status)
+	// R6: each field is checked, and the message names it.
+	for name, tc := range map[string]struct {
+		change func(b map[string]any)
+		want   string
+	}{
+		"bad tenant":           {func(b map[string]any) { b["tenantId"] = "t 1" }, "tenantId"},
+		"adjustment over 20":   {func(b map[string]any) { b["proposedAdjustment"] = 25 }, "proposedAdjustment must be"},
+		"adjustment under -20": {func(b map[string]any) { b["proposedAdjustment"] = -21 }, "proposedAdjustment must be"},
+		"current out of range": {func(b map[string]any) { b["currentAdjustment"] = 30 }, "currentAdjustment must be"},
+		"no current":           {func(b map[string]any) { delete(b, "currentAdjustment") }, "currentAdjustment must be"},
+		"four signals":         {func(b map[string]any) { b["signalCount"] = 4 }, "signalCount must be"},
+		"no scope":             {func(b map[string]any) { delete(b, "eventPattern") }, "ruleId or eventPattern"},
+		"no event type":        {func(b map[string]any) { b["eventPattern"] = map[string]any{"label": "docs"} }, "eventPattern.eventType"},
+		"numeric label":        {func(b map[string]any) { b["eventPattern"] = map[string]any{"eventType": "e", "label": 3} }, "eventPattern.label"},
+		"no rationale":         {func(b map[string]any) { delete(b, "rationale") }, "rationale is required"},
+	} {
+		b := suggestionBody("t1")
+		tc.change(b)
+		status, out := do(t, "POST", url+"/v1/learning/suggestions", b)
+		if msg, _ := out["error"].(string); status != http.StatusBadRequest || !strings.Contains(msg, tc.want) {
+			t.Errorf("%s: status %d error %q", name, status, msg)
+		}
 	}
-	if status, _ := do(t, "POST", url+"/v1/learning/suggestions", map[string]any{"tenantId": "t 1", "proposedAdjustment": 5}); status != http.StatusBadRequest {
-		t.Errorf("bad tenant: status = %d, want 400", status)
+	byRule := suggestionBody("t1")
+	delete(byRule, "eventPattern")
+	byRule["ruleId"] = "rule_1"
+	if status, out := do(t, "POST", url+"/v1/learning/suggestions", byRule); status != http.StatusCreated {
+		t.Errorf("by rule: %d %v", status, out)
 	}
+	unlabelled := suggestionBody("t1")
+	unlabelled["eventPattern"] = map[string]any{"eventType": "task.updated", "label": nil}
+	if status, out := do(t, "POST", url+"/v1/learning/suggestions", unlabelled); status != http.StatusCreated {
+		t.Errorf("unlabelled: %d %v", status, out)
+	}
+	s.Reset()
 
-	status, created := do(t, "POST", url+"/v1/learning/suggestions", map[string]any{"tenantId": "t1", "proposedAdjustment": -10, "signalCount": 6})
+	status, created := do(t, "POST", url+"/v1/learning/suggestions", suggestionBody("t1"))
 	if status != http.StatusCreated || created["status"] != "PENDING_APPROVAL" {
 		t.Fatalf("create: status %d body %v", status, created)
 	}
@@ -534,5 +562,93 @@ func TestContactIsAFullReplace(t *testing.T) {
 	}
 	if _, ok := s.ContactOf("t1", "u1"); ok || s.ContactPuts() != 4 {
 		t.Error("a refused put was stored or counted")
+	}
+}
+
+func suggestionBody(tenant string) map[string]any {
+	return map[string]any{"tenantId": tenant, "eventPattern": map[string]any{"eventType": "task.comment_added", "label": "docs"},
+		"currentAdjustment": 0, "proposedAdjustment": -10, "signalCount": 6, "rationale": "Dismissed consistently."}
+}
+
+// TestFeedbackAnalytics covers R7: counts per event type and label since a
+// time, a signal counted under the notification it names or, without one,
+// the user's latest notification about its task (AP-12), and distinct users.
+func TestFeedbackAnalytics(t *testing.T) {
+	s, url := start(t)
+	now := time.Date(2026, 11, 22, 9, 0, 0, 0, time.UTC)
+	s.SetClock(func() time.Time { return now })
+	notify := func(key, user, eventType, task string, labels ...any) string {
+		t.Helper()
+		b := notifyBody(key)
+		b["userId"], b["eventType"] = user, eventType
+		b["payload"] = map[string]any{"taskId": task, "labels": labels}
+		status, out := do(t, "POST", url+"/v1/notify", b)
+		if status != http.StatusAccepted {
+			t.Fatalf("notify: %d %v", status, out)
+		}
+		return out["id"].(string)
+	}
+	feedback := func(user, signal, notification, task string) {
+		t.Helper()
+		b := map[string]any{"tenantId": "tenant_acme", "userId": user, "signal": signal}
+		if notification != "" {
+			b["notificationId"] = notification
+		}
+		if task != "" {
+			b["taskId"] = task
+		}
+		if status, out := do(t, "POST", url+"/v1/feedback", b); status != http.StatusAccepted {
+			t.Fatalf("feedback: %d %v", status, out)
+		}
+	}
+
+	// Outside the window: counted neither as delivered nor as feedback.
+	old := notify("k0", "usr_1", "task.updated", "t0", "docs")
+	feedback("usr_1", "dismissed", old, "")
+	now = now.Add(31 * 24 * time.Hour)
+	since := now.Add(-30 * 24 * time.Hour)
+
+	a := notify("k1", "usr_1", "task.updated", "t1", "docs", "backend")
+	notify("k2", "usr_2", "task.updated", "t2", "docs")
+	notify("k3", "usr_2", "task.updated", "t2b") // no labels
+	notify("k4", "usr_3", "task.created", "t3", "docs")
+	feedback("usr_1", "dismissed", a, "")
+	feedback("usr_1", "muted", a, "")
+	feedback("usr_2", "dismissed", "", "t2") // linked to usr_2's notification about t2
+	feedback("usr_2", "acted", "", "t9")     // about no notification: stored, not counted
+	feedback("usr_3", "snoozed", "", "t3")
+
+	status, out := do(t, "GET", url+"/v1/analytics/feedback?tenantId=tenant_acme&since="+since.Format(time.RFC3339), nil)
+	if status != http.StatusOK || out["since"] != since.Format(time.RFC3339) {
+		t.Fatalf("analytics: %d %v", status, out)
+	}
+	var got []string
+	for _, raw := range out["groups"].([]any) {
+		g := raw.(map[string]any)
+		got = append(got, fmt.Sprintf("%v/%v d%v a%v x%v m%v s%v u%v", g["eventType"], g["label"], g["delivered"], g["acted"],
+			g["dismissed"], g["muted"], g["snoozed"], g["distinctUsers"]))
+	}
+	want := []string{
+		"task.created/docs d1 a0 x0 m0 s1 u1",
+		"task.updated/<nil> d1 a0 x0 m0 s0 u0",
+		"task.updated/backend d1 a0 x1 m1 s0 u1",
+		"task.updated/docs d2 a0 x2 m1 s0 u2",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("groups:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if len(s.Feedback()) != 6 {
+		t.Errorf("stored feedback = %d, want 6 (uncounted signals are stored too)", len(s.Feedback()))
+	}
+
+	// Another tenant sees nothing, and both parameters are required.
+	_, other := do(t, "GET", url+"/v1/analytics/feedback?tenantId=tenant_other&since="+since.Format(time.RFC3339), nil)
+	if groups := other["groups"].([]any); len(groups) != 0 {
+		t.Errorf("another tenant's groups = %v", groups)
+	}
+	for _, q := range []string{"since=" + since.Format(time.RFC3339), "tenantId=tenant_acme", "tenantId=tenant_acme&since=yesterday"} {
+		if status, _ := do(t, "GET", url+"/v1/analytics/feedback?"+q, nil); status != http.StatusBadRequest {
+			t.Errorf("?%s: status %d, want 400", q, status)
+		}
 	}
 }

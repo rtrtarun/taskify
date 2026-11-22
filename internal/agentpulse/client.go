@@ -34,6 +34,7 @@ const (
 	pathFeedback    = "/v1/feedback"
 	pathRules       = "/v1/rules"
 	pathSuggestions = "/v1/learning/suggestions"
+	pathAnalytics   = "/v1/analytics/feedback"
 	pathTenants     = "/v1/tenants/"
 )
 
@@ -243,6 +244,96 @@ func (c *Client) ReviewLearningSuggestion(ctx context.Context, tenantID, id, dec
 	var out json.RawMessage
 	body := map[string]string{"tenantId": tenantID, "decision": decision, "decidedBy": decidedBy}
 	err := c.do(ctx, http.MethodPost, pathSuggestions+"/"+url.PathEscape(id)+"/decision", body, &out)
+	return out, err
+}
+
+// EventPattern names the scope a learning suggestion adjusts: one event type
+// and one payload label. A nil Label is the notifications of that event type
+// that carry no label; it is sent as null, never left out.
+type EventPattern struct {
+	EventType string  `json:"eventType"`
+	Label     *string `json:"label"`
+}
+
+// LearningSuggestion is a suggestion an app submits (R6): a change to
+// AgentPulse's learned score adjustment for a rule or an event pattern,
+// within -20 to 20, resting on at least 5 signals from at least 2 users.
+// AgentPulse stores it as PENDING_APPROVAL and changes nothing until an admin
+// decides.
+type LearningSuggestion struct {
+	TenantID           string        `json:"tenantId"`
+	RuleID             string        `json:"ruleId,omitempty"`
+	EventPattern       *EventPattern `json:"eventPattern,omitempty"`
+	CurrentAdjustment  int           `json:"currentAdjustment"`
+	ProposedAdjustment int           `json:"proposedAdjustment"`
+	SignalCount        int           `json:"signalCount"`
+	Rationale          string        `json:"rationale"`
+}
+
+// SubmitLearningSuggestion submits a suggestion and returns the ID AgentPulse
+// gave it. AgentPulse has no idempotency key for suggestions, so the caller
+// must not submit one twice.
+func (c *Client) SubmitLearningSuggestion(ctx context.Context, s LearningSuggestion) (string, error) {
+	var out struct {
+		ID string `json:"id"`
+	}
+	err := c.do(ctx, http.MethodPost, pathSuggestions, s, &out)
+	return out.ID, err
+}
+
+// Suggestion is one of a tenant's learning suggestions as AgentPulse lists
+// it. Body is the suggestion as submitted; AgentPulse's own suggestions may
+// leave some of its fields empty.
+type Suggestion struct {
+	ID     string             `json:"id"`
+	Status string             `json:"status"`
+	Body   LearningSuggestion `json:"suggestion"`
+}
+
+// Suggestion statuses.
+const (
+	SuggestionPending  = "PENDING_APPROVAL"
+	SuggestionApproved = "APPROVED"
+	SuggestionRejected = "REJECTED"
+)
+
+// LearningSuggestions returns the tenant's suggestions, decoded.
+func (c *Client) LearningSuggestions(ctx context.Context, tenantID string) ([]Suggestion, error) {
+	var out struct {
+		Suggestions []Suggestion `json:"suggestions"`
+	}
+	err := c.do(ctx, http.MethodGet, pathSuggestions+"?tenantId="+url.QueryEscape(tenantID), nil, &out)
+	return out.Suggestions, err
+}
+
+// FeedbackGroup is AgentPulse's count of notifications and feedback signals
+// for one event type and one payload label (R7). A nil Label counts the
+// notifications that carry no label. DistinctUsers is how many users the
+// group's signals came from.
+type FeedbackGroup struct {
+	EventType     string  `json:"eventType"`
+	Label         *string `json:"label"`
+	Delivered     int     `json:"delivered"`
+	Acted         int     `json:"acted"`
+	Dismissed     int     `json:"dismissed"`
+	Muted         int     `json:"muted"`
+	Snoozed       int     `json:"snoozed"`
+	DistinctUsers int     `json:"distinctUsers"`
+}
+
+// FeedbackAnalytics is a tenant's feedback counts since a time (R7).
+type FeedbackAnalytics struct {
+	Since  time.Time       `json:"since"`
+	Groups []FeedbackGroup `json:"groups"`
+}
+
+// FeedbackAnalytics returns the tenant's feedback counts per event type and
+// label since the given time (G16, R7). since is sent in RFC 3339, in UTC,
+// to the second.
+func (c *Client) FeedbackAnalytics(ctx context.Context, tenantID string, since time.Time) (FeedbackAnalytics, error) {
+	var out FeedbackAnalytics
+	path := pathAnalytics + "?tenantId=" + url.QueryEscape(tenantID) + "&since=" + url.QueryEscape(since.UTC().Format(time.RFC3339))
+	err := c.do(ctx, http.MethodGet, path, nil, &out)
 	return out, err
 }
 

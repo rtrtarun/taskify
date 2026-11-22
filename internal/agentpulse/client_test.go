@@ -413,3 +413,75 @@ func TestPutContact(t *testing.T) {
 		t.Errorf("reserved tenant: %v", err)
 	}
 }
+
+// TestLearningCalls is M11-01: the exact requests for submitting a learning
+// suggestion, listing suggestions decoded, and reading feedback analytics.
+func TestLearningCalls(t *testing.T) {
+	mock, url := newMock(t)
+	c := New(url, "k")
+	ctx := context.Background()
+	docs := "docs"
+
+	id, err := c.SubmitLearningSuggestion(ctx, LearningSuggestion{TenantID: "tenant_acme",
+		EventPattern:      &EventPattern{EventType: "task.comment_added", Label: &docs},
+		CurrentAdjustment: 0, ProposedAdjustment: -10, SignalCount: 12, Rationale: "Comments on docs tasks are dismissed."})
+	if err != nil || id == "" {
+		t.Fatalf("SubmitLearningSuggestion = %q, %v", id, err)
+	}
+	sent := mock.RequestsTo("POST", "/v1/learning/suggestions")
+	want := `{"tenantId":"tenant_acme","eventPattern":{"eventType":"task.comment_added","label":"docs"},` +
+		`"currentAdjustment":0,"proposedAdjustment":-10,"signalCount":12,"rationale":"Comments on docs tasks are dismissed."}`
+	if len(sent) != 1 || strings.TrimSpace(string(sent[0].Body)) != want {
+		t.Fatalf("body:\n got %s\nwant %s", sent[0].Body, want)
+	}
+	// An unlabelled pattern sends label null, not nothing.
+	if _, err := c.SubmitLearningSuggestion(ctx, LearningSuggestion{TenantID: "tenant_acme",
+		EventPattern:       &EventPattern{EventType: "task.updated"},
+		ProposedAdjustment: -5, SignalCount: 5, Rationale: "r"}); err != nil {
+		t.Fatal(err)
+	}
+	sent = mock.RequestsTo("POST", "/v1/learning/suggestions")
+	if body := string(sent[1].Body); !strings.Contains(body, `"eventPattern":{"eventType":"task.updated","label":null}`) ||
+		strings.Contains(body, "ruleId") {
+		t.Errorf("unlabelled body = %s", body)
+	}
+	// AgentPulse's limits are its to enforce; the client reports the 400.
+	var se *StatusError
+	if _, err := c.SubmitLearningSuggestion(ctx, LearningSuggestion{TenantID: "tenant_acme",
+		EventPattern: &EventPattern{EventType: "task.updated"}, ProposedAdjustment: -25, SignalCount: 5, Rationale: "r"}); !errors.As(err, &se) ||
+		se.Code != http.StatusBadRequest || Retryable(err) {
+		t.Errorf("out of range: %v", err)
+	}
+
+	list, err := c.LearningSuggestions(ctx, "tenant_acme")
+	if err != nil || len(list) != 2 || list[0].ID != id || list[0].Status != SuggestionPending ||
+		list[0].Body.EventPattern == nil || *list[0].Body.EventPattern.Label != "docs" || list[0].Body.ProposedAdjustment != -10 {
+		t.Fatalf("LearningSuggestions = %+v, %v", list, err)
+	}
+	if r := mock.Requests(); r[len(r)-1].Path != "/v1/learning/suggestions" || r[len(r)-1].Query != "tenantId=tenant_acme" {
+		t.Errorf("list request = %s?%s", r[len(r)-1].Path, r[len(r)-1].Query)
+	}
+
+	// Feedback analytics: one notification on a docs task, dismissed.
+	mock.SeedNotification("ntf_1", map[string]any{"tenantId": "tenant_acme", "userId": "usr_bob", "eventType": "task.updated",
+		"payload": map[string]any{"taskId": "t1", "labels": []any{"docs"}}})
+	if err := c.RecordFeedback(ctx, Feedback{NotificationID: "ntf_1", TenantID: "tenant_acme", UserID: "usr_bob", Signal: "dismissed"}); err != nil {
+		t.Fatal(err)
+	}
+	since := time.Date(2026, 10, 23, 9, 30, 0, 0, time.FixedZone("x", 3600))
+	a, err := c.FeedbackAnalytics(ctx, "tenant_acme", since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := mock.Requests()[len(mock.Requests())-1]
+	if r.Method != "GET" || r.Path != "/v1/analytics/feedback" || r.Query != "tenantId=tenant_acme&since=2026-10-23T08%3A30%3A00Z" {
+		t.Errorf("analytics request = %s %s?%s", r.Method, r.Path, r.Query)
+	}
+	if !a.Since.Equal(since) || len(a.Groups) != 1 {
+		t.Fatalf("analytics = %+v", a)
+	}
+	g := a.Groups[0]
+	if g.EventType != "task.updated" || g.Label == nil || *g.Label != "docs" || g.Delivered != 1 || g.Dismissed != 1 || g.DistinctUsers != 1 {
+		t.Errorf("group = %+v", g)
+	}
+}
