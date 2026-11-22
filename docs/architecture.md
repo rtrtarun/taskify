@@ -24,9 +24,9 @@ Sections 2 to 6 describe the Go service. Section 9 describes what is built aroun
 
 **Target:** a multi-tenant Go task service that emits task lifecycle events to AgentPulse through a transactional outbox, and runs background LLM agents that enrich, decompose, and unblock tasks under human-in-the-loop controls. Around it sit a language-neutral contract, a CLI, a web frontend, and a Python client SDK (section 9). There is one server, in Go.
 
-**Today (2026-11-22):** release R1 is built and released (v0.1.0 to v0.3.0): the task service, transactional outbox, relay, scheduler, REST API, webhooks, and observability in sections 2 to 6. R2 is built: the agent runtime (M5), the human-in-the-loop bridge (M6), and the triage agent (M7), released in v0.4.0 and v0.5.0, then the decomposer, blocker, digest, and learning agents (M8 to M11) and the AgentPulse `/v1/` alignment (AP), with the departures listed in [implementation/README.md](implementation/README.md) section 8. Everything in section 9 (R3) is still to be built. Progress per milestone is in [milestones.md](milestones.md).
+**Today (2026-11-22):** release R1 is built and released (v0.1.0 to v0.3.0): the task service, transactional outbox, relay, scheduler, REST API, webhooks, and observability in sections 2 to 6. R2 is complete: the agent runtime (M5), the human-in-the-loop bridge (M6), the triage, decomposer, blocker, digest, and learning agents (M7 to M11), and the AgentPulse `/v1/` alignment (AP), with the departures listed in [implementation/README.md](implementation/README.md) section 8. Everything in section 9 (R3) is still to be built. Progress per milestone is in [milestones.md](milestones.md).
 
-**Not verified:** the AgentPulse repository is not in this workspace. The AgentPulse field names and endpoints in this document come from [initial.md](archive/initial.md) and from the project owner's answers recorded in section 8.1. None has been read from AgentPulse code yet: task M0-07 checks them against the real contract once access is given (owner action O1).
+**AgentPulse contract: agreed, not yet run against AgentPulse.** The AgentPulse repository was read on 2026-11-22. It did not match the contract this document was first written against, and the owner chose to extend AgentPulse to Taskify's design (decision 27). The contract in section 5.5 is the one agreed with AgentPulse's milestone 40, recorded in [blockers.md](blockers.md). It has been checked against AgentPulse's plan for that milestone, not against running AgentPulse code: Taskify's client has only run against the mock in `tests/mockagentpulse`, which enforces the agreed rules. Task M0-07 runs the client and webhook tests against a real AgentPulse once slices 40a to 40d ship.
 
 ---
 
@@ -135,7 +135,7 @@ flowchart TB
 | `FeedbackService` | Forward feedback signals to AgentPulse | Mutate tasks |
 | `AgentJobService` | Apply or dismiss Tier 2 proposals | Call the LLM |
 | Outbox relay | Claim pending outbox rows, call AgentPulse, record result | Create events |
-| Deadline scheduler | Find due-soon, overdue, and stale tasks; write events and jobs | Call AgentPulse directly |
+| Deadline scheduler | Find due-soon, overdue, and stale tasks; write reminder events; queue blocker investigations, the daily morning briefs, and the weekly learning jobs | Call AgentPulse directly |
 | Agent runtime | Claim agent jobs, run the reasoning loop, record history | Mutate tasks except through tools |
 | Tool registry | Validate and execute typed tool calls via `TaskService` | Accept tenant or scope from model output |
 | LLM client | OpenAI-compatible chat completion with tool calling, timeout, retry | Hold business logic |
@@ -243,9 +243,31 @@ sequenceDiagram
     T->>DB: INSERT outbox task.overdue keyed by date, ON CONFLICT DO NOTHING
     T->>DB: UPDATE tasks SET last_overdue_notified_at = now
     T->>DB: COMMIT
+    T->>DB: BEGIN
+    T->>DB: SELECT in_progress tasks with no edit or comment for 48h and no investigation today, FOR UPDATE SKIP LOCKED LIMIT n
+    T->>DB: INSERT agent_jobs blocker_investigator, one per task per UTC day
+    T->>DB: COMMIT
+    opt from DIGEST_BRIEF_HOUR_UTC until the day's scan completes
+        T->>DB: list people with open work or a pending approval and no brief job today
+        T->>DB: INSERT agent_jobs digest, one per person per UTC day
+    end
+    opt from the first tick of each ISO week until the week's scan completes
+        T->>DB: list tenants with a workspace that allows the learning agent and no job this week
+        T->>DB: INSERT agent_jobs learning, one per tenant per ISO week
+    end
 ```
 
-Two protections make this safe across replicas: `SKIP LOCKED` prevents two schedulers from taking the same task, and the unique `idempotency_key` prevents a second insert if they somehow do. The same tick enqueues `blocker_investigator` jobs for tasks `in_progress` with no comment in 48 hours.
+Two protections make this safe across replicas: `SKIP LOCKED` prevents two schedulers from taking the same task, and the unique `idempotency_key` prevents a second insert if they somehow do. Each scan runs in batches of n (100) until a batch comes back short.
+
+The same tick queues three kinds of agent job. Each is checked against the workspace settings by the query that finds it, is queued whatever `AGENTS_ENABLED` is (as a task change's jobs are), and is kept unique by its job dedup key (section 4.4), so overlapping scans on two replicas queue it once.
+
+| Job | Who or what | When | Details |
+| --- | --- | --- | --- |
+| Stale investigation (`blocker_investigator`) | An `in_progress` task with neither an edit nor a comment, from anyone, in 48 hours (G12), in a workspace that allows the blocker agent | Every tick, at most once per task per UTC day | D33 |
+| Morning brief (`digest`, no task) | Each person who is the assignee of a `todo` or `in_progress` task, or the owner of a task with a job awaiting approval, in a workspace that allows the digest agent | From `DIGEST_BRIEF_HOUR_UTC` (default 08:00 UTC; no per-user time zone), once per person per UTC day, covering all their workspaces | D40; the agent then skips a person with nothing to report (D39) |
+| Learning (`learning`, no task) | Each tenant with a workspace that allows the learning agent | From the first tick of each ISO week (Monday 00:00 UTC), once per tenant per week | D55 |
+
+Briefs and learning jobs take no row locks. A replica remembers the day's brief scan, and the week's learning scan, once one runs to the end, so later ticks skip it; a batch that another replica has just queued ends the scan until the next tick.
 
 ### 3.4 Notification pipeline inside AgentPulse
 
@@ -415,6 +437,7 @@ erDiagram
     TASKS ||--o{ NOTIFICATION_OUTBOX : "aggregate_id"
     TASKS ||--o{ AGENT_JOBS : "subject of"
     AGENT_JOBS ||--o{ AGENT_RUN_HISTORY : "records"
+    AGENT_JOBS ||--o{ LEARNING_SUGGESTIONS : "submits"
     TASKS ||--o{ TASK_DEPENDENCIES : "is blocked via task_id"
     TASKS ||--o{ TASK_DEPENDENCIES : "blocks via depends_on_task_id"
     WORKSPACES ||--o{ TASKS : "contains"
@@ -458,6 +481,7 @@ erDiagram
         timestamptz archived_at "nullable"
         int estimated_minutes "nullable, R2"
         jsonb agent_metadata "R2"
+        timestamptz unblocked_at "nullable, R2"
         timestamptz created_at
         timestamptz updated_at
     }
@@ -486,6 +510,7 @@ erDiagram
         int attempts
         int max_attempts
         timestamptz next_attempt_at
+        timestamptz claimed_at "nullable"
         text last_error "nullable"
         timestamptz created_at
         timestamptz dispatched_at "nullable"
@@ -503,6 +528,8 @@ erDiagram
         jsonb execution_result "nullable"
         text error_message "nullable"
         int attempts
+        int conflict_count
+        timestamptz retry_after "nullable"
         varchar decided_by "nullable"
         timestamptz decided_at "nullable"
         timestamptz created_at
@@ -522,20 +549,34 @@ erDiagram
         int latency_ms
         timestamptz created_at
     }
+    LEARNING_SUGGESTIONS {
+        uuid id PK
+        varchar tenant_id
+        uuid job_id FK
+        text event_type
+        text label "nullable"
+        int current_adjustment
+        int proposed_adjustment
+        int signal_count
+        text rationale
+        timestamptz created_at
+    }
 ```
+
+Not drawn: `workspace_rules`, which belongs to a workspace, and `webhook_deliveries`, `webhook_callbacks`, and `user_contacts`, which reference no other table. Section 4.2 describes them.
 
 ### 4.2 Table notes
 
 | Table | Migration | Notes |
 | --- | --- | --- |
-| `tasks` | `000001`, extended by `000004` | Full DDL for the base columns is in [initial.md](archive/initial.md) section 4.B. IDs are UUIDv7 generated in Go so they sort by creation time. |
+| `tasks` | `000001`, extended by `000004` and `000006` | Full DDL for the base columns is in [initial.md](archive/initial.md) section 4.B. IDs are UUIDv7 generated in Go so they sort by creation time. `000006` adds `unblocked_at`: when the task last left `blocked` for `todo` or `in_progress`, by dependency release or by a person. The morning brief lists tasks unblocked in the 24 hours before it (D37). The task API does not expose it. |
 | `task_watchers` | `000001` | Composite primary key `(task_id, user_id)`. |
 | `task_comments` | `000001` | `mentions` is extracted from `@username` tokens at insert time. |
 | `notification_outbox` | `000002` | One row per event per recipient. `idempotency_key` is unique. `aggregate_id` has no foreign key so outbox rows survive task deletion. |
 | `task_dependencies` | `000004` | Replaces the `blocked_by UUID[]` column (decision 4). One row means `task_id` cannot start until `depends_on_task_id` is complete. Both foreign keys cascade on delete, which only fires on a permanent delete. A `CHECK (task_id <> depends_on_task_id)` blocks self-dependency. The foreign keys do not prove both tasks share a tenant, so the service checks that before insert. |
 | `workspaces` | `000001`; `agent_settings` added in `000004` | Primary key `(tenant_id, id)`, with `name`. `tasks (tenant_id, workspace_id)` has a foreign key to it (decision 19). The table is created in `000001`, not `000004`, so the foreign key exists from the first task: adding it later would need a backfill of every workspace ID already used, and task creation would start failing for unknown workspaces. `agent_settings` defaults to agents off, approval required for everything, and a cap of 5 subtasks. The foreign key is `ON DELETE RESTRICT` (decision 24): a workspace cannot be deleted while any task references it, so an accidental delete cannot bypass soft archive, outbox scrubbing, or agent job cleanup. There is deliberately no workspace purge endpoint. If a workspace ever has to be decommissioned, it is done with an administrative script that verifies soft archives, drains the outbox, and cleans dependencies before touching the workspace row. |
-| `agent_jobs` | `000004` | Base DDL in [agentic.md](archive/agentic.md) section 4.A, with the changes listed in section 7 below. |
-| `notification_acks` | `000005` (R3) | `(tenant_id, user_id, notification_id)` primary key, `signal`, `acked_at`. Local read state for the in-app feed (section 9.6). Not shown in the diagram above; it references AgentPulse notification IDs, not Taskify rows. |
+| `agent_jobs` | `000004`, extended by `000005` | Base DDL in [agentic.md](archive/agentic.md) section 4.A, with the changes listed in section 7 below. `000005` adds `retry_after`, before which a pending job is not claimed (a failed run waits 30 s, 2 min, then 10 min; a version conflict 10 s), and `conflict_count`: the first 5 conflicts use no attempt (D24). A job's `updated_at` is its lease while it runs (D23). A morning brief is a digest job with no task, naming its person in `input_context.user_id` (D40); a learning job has no task either (D55). |
+| `notification_acks` | migration `000010` (M14-06; `000001` to `000009` are taken) | `(tenant_id, user_id, notification_id)` primary key, `signal`, `acked_at`. Local read state for the in-app feed (section 9.6). Not shown in the diagram above; it references AgentPulse notification IDs, not Taskify rows. |
 | `workspace_rules` | `000003` | `(tenant_id, workspace_id, rule_key)` primary key, `agentpulse_rule_id`. Records which default AgentPulse rules a workspace has, so `bootstrap-rules` can be repeated without creating duplicates. |
 | `webhook_deliveries` | `000003` | Signature of each accepted AgentPulse callback, kept for an hour, so a replayed callback changes nothing. |
 | `webhook_callbacks` | `000007` | `(tenant_id, callback_id)` primary key, `received_at`. Each applied callback's `callbackId`, kept for 7 days, so a retry of one click, signed again, changes nothing (AP-06). |
@@ -554,6 +595,10 @@ Indexes:
 | `idx_tasks_parent (parent_id)` partial where not null | Listing subtasks |
 | `idx_outbox_poll (next_attempt_at, created_at)` partial where `status = 'pending'` | Relay claim |
 | `idx_agent_jobs_poll (status, created_at)` partial where `status = 'pending'` | Agent runtime claim |
+| `idx_agent_jobs_brief (tenant_id, input_context->>'user_id', created_at DESC)` partial where `agent_type = 'digest'` (`000006`) | A person's latest brief, `GET /me/brief` |
+| `idx_webhook_callbacks_received (received_at)` (`000007`) | Deleting callback IDs older than 7 days |
+| `idx_learning_suggestions_job_pattern` unique on `(job_id, event_type, COALESCE(label, ''))` (`000008`) | A job submits a pattern once |
+| `idx_learning_suggestions_tenant (tenant_id, created_at)` (`000008`) | Patterns the tenant submitted within the 30-day window |
 
 ### 4.3 State machines
 
@@ -697,14 +742,18 @@ stateDiagram-v2
 | --- | --- |
 | State mutation | `taskify:{tenant_id}:{task_id}:{event_type}:v{version}` |
 | Mutation with several recipients | Same, with `:{user_id}` appended |
-| Due soon | `taskify:{tenant_id}:{task_id}:due_soon_24h` and `...:due_soon_1h` |
+| Due soon | `taskify:{tenant_id}:{task_id}:due_soon_24h:{due_at as Unix seconds}` and `...:due_soon_1h:{...}` (G2) |
 | Overdue | `taskify:{tenant_id}:{task_id}:overdue:{YYYY-MM-DD}` |
-| Approval request | `taskify:{tenant_id}:{job_id}:agent.approval_requested` |
+| Comment | `taskify:{tenant_id}:{task_id}:task.comment_added:{comment_id}`, plus `:{user_id}` (D2) |
+| Dependency notices (`task.dependency_added`, `_resolved`, `_reopened`) | `taskify:{tenant_id}:{task_id}:{event_type}:{blocker_id}:v{blocker_version}` (D17) |
+| Approval request | `taskify:{tenant_id}:{task_id}:agent.approval_requested:{job_id}` |
+| Escalation | `taskify:{tenant_id}:{task_id}:task.escalated:{job_id}:{user_id}`, always with the recipient (D30) |
+| Morning brief | `taskify:{tenant_id}:{job_id}:digest.morning_brief` (D38) |
 | Contact forward (one row per person, reused for every change; D46) | `taskify:{tenant_id}:contact.update:{user_id}` |
-| Agent job dedup | `{agent_type}:{task_id}:v{version}` for event-triggered jobs; `{agent_type}:{task_id}:stale:{YYYY-MM-DD}` for stale scans; `digest:{tenant_id}:{user_id}:brief:{YYYY-MM-DD}` for morning briefs (D40); `learning:{tenant_id}:week:{YYYY-Www}` for the weekly learning job (D55) |
+| Agent job dedup | `{agent_type}:{task_id}:v{version}` for event-triggered jobs; `decomposer:{task_id}:request:{uuid}` for each requested decomposition (D29); `{agent_type}:{task_id}:stale:{YYYY-MM-DD}` for stale scans; `digest:{tenant_id}:{user_id}:brief:{YYYY-MM-DD}` for morning briefs (D40); `learning:{tenant_id}:week:{YYYY-Www}` for the weekly learning job (D55) |
 | Learning suggestion (Taskify's own; AgentPulse takes no key for suggestions) | `taskify:{tenant_id}:{job_id}:learning.suggestion:{hash of event type and label}` |
 
-Changing `due_at` should reset `last_due_soon_notified_at`, and the due-soon key should then include the new due timestamp, otherwise a rescheduled task would never be reminded again. This is not covered in the source documents.
+Changing `due_at` clears `last_due_soon_notified_at`, and the due-soon key includes the due time, so a rescheduled task is reminded again (G2). This is not covered in the source documents.
 
 ---
 
@@ -716,38 +765,54 @@ Changing `due_at` should reset `last_due_soon_notified_at`, and the due-soon key
 taskify/
 ├── contract/                        # R3: language-neutral definition, see 9.2
 ├── cmd/taskify/main.go              # wiring, graceful shutdown
+├── cmd/devtoken/                    # prints a signed development JWT
+├── cmd/mock-agentpulse/             # runs the mock AgentPulse for local use
 ├── cmd/taskctl/                     # R3: CLI, see 9.5
 ├── pkg/client/                      # R3: Go API client generated from the contract
 ├── sdk/python/                      # R3: Python client SDK, see 9.4
 ├── web/                             # R3: frontend, see 9.6; embed.go for optional embedding
-├── tests/conformance/               # R3: black-box suite, see 9.3
+├── tests/
+│   ├── mockagentpulse/              # the mock AgentPulse: the agreed /v1/ contract, recorded and scriptable
+│   ├── e2e/                         # end-to-end tests through the HTTP API
+│   ├── bench/                       # benchmarks
+│   └── conformance/                 # R3: black-box suite, see 9.3
 ├── internal/
+│   ├── app/                         # wiring shared by the server and end-to-end tests
 │   ├── config/config.go             # env parsing and validation
 │   ├── domain/
-│   │   ├── task.go                  # Task, Comment, state machine
-│   │   ├── event.go                 # event types, payload and key builders
+│   │   ├── task.go                  # Task, state machine
+│   │   ├── comment.go, dependency.go, subtask.go
+│   │   ├── event.go                 # event types, recipients, payload and key builders
+│   │   ├── tenant.go, user.go       # tenant and user ID rules (AP-04, AP-11)
 │   │   ├── agentjob.go              # AgentJob, statuses, tiers (R2)
+│   │   ├── approval.go, escalation.go, brief.go, learning.go   # agent events and reports (R2)
+│   │   ├── contact.go               # a person's contact (AP-05)
 │   │   └── errors.go
 │   ├── repository/
 │   │   ├── repository.go            # interfaces
-│   │   ├── postgres/                # db.go, task_repo.go, outbox_repo.go, agent_job_repo.go
-│   │   └── memory/                  # in-memory fakes with the same interfaces
+│   │   ├── postgres/                # one file per repository
+│   │   ├── memory/                  # in-memory fakes with the same interfaces
+│   │   └── repotest/                # one conformance suite run against both
 │   ├── service/
 │   │   ├── task_service.go
+│   │   ├── dependency_service.go, decompose.go, subtasks.go
 │   │   ├── feedback_service.go
-│   │   └── agent_job_service.go     # apply and dismiss (R2)
+│   │   ├── workspace_service.go     # workspaces and default rules
+│   │   ├── agent_job_service.go     # apply and dismiss (R2)
+│   │   ├── contact_service.go       # PUT /me/contact (AP-05)
+│   │   └── learning_service.go      # records and queues learning suggestions (M11)
 │   ├── worker/
 │   │   ├── outbox_relay.go
-│   │   ├── deadline_scheduler.go
+│   │   ├── deadline_scheduler.go    # reminders, stale scan, briefs, learning jobs
 │   │   └── outbox_cleanup.go
 │   ├── agentpulse/
 │   │   ├── client.go                # typed calls
 │   │   └── breaker.go               # circuit breaker
 │   ├── agent/                       # R2
-│   │   ├── runtime.go               # job claim loop
-│   │   ├── agent.go                 # Agent interface, shared reasoning loop
+│   │   ├── runtime.go               # job claim loop, reasoning loop, optional agent hooks
+│   │   ├── agent.go                 # Agent interface
 │   │   ├── llm/                     # client.go, mock.go
-│   │   ├── tools/                   # registry.go and one file per tool
+│   │   ├── tools/                   # registry.go, schema.go, and one file per tool
 │   │   ├── triage.go
 │   │   ├── decomposer.go
 │   │   ├── blocker.go
@@ -755,17 +820,22 @@ taskify/
 │   │   └── learning.go
 │   ├── api/
 │   │   ├── router.go
-│   │   ├── middleware.go
+│   │   ├── middleware.go, auth.go
 │   │   ├── task_handler.go
 │   │   ├── webhook_handler.go
 │   │   ├── admin_handler.go
-│   │   └── agent_job_handler.go     # R2
+│   │   ├── agent_job_handler.go     # R2, with GET /me/brief
+│   │   └── contact_handler.go       # GET and PUT /me/contact
 │   └── observability/               # metrics.go, tracing.go
 ├── migrations/
 │   ├── 000001_init_tasks.{up,down}.sql
 │   ├── 000002_outbox.{up,down}.sql
 │   ├── 000003_integrations.{up,down}.sql
-│   └── 000004_agent_schema.{up,down}.sql
+│   ├── 000004_agent_schema.{up,down}.sql
+│   ├── 000005_agent_job_retry.{up,down}.sql
+│   ├── 000006_digest.{up,down}.sql
+│   ├── 000007_agentpulse_v1.{up,down}.sql
+│   └── 000008_learning.{up,down}.sql
 ├── docker-compose.yml
 └── Makefile
 ```
@@ -900,9 +970,16 @@ classDiagram
     class Agent {
         <<interface>>
         +Type() string
-        +Triggers() []string
         +AllowedTools() []string
         +BuildContext(ctx, job) Messages
+    }
+    class Reporter {
+        <<interface>>
+        +Gather(ctx, job) Report
+    }
+    class Finisher {
+        <<interface>>
+        +FinishEvents(ctx, job, now) []Event
     }
     class TriageAgent
     class DecomposerAgent
@@ -972,6 +1049,10 @@ classDiagram
     Agent <|.. BlockerRemediationAgent
     Agent <|.. DigestAgent
     Agent <|.. LearningAgent
+    Agent <|-- Reporter
+    Reporter <|.. DigestAgent
+    Reporter <|.. LearningAgent
+    Finisher <|.. BlockerRemediationAgent
     LLMClient <|.. OpenAICompatClient
     LLMClient <|.. MockLLM
     Runtime --> Agent
@@ -983,63 +1064,67 @@ classDiagram
     AgentJobService --> AgentJob
 ```
 
+A `Reporter` is an agent whose model writes a report from facts that Go code gathers (the morning brief, the learning review). The runtime calls `Gather` in place of `BuildContext`; a nil report or a `Skip` error completes the job as skipped without calling the model. The report's `Deliver` turns the model's text into the stored report and its notifications, which the runtime writes in the transaction that completes the job. A `Finisher` sends notifications of its own when a run ends well: `FinishEvents` runs in the transaction that saves the job, so its events exist only for a run that completed, and the model has no say in what is sent or to whom. The blocker uses it for `task.escalated`.
+
 `Scope` is built from the job row, never from model output. A tool that receives a `task_id` argument outside the scope's tenant, or outside the job's task and its children, returns an error.
 
 ### 5.4 REST API
 
-All routes are under `/api/v1`. Legacy `/tasks/` routes alias the task endpoints.
+All routes are under `/api/v1`, except the operations routes. Legacy unprefixed `/tasks` routes alias the task endpoints. [contract/openapi.yaml](../contract/openapi.yaml) is the authority for every path, parameter, and response; this table is a summary. Rows marked "Not built" are planned and are not in the contract yet.
 
 | Method and path | Purpose | Events or effects | Release |
 | --- | --- | --- | --- |
 | `POST /tasks` | Create task | `task.created`, `task.assigned` | R1 |
-| `GET /tasks` | List with filters and cursor: `assignee_id`, `status`, `priority`, `limit`, `cursor` | none | R1 |
+| `GET /tasks` | List, newest update first, with filters and cursor: `assignee_id`, `status`, `priority`, `id_prefix` (a prefix of the canonical ID, for short IDs), `limit`, `cursor` | none | R1; `id_prefix` M12 |
 | `GET /tasks/{id}` | Task with watchers and recent comments | none | R1 |
 | `PUT /tasks/{id}`, `PATCH /tasks/{id}` | Update; requires `If-Match` or `version` | `task.updated`, `task.assigned`, `task.priority_escalated`, `task.blocked` | R1 |
 | `POST /tasks/{id}/complete` | Complete | `task.completed`; `acted` feedback if a notification ID is supplied | R1 |
 | `DELETE /tasks/{id}` | Soft archive: sets `status = 'archived'`, `archived_at`, `updated_at` | none | R1 |
-| `DELETE /tasks/{id}?permanent=true` | Permanent delete for data-scrubbing requests (admin only) | Removes the task and its dependent rows | R1 |
+| `DELETE /tasks/{id}?permanent=true` | Permanent delete for data-scrubbing requests (admin only); answers `204` | Removes the task and its dependent rows | R1 |
 | `POST /tasks/{id}/comments` | Add comment, extract mentions, detect `/decompose` | `task.comment_added` | R1 |
 | `POST /tasks/{id}/feedback` | Forward `acted`, `dismissed`, `snoozed`, `muted` | AgentPulse `/feedback` | R1 |
 | `POST /webhooks/agentpulse` | Signed callbacks from AgentPulse | Task mutation plus feedback | R1 |
 | `POST /workspaces/{id}/bootstrap-rules` | Register default rules | AgentPulse `/rules` | R1 |
-| `GET /admin/learning/suggestions` | List M38 suggestions | proxy | R1 |
-| `POST /admin/learning/suggestions/{id}/decision` | Approve or reject | proxy | R1 |
+| `GET /admin/learning/suggestions` | List AgentPulse's learning suggestions (admin), in snake_case like the rest of the API (D59) | proxy | R1 |
+| `POST /admin/learning/suggestions/{id}/decision` | Approve or reject (admin) | proxy | R1 |
 | `POST /tasks/{id}/decompose` | Queue decomposition; returns `202` with job ID | `agent_jobs` row | R2 |
-| `GET /agent-jobs/{id}` | Job status, proposal, result | none | R2 |
+| `GET /agent-jobs/{id}` | Job status, proposal, result. Visible by kind: a job on a task to any member of the tenant, a morning brief only to its person and admins, a tenant-wide job (the learning run) to admins only; otherwise `404` (D61) | none | R2 |
 | `POST /agent-jobs/{id}/apply` | Approve a Tier 2 proposal | Applies changes, emits events | R2 |
 | `POST /agent-jobs/{id}/dismiss` | Reject a Tier 2 proposal | none | R2 |
-| `GET /agent-jobs` | List jobs; filters `status`, `task_id`, `agent_type`. Feeds the approvals inbox. | none | R3 |
-| `GET /tasks/{id}/subtasks` | Children of a task with their dependency links | none | R3 |
+| `GET /agent-jobs` | List the jobs the caller may see, newest first; filters `status`, `task_id`, `agent_type`, `limit`, `cursor`. A job the caller may not see is left out. Feeds the approvals inbox. | none | R3 (M12) |
+| `GET /tasks/{id}/subtasks` | Children of a task with their dependency links | none | R3 (M12) |
 | `POST /tasks/{id}/restore` | Restore an archived task to `todo` | none | R1 |
 | `POST /workspaces` | Create a workspace (admin). Tasks can only be created in an existing workspace. | Registers the default AgentPulse rules | R1 |
 | `GET /workspaces/{id}/settings`, `PATCH /workspaces/{id}/settings` | Read and change workspace settings, including `agent_settings` (admin) | none | R1; agent fields from R2 |
-| `GET /tasks/{id}/agent-runs` | Agent activity for a task, from `agent_jobs` and `agent_run_history` | none | R3 |
-| `GET /admin/outbox` | List outbox rows; filter `status=dead_letter` | none | R3 |
-| `POST /admin/outbox/{id}/replay` | Return a dead-letter row to `pending` | Row is retried | R3 |
-| `GET /notifications/in-app` | Current user's in-app feed, proxied from AgentPulse and enriched with task data | none | R3 |
-| `POST /notifications/{id}/ack` | Mark a notification read or dismissed | Local ack plus AgentPulse feedback | R3 |
-| `GET /me` | Current user, tenant, and role | none | R3 |
+| `GET /tasks/{id}/agent-runs` | Agent activity for a task, oldest first, from `agent_jobs` and `agent_run_history` | none | R3 (M12) |
+| `GET /admin/outbox` | List the tenant's outbox rows, newest first (admin); filter `status` (such as `dead_letter`), `limit`, `cursor`. Dispatched rows are kept 7 days. | none | R3 (M12) |
+| `POST /admin/outbox/{id}/replay` | Return a dead-letter row to `pending` (admin) | Row is retried | R3 (M12) |
+| `GET /notifications/in-app` | Current user's in-app feed, proxied from AgentPulse and enriched with task data. Not built. | none | R3 (M14-06) |
+| `POST /notifications/{id}/ack` | Mark a notification read or dismissed. Not built. | Local ack plus AgentPulse feedback | R3 (M14-06) |
+| `GET /me` | Current user, tenant, and role | none | R3 (M12) |
+| `GET /me/brief` | The caller's newest morning brief; `404` when there is none | none | R2 (M10) |
 | `GET /me/contact`, `PUT /me/contact` | The caller's own contact for AgentPulse: `email`, `slack_user_id`, `phone` (section 5.5) | `contact.update` outbox row | R2 (AP-05) |
 | `GET /events` | Server-Sent Events stream | none | Later (live updates Phase 2) |
 | `GET /healthz`, `GET /readyz`, `GET /metrics` | Operations (not under `/api/v1`) | none | R1 |
 
-From R3, `GET /tasks` also accepts `updated_since` and `id_prefix`, and list endpoints honour `If-None-Match`.
+Single-task reads and writes return an `ETag`. `updated_since` and `If-None-Match` on list endpoints are planned for the frontend's polling (M14) and are not built.
 
-The R3 rows exist because the CLI and frontend need to list things that R1 and R2 only expose one at a time.
+The R3 rows exist because the CLI and frontend need to list things that R1 and R2 only expose one at a time. M12 built the list endpoints and `GET /me`; the notification feed is M14-06.
 
 **Permanent delete.** One transaction, in this order:
 
 1. Take the tenant's brief lock exclusively (D48), then lock the task.
 2. Delete `agent_jobs` rows for the task (their run history cascades).
 3. Delete every `notification_outbox` row with that `aggregate_id`, in any status. The outbox has no foreign key to `tasks` and its `payload` holds the task title.
-4. Delete the morning briefs that name the task (AP-08): the digest jobs whose stored report lists it among its top items, pending approvals, or unblocked tasks, with their run history, and every outbox row of theirs, in any status.
+4. Delete the morning briefs that name the task (AP-08, D48): the digest jobs whose stored report lists it among its top items, pending approvals, or unblocked tasks, with their run history, and every outbox row of theirs, in any status.
 5. Delete the task. Foreign keys cascade to `task_dependencies`, `task_watchers`, and `task_comments`.
 6. If no task row was deleted, return `ErrNotFound` and roll back.
 
 Notes:
 
 - Removing `pending` and `processing` rows stops the relay from sending a notification about a task that no longer exists. A relay worker that claimed a row a moment before the delete may still send it once; its later status update then matches no row and must be treated as success, not an error.
-- Dependents of the deleted task lose that dependency row through the cascade. The unblock check from section 4.3 runs for them before the delete, in the same transaction.
+- Dependents of the deleted task lose that dependency row through the cascade. The unblock check from section 4.3 runs for them after the task row is deleted, in the same transaction, as if the task had been resolved (D18).
+- Briefs that name the task are deleted with it, sent outbox rows included, so no copy of the title stays in Taskify. A brief scan later the same day may write a second brief without the task (D48, D53).
 - AgentPulse may still hold delivered notifications that contain the title. Taskify can write a `taskify.task_scrubbed` event after the delete, carrying only the task ID, so AgentPulse can mask its copy. This is optional and depends on AgentPulse having a way to act on it, which is not confirmed (M0).
 
 Error mapping:
@@ -1146,6 +1231,8 @@ All payload keys are camelCase. `bypass_digest` is a legacy spelling: the serial
 | `task.comment_added` | Comment added | Assignee, watchers, mentioned users with `isMentioned: true` | Decomposer, on `/decompose` |
 | `task.unblocked` (R2, new) | A dependency-blocked task was returned to its earlier status because all its dependencies are completed or archived | Assignee | none |
 | `agent.approval_requested` (R2, new) | Agent job enters `awaiting_approval` | Assignee, or creator when unassigned | none |
+| `task.escalated` (R2, new) | The blocker agent finished investigating a stale blocked task and found open blocking tasks. One event per distinct owner of those tasks, naming that owner's blockers in `payload.blockingTasks`. With no open blocker, the agent only drafts a comment and sends nothing (D30, D31). | Owner (assignee, or creator when unassigned) of each open blocking task, never the investigated task's people | none |
+| `digest.morning_brief` (R2, new) | The digest agent wrote a person's morning brief (one per person per day, 08:00 UTC by default) | The person briefed | none |
 
 The triage agent runs on every created task, including those where creator and assignee are the same and no notification is sent. The agent trigger is the task change, not the outbox row.
 
@@ -1162,9 +1249,11 @@ The actor is excluded from recipients: nobody is notified of their own action.
 | `CreateSubtaskDAG` | Decomposer | `parent_task_id`, `subtasks[]` with `title`, `description`, `depends_on` | Tier 1 (explicitly requested by a user) |
 | `DraftResolutionComment` | Blocker | `task_id`, `body`, `reasoning` | Tier 1 |
 | `ReassignTask` | Blocker | `task_id`, `assignee_id`, `reasoning` | Tier 2 |
-| `ShiftDueDate` | Blocker, Digest | `task_id`, `due_at`, `reasoning` | Tier 2 |
+| `ShiftDueDate` | Blocker | `task_id`, `due_at`, `reasoning` | Tier 2 |
 | `ArchiveTask` | none by default | `task_id`, `reasoning` | Tier 2 |
 | `ProposeNotificationRule` | Learning | `pattern_id`, `proposed_adjustment` (-20 to 20), `rationale`; the scope and evidence come from Go code | Tier 2, decided by an admin at AgentPulse: the call itself runs at Tier 1, even under `require_hitl_for_all`, and only submits the suggestion, which AgentPulse holds as `PENDING_APPROVAL` until an admin decides through `/admin/learning/suggestions` (D54) |
+
+The digest agent is offered no tools: Go code gathers the facts and the model only writes the brief's text (D38). `ProposeNotificationRule` is offered to the learning agent, which also gets no other tool.
 
 [agentic.md](archive/agentic.md) is inconsistent on due dates: section 1 requires approval only for shifts over 24 hours, section 4.C for any postponement. This document takes the stricter reading.
 
@@ -1209,11 +1298,13 @@ Reasoning loop limits: 30-second timeout per model call; retry with exponential 
 
 ### 5.8 Configuration
 
+Read once at start-up by `internal/config`, which refuses to start on a missing required value or one out of range. Rows marked "Not built" are planned for the frontend and are not read yet.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PORT` | `8080` | HTTP listen port |
 | `DATABASE_URL` | required | PostgreSQL connection string |
-| `PUBLIC_BASE_URL` | required | Base for `actionUrls` in notifications |
+| `PUBLIC_BASE_URL` | required | Base for the API links in `actionUrls` in notifications |
 | `APP_BASE_URL` | none | The web app's address. When set, every notification about a task carries `actionUrls.view` `{APP_BASE_URL}/tasks/{id}`, and the morning brief `{APP_BASE_URL}/brief`; unset, no notification carries a view link (AP-10, D50) |
 | `AGENTPULSE_BASE_URL` | required | AgentPulse API |
 | `AGENTPULSE_API_KEY` | required | Outbound authentication |
@@ -1222,20 +1313,28 @@ Reasoning loop limits: 30-second timeout per model call; retry with exponential 
 | `OUTBOX_BATCH_SIZE` | `100` | Rows per claim |
 | `OUTBOX_POLL_INTERVAL` | `200ms` | Relay ticker |
 | `OUTBOX_MAX_ATTEMPTS` | `10` | Before dead-letter |
+| `OUTBOX_LEASE` | `60s` | How long a claimed row may sit in `processing` before the lease reaper returns it to `pending` (D5) |
 | `OUTBOX_RETRY_MAX_DELAY` | `60s` | Ceiling of the full-jitter backoff between sends of a row; lowered for a conformance target (M12-06) |
-| `SCHEDULER_INTERVAL` | `1m` (proposed) | Deadline scan period |
+| `SCHEDULER_INTERVAL` | `1m` | Deadline scan period. The scan also queues the morning briefs and learning jobs. |
 | `ENV` | `production` | `development` enables the header identity fallback |
 | `JWT_ALGORITHM` | `HS256` | `HS256` or `RS256` |
-| `JWT_SECRET` or `JWT_PUBLIC_KEY` | required in production | Token verification key |
+| `JWT_SECRET` or `JWT_PUBLIC_KEY` | required in production (`JWT_SECRET` for HS256, `JWT_PUBLIC_KEY` for RS256) | Token verification key |
 | `TRUSTED_GATEWAY_CIDRS` | empty | IP ranges allowed to send `X-Tenant-ID` and `X-User-ID` |
-| `CORS_ALLOWED_ORIGINS` | empty | Frontend origins, when the frontend is deployed separately |
-| `SERVE_EMBEDDED_SPA` | `false` | Serve the embedded frontend at `/` |
+| `RATE_LIMIT_RPS` | `20` | Requests per second per tenant and user, in memory per replica |
+| `RATE_LIMIT_BURST` | `40` | Token bucket size |
+| `CORS_ALLOWED_ORIGINS` | empty | Not built. Frontend origins, when the frontend is deployed separately (M14) |
+| `SERVE_EMBEDDED_SPA` | `false` | Not built. Serve the embedded frontend at `/` (M14) |
 | `AGENTS_ENABLED` | `false` | Process-level switch for the agent runtime. Per-workspace control is in `agent_settings`. |
-| `AGENT_WORKERS` | `4` (proposed) | Agent job concurrency |
-| `LLM_BASE_URL` | none | OpenAI-compatible endpoint |
+| `AGENT_WORKERS` | `4` | Agent job concurrency |
+| `AGENT_MAX_TURNS` | `6` | Model turns per run |
+| `AGENT_MAX_ATTEMPTS` | `3` | Failed runs before a job fails |
+| `DIGEST_LOAD_THRESHOLD` | `3` | How many in-progress critical tasks make an assignee overloaded; a non-critical assignment to them then waits for their digest (D36) |
+| `DIGEST_BRIEF_HOUR_UTC` | `8` | Hour of day, UTC, from which morning briefs are queued; no per-user time zone (D40) |
+| `LLM_BASE_URL` | none | OpenAI-compatible endpoint. Required when `AGENTS_ENABLED=true`. |
 | `LLM_API_KEY` | none | Empty for local Ollama |
-| `LLM_MODEL` | none | Model name. Development and CI: `qwen2.5-coder:7b` or `llama3.1:8b` on Ollama. Self-hosted production: a larger Qwen coder model on vLLM or TGI. Managed: any hosted model with tool calling. Switching is configuration only. |
+| `LLM_MODEL` | none | Required when `AGENTS_ENABLED=true`. Model name. Development and CI: `qwen2.5-coder:7b` or `llama3.1:8b` on Ollama. Self-hosted production: a larger Qwen coder model on vLLM or TGI. Managed: any hosted model with tool calling. Switching is configuration only. |
 | `LLM_TIMEOUT` | `30s` | Per-call timeout |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | none | Standard OpenTelemetry variables, read by the tracer and not by `internal/config`. Spans are exported over OTLP/HTTP only when one is set; the other `OTEL_*` settings follow the standard (D13). |
 
 ---
 
@@ -1281,9 +1380,12 @@ Metrics:
 | `taskify_outbox_dispatch_duration_seconds` | histogram | event_type, outcome |
 | `taskify_outbox_dlq_total` | counter | event_type |
 | `taskify_feedback_forwarded_total` | counter | signal |
-| `taskify_agent_job_duration_seconds` (R2, proposed) | histogram | agent_type, outcome |
-| `taskify_agent_llm_tokens_total` (R2, proposed) | counter | agent_type, direction |
-| `taskify_agent_proposals_total` (R2, proposed) | counter | agent_type, decision |
+| `taskify_agent_job_duration_seconds` | histogram | agent_type, outcome |
+| `taskify_agent_llm_tokens_total` | counter | agent_type, direction |
+| `taskify_agent_proposals_total` | counter | agent_type, decision |
+| `taskify_agent_jobs_skipped_total` | counter | agent_type, reason |
+
+All are built, in `internal/observability`. `taskify_agent_jobs_skipped_total` counts jobs a task change asked for that were not queued, for example because agents are off for the workspace or the agent is disabled (D19).
 
 Tracing: the handler stores the W3C `traceparent` in `notification_outbox.trace_context`. The relay restores it before calling AgentPulse, so one trace covers client, API, outbox, relay, and AgentPulse. Agent jobs carry the originating trace in `input_context`.
 
@@ -1355,7 +1457,7 @@ All workers take a `context.Context` cancelled on shutdown and are joined with a
 
 ### 8.1 Decided
 
-Decided by the project owner on 2026-11-11. Each is applied in the section named. Numbers are kept from when the questions were first raised, so the open list below is not in sequence.
+Decisions 1 to 26 were made by the project owner on 2026-11-11, and decisions 27 to 40 by the owner on 2026-11-22 and 2026-11-23. Each is applied in the section named; the departures (D) are in [implementation/README.md](implementation/README.md) section 8. Numbers are kept from when the questions were first raised.
 
 | # | Question | Decision | Applied in |
 | --- | --- | --- | --- |
@@ -1385,10 +1487,30 @@ Decided by the project owner on 2026-11-11. Each is applied in the section named
 | 24 | `CASCADE` or `RESTRICT` on the workspace foreign key? | `ON DELETE RESTRICT`. | 4.2 |
 | 26 | Python SDK package name? | Distribution name `taskify-sdk`, imported as `taskify`. Reserving the name on the public index is an owner action. | 9.4 |
 | 25 | Permanent delete and the outbox? | One transaction deletes agent jobs, all outbox rows for the task, then the task. Optional `taskify.task_scrubbed` event for AgentPulse. | 5.4 |
+| 27 | How does AgentPulse meet Taskify's contract? | Option B: AgentPulse is extended to Taskify's design, as its milestone 40. Option C was rejected. | 5.5; O1 |
+| 28 | Paths, authentication, and identifiers | `/v1/` paths, Bearer authentication, `/healthz` for the health probe. Tenant IDs match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` and `default` is refused. User IDs are 1 to 128 printable ASCII characters. | 5.5; D44, D51 |
+| 29 | How does AgentPulse get a person's contact? | Self-service `PUT /api/v1/me/contact`, forwarded through the outbox, in AgentPulse's formats. | 5.4, 5.5; D45, D46, D52 |
+| 30 | Which events are critical by default? | The default rules make `p1_critical`, manual blocks, and `task.escalated` `attentionClass: critical`. | 5.5; D49 |
+| 31 | Slack workspaces | One Slack workspace per AgentPulse deployment for now. | 5.5 |
+| 32 | Action buttons and callbacks | Fixed action keys: `complete`, `snooze_2h`, `approve`, `reject`, `unblock`, `view`. `acknowledge` becomes `complete`. Callbacks are deduplicated on `(tenantId, callbackId)`. | 5.5; D42, D47 |
+| 33 | The view link | `{APP_BASE_URL}/tasks/{id}`. While `APP_BASE_URL` is unset there are no links at all, brief items included. | 5.5, 5.8; D50 |
+| 34 | Blocker escalation | A new event, `task.escalated`, to the owner of each open blocking task. With no open blocker, only a brief comment is written. | 5.6; D30, D31 |
+| 35 | Digest gatekeeper and morning brief | G14 and G15 confirmed. A held assignment's digest line names the task. | 5.5, 5.8; D36 to D41 |
+| 36 | Permanent delete and briefs | A permanent delete also deletes the briefs that name the task, sent outbox rows included. A same-day re-brief is accepted. | 5.4; D48, D53 |
+| 37 | Learning suggestions | They skip `require_hitl_for_all`: the admin decides once, at AgentPulse. A pattern needs at least 50% of its notifications dismissed or muted, and 5 signals from 2 users in 30 days. | 5.7; D54, D56 |
+| 38 | Identity provider (O2) | Deferred. Development tokens are used until one is chosen. | 9.5, 9.6; O2 |
+| 39 | Who sees an agent job | By kind: a job on a task, any member of the tenant; a brief, only its person and admins; a tenant-wide job, admins only; otherwise `404`. | 5.4; D61 |
+| 40 | Casing of the admin learning endpoints | `snake_case`, like the rest of the API. | 5.4; D58, D59 |
 
 ### 8.2 Open
 
-None at present. What remains unverified is the AgentPulse contract, which milestone M0 checks against the AgentPulse code (see [milestones.md](milestones.md), M0).
+No architecture question is open. What remains is waiting on others:
+
+| Item | State |
+| --- | --- |
+| AgentPulse contract | Read against the real AgentPulse on 2026-11-22 and agreed (decision 27). Task M0-07 runs the client and webhook tests against a real AgentPulse once AgentPulse slices 40a to 40d ship (O1). |
+| Identity provider (O2) | Deferred (decision 38). Blocks `taskctl login` (M13-02) and frontend sign-in (M14-03) only. |
+| Public Python package name (O3) | Not needed until v1.0. |
 
 ---
 
@@ -1573,7 +1695,7 @@ Written in Go with `spf13/cobra` for commands and `spf13/viper` for configuratio
 
 ```text
 taskctl
-├── login                         # store credentials for a profile
+├── login                         # store credentials for a profile (O2: until an identity provider is chosen, it stores a token pasted from `cmd/devtoken`)
 ├── config
 │   ├── view
 │   ├── set <key> <value>
@@ -1748,7 +1870,7 @@ sequenceDiagram
 
 | Topic | Design |
 | --- | --- |
-| Authentication | JWT, per decision 2. Sign-in redirects to the identity provider; the token is held in memory with a refresh cookie that is `HttpOnly`, not in local storage. |
+| Authentication | JWT, per decision 2. Sign-in redirects to the identity provider; the token is held in memory with a refresh cookie that is `HttpOnly`, not in local storage. The identity provider is not chosen (O2, decision 38): until it is, the app accepts a development token from `cmd/devtoken`, and the redirect flow is built when O2 is resolved. |
 | Tenant and role | Read from the token. Admin pages are hidden for non-admins, and the server still enforces access. |
 | Live updates | Phase 1: polling every 15 to 30 seconds with conditional requests. Phase 2: Server-Sent Events. No WebSockets. Detail below. |
 | Agent changes | Always labelled with the agent name and reasoning from `agent_metadata`. A proposal shows current and proposed values side by side. |
@@ -1794,7 +1916,7 @@ sequenceDiagram
 
 - The AgentPulse feed endpoint is `GET /v1/tenants/{tenantId}/users/{userId}/in-app-feed?limit=&cursor=`, called with the same bearer key as the rest of the `/v1/` API (section 5.5; AgentPulse slice 40d). It is verified against a real AgentPulse in M0-07.
 - Tenant and user in that call come from the verified token, never from the request, so one user cannot read another's feed.
-- Ack state is stored in a small table, `notification_acks (tenant_id, user_id, notification_id, signal, acked_at)`, added in migration `000005`. The ack is saved locally first; if forwarding the feedback to AgentPulse fails, it is retried through the outbox instead of failing the click.
+- Ack state is stored in a small table, `notification_acks (tenant_id, user_id, notification_id, signal, acked_at)`, added in migration `000010` (M14-06). The ack is saved locally first; if forwarding the feedback to AgentPulse fails, it is retried through the outbox instead of failing the click.
 - This is a synchronous call to AgentPulse on a read path. It has a short timeout and uses the circuit breaker. Task reads and writes do not depend on it.
 
 **Live updates (decision 14).**
