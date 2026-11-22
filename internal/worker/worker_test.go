@@ -109,8 +109,8 @@ func TestRelayDeliversEachKeyExactlyOnce(t *testing.T) {
 		cancel()
 		wg.Wait()
 
-		if got := len(mock.RequestsTo("POST", "/notify")); got != rows {
-			t.Errorf("/notify requests = %d, want %d", got, rows)
+		if got := len(mock.RequestsTo("POST", "/v1/notify")); got != rows {
+			t.Errorf("/v1/notify requests = %d, want %d", got, rows)
 		}
 		if mock.Duplicates() != 0 {
 			t.Errorf("AgentPulse saw %d duplicate keys", mock.Duplicates())
@@ -125,7 +125,7 @@ func TestRelayRetriesThenSucceeds(t *testing.T) {
 	each(t, func(t *testing.T, b repotest.Backend) {
 		mock, client := newMock(t)
 		row := seedOutbox(t, b, 1, 10, t0)[0]
-		mock.FailNext("POST", "/notify", http.StatusServiceUnavailable, 2)
+		mock.FailNext("POST", "/v1/notify", http.StatusServiceUnavailable, 2)
 
 		now := t0
 		var delays []int
@@ -162,7 +162,7 @@ func TestRelayDeadLettersAfterMaxAttempts(t *testing.T) {
 	each(t, func(t *testing.T, b repotest.Backend) {
 		mock, client := newMock(t)
 		row := seedOutbox(t, b, 1, 10, t0)[0]
-		mock.FailNext("POST", "/notify", http.StatusServiceUnavailable, -1)
+		mock.FailNext("POST", "/v1/notify", http.StatusServiceUnavailable, -1)
 
 		r := NewRelay(b.Outbox, client, RelayConfig{Now: func() time.Time { return t0 }, Backoff: func(int) time.Duration { return 0 }, Logger: quiet})
 		for i := 0; i < 15; i++ {
@@ -174,8 +174,8 @@ func TestRelayDeadLettersAfterMaxAttempts(t *testing.T) {
 		if got.Status != domain.OutboxDeadLetter || got.Attempts != 10 {
 			t.Errorf("row = %s after %d attempts, want dead_letter after 10", got.Status, got.Attempts)
 		}
-		if n := len(mock.RequestsTo("POST", "/notify")); n != 10 {
-			t.Errorf("/notify requests = %d, want 10", n)
+		if n := len(mock.RequestsTo("POST", "/v1/notify")); n != 10 {
+			t.Errorf("/v1/notify requests = %d, want 10", n)
 		}
 	})
 }
@@ -184,7 +184,7 @@ func TestRelayDeadLettersPermanentRejection(t *testing.T) {
 	each(t, func(t *testing.T, b repotest.Backend) {
 		mock, client := newMock(t)
 		row := seedOutbox(t, b, 1, 10, t0)[0]
-		mock.FailNext("POST", "/notify", http.StatusUnprocessableEntity, 1)
+		mock.FailNext("POST", "/v1/notify", http.StatusUnprocessableEntity, 1)
 
 		r := NewRelay(b.Outbox, client, RelayConfig{Now: func() time.Time { return t0 }, Logger: quiet})
 		if _, err := r.RunOnce(ctx); err != nil {
@@ -503,10 +503,24 @@ func TestCleanup(t *testing.T) {
 		if _, err := b.Deliveries.Record(ctx, "new-sig", now.Add(-time.Minute)); err != nil {
 			t.Fatal(err)
 		}
+		// callbackIds are kept for the 7-day life of an action link (AP-06).
+		const oldCB, newCB = "cb-00000000000000000000000000000001", "cb-00000000000000000000000000000002"
+		if _, err := b.Deliveries.RecordCallback(ctx, tenant, oldCB, now.Add(-8*24*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.Deliveries.RecordCallback(ctx, tenant, newCB, now.Add(-6*24*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
 		c := NewCleanup(b.Outbox, CleanupConfig{BatchSize: 2, Deliveries: b.Deliveries, Now: func() time.Time { return now }, Logger: quiet})
 		n, err := c.RunOnce(ctx)
-		if err != nil || n != 4 {
-			t.Fatalf("RunOnce = %d, %v; want 3 outbox rows and 1 delivery deleted", n, err)
+		if err != nil || n != 5 {
+			t.Fatalf("RunOnce = %d, %v; want 3 outbox rows, 1 delivery, and 1 callback deleted", n, err)
+		}
+		if seen, _ := b.Deliveries.CallbackSeen(ctx, tenant, oldCB); seen {
+			t.Error("an 8-day-old callbackId was kept")
+		}
+		if seen, _ := b.Deliveries.CallbackSeen(ctx, tenant, newCB); !seen {
+			t.Error("a 6-day-old callbackId was deleted")
 		}
 		if fresh, _ := b.Deliveries.Record(ctx, "new-sig", now); fresh {
 			t.Error("a delivery inside the replay window was deleted")
@@ -688,3 +702,40 @@ func TestStaleScanOffWithoutJobs(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// TestSchedulerRemindersViewTheApp is AP-10's wiring for reminders: with
+// AppBaseURL, an overdue reminder views the task in the web app.
+func TestSchedulerRemindersViewTheApp(t *testing.T) {
+	f := newSchedFixture(t, repotest.Memory())
+	task := f.task(t, t0.Add(time.Hour), "usr_bob")
+	now := t0.Add(2 * time.Hour)
+	s := NewScheduler(f.b.Tx, f.b.Tasks, f.b.Outbox, SchedulerConfig{
+		PublicBaseURL: "https://taskify.test", AppBaseURL: "https://app.taskify.test", Logger: quiet,
+		Now: func() time.Time { return now },
+	})
+	if _, err := s.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := f.b.Outbox.ListForAggregate(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.EventType != domain.EventTaskOverdue {
+			continue
+		}
+		found = true
+		var n domain.Notification
+		if err := json.Unmarshal(e.Payload, &n); err != nil {
+			t.Fatal(err)
+		}
+		urls, _ := n.Payload["actionUrls"].(map[string]any)
+		if urls["view"] != "https://app.taskify.test/tasks/"+task.ID.String() {
+			t.Errorf("overdue actionUrls = %v", urls)
+		}
+	}
+	if !found {
+		t.Error("no overdue reminder was written")
+	}
+}

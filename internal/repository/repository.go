@@ -101,6 +101,10 @@ type TaskRepository interface {
 	// the digest gatekeeper measures it (G14). It takes no locks.
 	CountAssigned(ctx context.Context, tenantID, assigneeID string, status domain.Status, priority domain.Priority) (int, error)
 
+	// Existing returns those of ids that name a task in the tenant. It takes
+	// no locks.
+	Existing(ctx context.Context, tenantID string, ids []uuid.UUID) ([]uuid.UUID, error)
+
 	// WorkspaceLabels returns up to limit labels used in the workspace, most
 	// used first, ties by name.
 	WorkspaceLabels(ctx context.Context, tenantID, workspaceID string, limit int) ([]string, error)
@@ -134,6 +138,28 @@ type WebhookDeliveryRepository interface {
 	// the callback was already processed.
 	Record(ctx context.Context, key string, at time.Time) (bool, error)
 	DeleteBefore(ctx context.Context, cutoff time.Time) (int, error)
+	// RecordCallback stores an AgentPulse callbackId for the tenant and
+	// reports whether it was new (AP-06). A concurrent insert of the same
+	// pair waits for the first and then reports false.
+	RecordCallback(ctx context.Context, tenantID, callbackID string, at time.Time) (bool, error)
+	// CallbackSeen reports whether the tenant's callbackId is stored.
+	CallbackSeen(ctx context.Context, tenantID, callbackID string) (bool, error)
+	// DeleteCallbacksBefore removes callbackIds received before cutoff.
+	DeleteCallbacksBefore(ctx context.Context, cutoff time.Time) (int, error)
+}
+
+// ContactRepository stores people's contact details (AP-05), one row per
+// tenant and user.
+type ContactRepository interface {
+	// Get returns the stored contact, or ErrNotFound.
+	Get(ctx context.Context, tenantID, userID string) (domain.Contact, error)
+	// GetForUpdate locks the person's contact until the transaction ends,
+	// first creating an empty one if there is none, so that concurrent
+	// changes to one person's contact run one after the other. It requires
+	// a transaction.
+	GetForUpdate(ctx context.Context, tenantID, userID string) (domain.Contact, error)
+	// Save writes the contact's fields and updated_at.
+	Save(ctx context.Context, c domain.Contact) error
 }
 
 // ErrJobMoved is returned by AgentJobRepository.Update when the job is no
@@ -175,6 +201,15 @@ type AgentJobRepository interface {
 	// execution_result holds a report. A brief skipped for having nothing to
 	// report does not count. ErrNotFound when there is none.
 	LatestBrief(ctx context.Context, tenantID, userID string) (*domain.AgentJob, error)
+	// LockBriefs serialises storing morning briefs with scrubbing them, in
+	// one tenant, until the transaction ends (AP-08): the runtime takes it
+	// shared to store a brief, a permanent task delete takes it exclusive.
+	// It requires a transaction. Take it before any task row lock.
+	LockBriefs(ctx context.Context, tenantID string, exclusive bool) error
+	// DeleteBriefsMentioning deletes the tenant's digest jobs whose stored
+	// report names the task (domain.MorningBrief.TaskIDs), with their run
+	// history, and returns their IDs.
+	DeleteBriefsMentioning(ctx context.Context, tenantID string, taskID uuid.UUID) ([]uuid.UUID, error)
 	InsertRun(ctx context.Context, r domain.AgentRun) error
 	// ListRuns returns a job's turns in order.
 	ListRuns(ctx context.Context, jobID uuid.UUID) ([]domain.AgentRun, error)
@@ -236,6 +271,26 @@ type OutboxRepository interface {
 	DeleteDispatchedBefore(ctx context.Context, cutoff time.Time, limit int) (int, error)
 	// Get returns one row by ID. Used by tests and, from M12, admin tools.
 	Get(ctx context.Context, id uuid.UUID) (domain.OutboxEntry, error)
+	// Coalesce keeps one row per idempotency key for state that AgentPulse
+	// replaces whole, such as a person's contact, where only the latest
+	// value matters. It inserts e, or folds e's payload (and trace) into
+	// the row that has its key. A row that is pending, dispatched, or dead
+	// returns to pending, due at e's NextAttemptAt, with no attempts and no
+	// error. A row being sent keeps its claim and only takes the payload;
+	// the relay sees the change when it settles the claim with
+	// MarkDispatchedIfUnchanged or MarkDeadLetterIfUnchanged. So one key
+	// is never sent by two workers at once, and every send reads the
+	// latest payload.
+	Coalesce(ctx context.Context, e domain.OutboxEntry) error
+	// MarkDispatchedIfUnchanged settles a successful send of a coalesced
+	// row: dispatched if the row still holds sent, or, when a newer payload
+	// was folded in during the send, pending again, due at at, with no
+	// attempts. requeued reports the latter.
+	MarkDispatchedIfUnchanged(ctx context.Context, id uuid.UUID, claimedAt time.Time, sent []byte, at time.Time) (requeued bool, err error)
+	// MarkDeadLetterIfUnchanged is MarkDeadLetter for a coalesced row: a
+	// newer payload folded in during the failed send is not dead with it,
+	// and returns to pending, due at at, with no attempts.
+	MarkDeadLetterIfUnchanged(ctx context.Context, id uuid.UUID, claimedAt time.Time, sent []byte, attempts int, lastErr string, at time.Time) (requeued bool, err error)
 	// DeleteForAggregate removes every row for one task, in any status.
 	DeleteForAggregate(ctx context.Context, tenantID string, aggregateID uuid.UUID) (int, error)
 	// ListForAggregate returns every row for one task, oldest first.

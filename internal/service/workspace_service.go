@@ -146,9 +146,13 @@ type DefaultRule struct {
 // DefaultRules returns the three rules from docs/archive/initial.md section 4.C.3,
 // scoped to one workspace through payload.workspaceId.
 //
-// One change from the source: the immediate-escalation rule matches manual
-// blocks only. Dependency blocks are applied by the system and are meant to be
-// quiet (docs/architecture.md, decision 23).
+// Changes from the source: the immediate-escalation rule matches manual
+// blocks only, since dependency blocks are applied by the system and are
+// meant to be quiet (docs/architecture.md, decision 23); and it is a critical
+// rule that also matches task.escalated (AP-03), so p1_critical tasks, manual
+// blocks, and blocker escalations break through quiet hours. Every entry of
+// the critical rule has a real condition besides the workspace, as AgentPulse
+// requires.
 func DefaultRules(tenantID, workspaceID string) []DefaultRule {
 	in := func(extra map[string]any) map[string]any {
 		m := map[string]any{"workspaceId": workspaceID}
@@ -160,10 +164,11 @@ func DefaultRules(tenantID, workspaceID string) []DefaultRule {
 	name := func(key string) string { return "taskify:" + workspaceID + ":" + key }
 	return []DefaultRule{
 		{Key: "critical-or-blocked", Rule: agentpulse.Rule{
-			TenantID: tenantID, Name: name("critical-or-blocked"),
+			TenantID: tenantID, Name: name("critical-or-blocked"), AttentionClass: agentpulse.AttentionCritical,
 			MatchAny: []agentpulse.RuleMatch{
 				{PayloadMatch: in(map[string]any{"priority": string(domain.PriorityCritical)})},
 				{PayloadMatch: in(map[string]any{"status": string(domain.StatusBlocked), "blockedReason": string(domain.BlockedManual)})},
+				{EventTypes: []string{domain.EventTaskEscalated}, PayloadMatch: in(nil)},
 			},
 			Channels:     []string{"slack", "email", "in_app"},
 			BypassDigest: true,

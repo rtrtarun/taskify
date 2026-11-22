@@ -40,7 +40,7 @@ func TestNewEscalationEvents(t *testing.T) {
 		t.Errorf("event = %+v", carol)
 	}
 
-	ns := carol.Notifications("https://x")
+	ns := carol.Notifications(Links{API: "https://x"})
 	if len(ns) != 1 {
 		t.Fatalf("notifications = %+v", ns)
 	}
@@ -65,7 +65,7 @@ func TestNewEscalationEvents(t *testing.T) {
 
 	// A task that is not blocked offers no unblock action.
 	task.Status, task.BlockedReason, task.StatusBeforeBlocked = StatusInProgress, nil, nil
-	n = NewEscalationEvents(task, job, []*Task{c1}, now)[0].Notifications("https://x")[0]
+	n = NewEscalationEvents(task, job, []*Task{c1}, now)[0].Notifications(Links{API: "https://x"})[0]
 	if _, ok := n.Payload["actionUrls"].(map[string]string)[ActionUnblock]; ok || n.Payload["actionLabels"] != nil ||
 		strings.Contains(n.Body, ActionUnblockLabel) {
 		t.Errorf("in-progress escalation = %+v", n)

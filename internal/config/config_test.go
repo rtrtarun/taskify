@@ -104,6 +104,8 @@ func TestInvalidValues(t *testing.T) {
 		{"PORT", "http"},
 		{"PORT", "70000"},
 		{"PUBLIC_BASE_URL", "taskify.example"},
+		{"APP_BASE_URL", "app.taskify.example"},
+		{"APP_BASE_URL", "mailto:app@taskify.example"},
 		{"AGENTPULSE_BASE_URL", "ftp://agentpulse"},
 		{"OUTBOX_WORKERS", "0"},
 		{"OUTBOX_POLL_INTERVAL", "fast"},
@@ -233,5 +235,20 @@ func TestAgentSettings(t *testing.T) {
 		if _, err := FromLookup(lookupFrom(bad)); err == nil || !strings.Contains(err.Error(), name) {
 			t.Errorf("%s=%q: %v", name, value, err)
 		}
+	}
+}
+
+// TestAppBaseURL is AP-10: APP_BASE_URL is optional and, when set, an
+// absolute URL without its trailing slash.
+func TestAppBaseURL(t *testing.T) {
+	c, err := FromLookup(lookupFrom(valid()))
+	if err != nil || c.AppBaseURL != "" {
+		t.Fatalf("unset: %q, %v", c.AppBaseURL, err)
+	}
+	env := valid()
+	env["APP_BASE_URL"] = " https://app.taskify.example/ "
+	c, err = FromLookup(lookupFrom(env))
+	if err != nil || c.AppBaseURL != "https://app.taskify.example" {
+		t.Fatalf("set: %q, %v", c.AppBaseURL, err)
 	}
 }

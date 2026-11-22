@@ -222,7 +222,7 @@ func TestMorningBrief(t *testing.T) {
 
 	t.Run("notification", func(t *testing.T) {
 		b.Text = "Start with the overdue report."
-		n := b.Notification(baseURL)
+		n := b.Notification(Links{API: baseURL})
 		if n.IdempotencyKey != "taskify:tenant_acme:"+job.ID.String()+":digest.morning_brief" || n.UserID != "usr_bob" ||
 			n.TenantID != "tenant_acme" || n.EventType != EventDigestMorningBrief || n.Source != "taskify" {
 			t.Errorf("envelope = %+v", n)
@@ -275,6 +275,26 @@ func TestMorningBrief(t *testing.T) {
 			if strings.Contains(k, "_") {
 				t.Errorf("payload key %q is not camelCase", k)
 			}
+		}
+		first, approval := p["topItems"].([]any)[0].(map[string]any), p["pendingApprovals"].([]any)[0].(map[string]any)
+		if first["url"] != baseURL+"/api/v1/tasks/"+overdue.ID.String() ||
+			approval["url"] != baseURL+"/api/v1/agent-jobs/"+approval["jobId"].(string) {
+			t.Errorf("item urls without the app: %v, %v", first["url"], approval["url"])
+		}
+	})
+
+	// AP-10: with APP_BASE_URL, the brief views the app's brief page, and
+	// each item, approvals included, opens its task there.
+	t.Run("notification with the app", func(t *testing.T) {
+		n := b.Notification(Links{API: baseURL, App: "https://app.test"})
+		if urls := n.Payload["actionUrls"].(map[string]string); urls[ActionView] != "https://app.test/brief" || len(urls) != 1 {
+			t.Errorf("actionUrls = %v", urls)
+		}
+		first := n.Payload["topItems"].([]map[string]any)[0]
+		approval := n.Payload["pendingApprovals"].([]map[string]any)[0]
+		if first["url"] != "https://app.test/tasks/"+overdue.ID.String() ||
+			approval["url"] != "https://app.test/tasks/"+approval["taskId"].(string) {
+			t.Errorf("item urls with the app: %v, %v", first["url"], approval["url"])
 		}
 	})
 

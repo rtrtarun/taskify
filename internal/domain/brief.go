@@ -66,7 +66,7 @@ func (in BriefInput) Since() time.Time { return in.At.Add(-24 * time.Hour) }
 // NewBriefJob returns the digest job that writes r's brief for the day of
 // at. The scheduler is the actor, so the job names no requester.
 func NewBriefJob(r BriefRecipient, at, now time.Time) (AgentJob, error) {
-	if r.UserID == "" || r.WorkspaceID == "" {
+	if !userIDOK(r.UserID) || r.WorkspaceID == "" {
 		return AgentJob{}, invalid("a brief needs a user and a workspace")
 	}
 	at = at.UTC()
@@ -89,7 +89,7 @@ func ParseBriefInput(raw json.RawMessage) (BriefInput, error) {
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return BriefInput{}, invalid("brief input: %v", err)
 	}
-	if in.Trigger != TriggerMorningBrief || in.UserID == "" || in.Date == "" || in.At.IsZero() {
+	if in.Trigger != TriggerMorningBrief || !userIDOK(in.UserID) || in.Date == "" || in.At.IsZero() {
 		return BriefInput{}, invalid("brief input is incomplete")
 	}
 	return in, nil
@@ -241,6 +241,39 @@ func NewMorningBrief(job *AgentJob, in BriefInput, open []*Task, approvals []Bri
 	return b
 }
 
+// TaskIDs returns every task the brief names, once each: its top items, the
+// tasks of its pending approvals, and its unblocked tasks. The model sees
+// nothing else, so its text can name no other task.
+func (b MorningBrief) TaskIDs() []uuid.UUID {
+	var out []uuid.UUID
+	add := func(id uuid.UUID) {
+		if !slices.Contains(out, id) {
+			out = append(out, id)
+		}
+	}
+	for _, t := range b.TopItems {
+		add(t.ID)
+	}
+	for _, a := range b.PendingApprovals {
+		add(a.TaskID)
+	}
+	for _, t := range b.UnblockedTasks {
+		add(t.ID)
+	}
+	return out
+}
+
+// BriefMentions reports whether a stored report, as kept in a digest job's
+// execution_result.report, names the task. An unreadable report names
+// nothing.
+func BriefMentions(report json.RawMessage, taskID uuid.UUID) bool {
+	var b MorningBrief
+	if len(report) == 0 || json.Unmarshal(report, &b) != nil {
+		return false
+	}
+	return slices.Contains(b.TaskIDs(), taskID)
+}
+
 // Empty reports whether the person has nothing to hear about: no open task
 // and no decision waiting. An empty brief is not sent.
 func (b MorningBrief) Empty() bool {
@@ -254,14 +287,16 @@ func (b MorningBrief) IdempotencyKey() string {
 }
 
 // Notification is the brief's /notify request: digest channel only, with
-// the model's text as payload.digestSummary, the text the digest shows.
-func (b MorningBrief) Notification(publicBaseURL string) Notification {
+// the model's text as payload.digestSummary, the text the digest shows. Its
+// view link, and each item's url, open the web app when APP_BASE_URL is
+// set (AP-10), and the API otherwise.
+func (b MorningBrief) Notification(links Links) Notification {
 	tasks := func(list []BriefTask) []map[string]any {
 		out := make([]map[string]any, len(list))
 		for i, t := range list {
 			m := map[string]any{"taskId": t.ID.String(), "title": t.Title, "workspaceId": t.WorkspaceID,
 				"status": string(t.Status), "priority": string(t.Priority), "overdue": t.Overdue,
-				"url": fmt.Sprintf("%s/api/v1/tasks/%s", publicBaseURL, t.ID)}
+				"url": links.taskOrAPI(t.ID)}
 			if t.DueAt != nil {
 				m["dueAt"] = t.DueAt.UTC().Format(time.RFC3339)
 			}
@@ -273,7 +308,7 @@ func (b MorningBrief) Notification(publicBaseURL string) Notification {
 	for i, a := range b.PendingApprovals {
 		approvals[i] = map[string]any{"jobId": a.JobID.String(), "agentType": a.AgentType, "taskId": a.TaskID.String(),
 			"taskTitle": a.TaskTitle, "proposedTools": append([]string{}, a.Tools...),
-			"url": fmt.Sprintf("%s/api/v1/agent-jobs/%s", publicBaseURL, a.JobID)}
+			"url": approvalLink(links, a)}
 	}
 	return Notification{
 		IdempotencyKey: b.IdempotencyKey(),
@@ -296,7 +331,17 @@ func (b MorningBrief) Notification(publicBaseURL string) Notification {
 			"pendingApprovalsTotal": b.PendingApprovalsTotal,
 			"unblockedTasks":        tasks(b.UnblockedTasks),
 			"unblockedTotal":        b.UnblockedTotal,
-			"actionUrls":            map[string]string{"view": publicBaseURL + "/api/v1/me/brief"},
+			// Not about one task: a plain link only.
+			"actionUrls": map[string]string{ActionView: links.BriefView()},
 		},
 	}
+}
+
+// approvalLink is where a pending approval in the brief leads: the task in
+// the web app, where the person decides, or the job in the API without it.
+func approvalLink(links Links, a BriefApproval) string {
+	if v := links.TaskView(a.TaskID); v != "" {
+		return v
+	}
+	return links.jobAPI(a.JobID)
 }

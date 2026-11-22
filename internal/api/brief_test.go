@@ -94,3 +94,45 @@ func TestMyBrief(t *testing.T) {
 		t.Errorf("no token: %d", r.status)
 	}
 }
+
+// TestMyBriefAfterPermanentDelete is AP-08 through HTTP: once a task is
+// permanently deleted, GET /me/brief returns an older brief that does not
+// name it, or 404.
+func TestMyBriefAfterPermanentDelete(t *testing.T) {
+	e := newEnv(t)
+	task := e.createTask(map[string]any{"title": "Acquire Initech quietly"})
+	id := task["id"].(string)
+	day := time.Date(2026, 11, 20, 8, 0, 0, 0, time.UTC)
+	older := e.brief(tenant, "usr_bob", day, "Monday's brief") // names another task
+	named := func(user string, day time.Time) {
+		job, _ := domain.NewBriefJob(domain.BriefRecipient{TenantID: tenant, UserID: user, WorkspaceID: "ws_core"}, day, day)
+		if _, err := e.b.AgentJobs.Insert(context.Background(), job); err != nil {
+			t.Fatal(err)
+		}
+		job.ExecutionResult, _ = json.Marshal(map[string]any{"turns": 1, "stopped": "final", "report": map[string]any{
+			"brief_date": day.Format(time.DateOnly), "user_id": user, "text": "Acquire Initech quietly first",
+			"top_items":         []map[string]any{{"task_id": id, "title": "Acquire Initech quietly"}},
+			"pending_approvals": []any{}, "unblocked_tasks": []any{}}})
+		prev := job.UpdatedAt
+		job.Status, job.UpdatedAt = domain.JobCompleted, day.Add(time.Minute)
+		if err := e.b.AgentJobs.Update(context.Background(), &job, domain.JobPending, prev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	named("usr_bob", day.Add(24*time.Hour))
+	named("usr_carol", day.Add(24*time.Hour))
+	carol := map[string]string{"Authorization": "Bearer " + token(t, tenant, "usr_carol", "member", time.Hour)}
+	if r := e.do(req{method: "GET", path: "/api/v1/me/brief"}); r.json["text"] != "Acquire Initech quietly first" {
+		t.Fatalf("before the delete: %s", r.raw)
+	}
+
+	if r := e.do(req{method: "DELETE", path: "/api/v1/tasks/" + id + "?permanent=true", as: "admin"}); r.status != 204 {
+		t.Fatalf("delete: %d %s", r.status, r.raw)
+	}
+	if r := e.do(req{method: "GET", path: "/api/v1/me/brief"}); r.status != 200 || r.json["job_id"] != older {
+		t.Errorf("bob after the delete: %d %s", r.status, r.raw)
+	}
+	if r := e.do(req{method: "GET", path: "/api/v1/me/brief", headers: carol}); r.status != 404 {
+		t.Errorf("carol after the delete: %d %s", r.status, r.raw)
+	}
+}

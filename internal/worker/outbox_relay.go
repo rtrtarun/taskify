@@ -22,9 +22,13 @@ import (
 	"github.com/rtrtarun/taskify/internal/repository"
 )
 
-// Notifier sends one /notify body. *agentpulse.Client implements it.
+// Notifier delivers outbox rows to AgentPulse. *agentpulse.Client implements
+// it.
 type Notifier interface {
+	// Notify sends one /v1/notify body.
 	Notify(ctx context.Context, body json.RawMessage) error
+	// PutContact replaces a user's contact (contact.update rows).
+	PutContact(ctx context.Context, tenantID, userID string, c agentpulse.Contact) error
 }
 
 // RelayConfig tunes the relay. Zero values take the documented defaults.
@@ -168,31 +172,47 @@ func (r *Relay) dispatch(ctx context.Context, e domain.OutboxEntry) {
 	defer span.End()
 
 	start := time.Now()
-	sendErr := r.notifier.Notify(ctx, e.Payload)
+	sendErr := r.send(ctx, e)
 	elapsed := time.Since(start)
 	now := r.cfg.Now()
 	log := r.cfg.Logger.With("outbox_id", e.ID, "event_type", e.EventType, "tenant_id", e.TenantID,
 		"trace_id", observability.TraceID(ctx))
 
+	// A contact row is coalesced (OutboxRepository.Coalesce): a newer
+	// contact may have been folded into it while this send was in flight,
+	// and must then be sent too, never dropped with this one.
+	coalesced := e.EventType == domain.EventContactUpdate
+	requeued := false
+	deadLetter := func(attempts int, msg string) error {
+		if coalesced {
+			var err error
+			requeued, err = r.repo.MarkDeadLetterIfUnchanged(ctx, e.ID, *e.ClaimedAt, e.Payload, attempts, msg, now)
+			return err
+		}
+		return r.repo.MarkDeadLetter(ctx, e.ID, *e.ClaimedAt, attempts, msg)
+	}
+
 	var err error
 	outcome := observability.OutcomeDispatched
 	switch {
+	case sendErr == nil && coalesced:
+		requeued, err = r.repo.MarkDispatchedIfUnchanged(ctx, e.ID, *e.ClaimedAt, e.Payload, now)
 	case sendErr == nil:
 		err = r.repo.MarkDispatched(ctx, e.ID, *e.ClaimedAt, now)
 	case errors.Is(sendErr, agentpulse.ErrCircuitOpen):
 		// AgentPulse was not contacted: this is not an attempt.
 		outcome = observability.OutcomeCircuitOpen
 		err = r.repo.Release(ctx, e.ID, *e.ClaimedAt, now.Add(r.cfg.OpenCircuitDelay))
-	case !agentpulse.Retryable(sendErr):
+	case errors.Is(sendErr, errMalformedRow) || !agentpulse.Retryable(sendErr):
 		outcome = observability.OutcomeDeadLetter
 		log.Error("outbox relay: rejected by AgentPulse, moved to dead letter", "error", sendErr)
-		err = r.repo.MarkDeadLetter(ctx, e.ID, *e.ClaimedAt, e.Attempts+1, sendErr.Error())
+		err = deadLetter(e.Attempts+1, sendErr.Error())
 	default:
 		attempts := e.Attempts + 1
 		if attempts >= e.MaxAttempts {
 			outcome = observability.OutcomeDeadLetter
 			log.Error("outbox relay: attempts exhausted, moved to dead letter", "attempts", attempts, "error", sendErr)
-			err = r.repo.MarkDeadLetter(ctx, e.ID, *e.ClaimedAt, attempts, sendErr.Error())
+			err = deadLetter(attempts, sendErr.Error())
 		} else {
 			outcome = observability.OutcomeRetry
 			log.Warn("outbox relay: send failed, will retry", "attempts", attempts, "error", sendErr)
@@ -207,10 +227,33 @@ func (r *Relay) dispatch(ctx context.Context, e domain.OutboxEntry) {
 	}
 	if err != nil {
 		// The lease reaper returns the row to pending; AgentPulse
-		// deduplicates the resend by idempotency key.
+		// deduplicates the resend by idempotency key, and a repeated
+		// contact replace changes nothing.
 		log.Error("outbox relay: could not record result", "error", err)
 	}
+	if requeued {
+		log.Info("outbox relay: a newer value arrived during the send; sending it next")
+		r.Wake()
+	}
 }
+
+// send delivers one row: a contact.update replaces the person's contact,
+// and every other row is a /v1/notify body.
+func (r *Relay) send(ctx context.Context, e domain.OutboxEntry) error {
+	if e.EventType != domain.EventContactUpdate {
+		return r.notifier.Notify(ctx, e.Payload)
+	}
+	var u domain.ContactUpdate
+	if err := json.Unmarshal(e.Payload, &u); err != nil || u.UserID == "" {
+		return errMalformedRow
+	}
+	return r.notifier.PutContact(ctx, e.TenantID, u.UserID,
+		agentpulse.Contact{Email: u.Email, SlackUserID: u.SlackUserID, Phone: u.Phone})
+}
+
+// errMalformedRow is a row the relay cannot send. Retrying cannot help, so
+// the row goes to dead letter at once.
+var errMalformedRow = errors.New("outbox relay: the row's payload cannot be read")
 
 // reapLeases periodically returns rows abandoned in processing to pending.
 func (r *Relay) reapLeases(ctx context.Context) {

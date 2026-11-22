@@ -69,12 +69,29 @@ func TestWorkspaceCreateBootstrapsRules(t *testing.T) {
 		if len(sent) != 3 {
 			t.Fatalf("AgentPulse received %d rules, want 3", len(sent))
 		}
-		for _, r := range sent {
-			for _, m := range r["matchAny"].([]any) {
-				pm := m.(map[string]any)["payloadMatch"].(map[string]any)
-				if pm["workspaceId"] != "ws_new" {
-					t.Errorf("rule %v is not scoped to the workspace", r["name"])
-				}
+		// The exact bodies (AP-03). The critical rule makes p1_critical tasks,
+		// manual blocks, and escalations critical, each entry with a real
+		// condition besides the workspace.
+		want := []string{
+			`{"tenantId":"tenant_acme","name":"taskify:ws_new:critical-or-blocked","attentionClass":"critical","matchAny":[` +
+				`{"payloadMatch":{"priority":"p1_critical","workspaceId":"ws_new"}},` +
+				`{"payloadMatch":{"blockedReason":"manual","status":"blocked","workspaceId":"ws_new"}},` +
+				`{"eventTypes":["task.escalated"],"payloadMatch":{"workspaceId":"ws_new"}}],` +
+				`"channels":["slack","email","in_app"],"bypassDigest":true}`,
+			`{"tenantId":"tenant_acme","name":"taskify:ws_new:assignments-and-mentions","matchAny":[` +
+				`{"eventTypes":["task.assigned"],"payloadMatch":{"workspaceId":"ws_new"}},` +
+				`{"eventTypes":["task.comment_added"],"payloadMatch":{"isMentioned":true,"workspaceId":"ws_new"}}],` +
+				`"channels":["in_app","email"]}`,
+			`{"tenantId":"tenant_acme","name":"taskify:ws_new:low-priority-digest","matchAny":[` +
+				`{"payloadMatch":{"priority":"p4_low","workspaceId":"ws_new"}}],"channels":["digest"]}`,
+		}
+		reqs := it.mock.RequestsTo("POST", "/v1/rules")
+		if len(reqs) != len(want) {
+			t.Fatalf("POST /v1/rules requests = %d, want %d", len(reqs), len(want))
+		}
+		for i, r := range reqs {
+			if string(r.Body) != want[i] {
+				t.Errorf("rule %d body:\n got %s\nwant %s", i, r.Body, want[i])
 			}
 		}
 
@@ -172,6 +189,7 @@ func TestWorkspaceRename(t *testing.T) {
 func TestFeedback(t *testing.T) {
 	eachIntegration(t, func(t *testing.T, it *integration) {
 		task := it.create(t, nil)
+		it.mock.SeedNotification("ntf_1", map[string]any{"tenantId": tenant, "userId": bob.ID})
 		in := FeedbackInput{TenantID: tenant, UserID: bob.ID, TaskID: task.ID, NotificationID: "ntf_1", Signal: SignalSnoozed, Duration: "2h"}
 		if err := it.feedback.Record(ctx, in); err != nil {
 			t.Fatal(err)
@@ -183,6 +201,15 @@ func TestFeedback(t *testing.T) {
 		}
 		if stored, _ := it.b.Tasks.Get(ctx, tenant, task.ID); stored.Version != 1 {
 			t.Error("feedback changed the task")
+		}
+		// AP-12: without a notification, notificationId is left out and the
+		// task names what the signal is about.
+		if err := it.feedback.Record(ctx, FeedbackInput{TenantID: tenant, UserID: bob.ID, TaskID: task.ID, Signal: SignalDismissed}); err != nil {
+			t.Fatal(err)
+		}
+		sent = it.mock.Feedback()
+		if _, named := sent[len(sent)-1]["notificationId"]; named || len(sent) != 2 || sent[1]["taskId"] != task.ID.String() {
+			t.Errorf("sent without a notification = %v", sent)
 		}
 
 		for name, bad := range map[string]FeedbackInput{
@@ -202,7 +229,7 @@ func TestFeedback(t *testing.T) {
 		if err := it.feedback.Record(ctx, other); !errors.Is(err, domain.ErrNotFound) {
 			t.Errorf("another tenant's task: error = %v", err)
 		}
-		it.mock.FailNext("POST", "/feedback", http.StatusServiceUnavailable, 1)
+		it.mock.FailNext("POST", "/v1/feedback", http.StatusServiceUnavailable, 1)
 		in.Signal, in.Duration = SignalActed, ""
 		if err := it.feedback.Record(ctx, in); !agentpulse.IsUpstream(err) {
 			t.Errorf("AgentPulse down: error = %v", err)
@@ -213,6 +240,7 @@ func TestFeedback(t *testing.T) {
 func TestWebhookComplete(t *testing.T) {
 	eachIntegration(t, func(t *testing.T, it *integration) {
 		task := it.create(t, nil)
+		it.mock.SeedNotification("ntf_9", map[string]any{"tenantId": tenant, "userId": bob.ID})
 		cb := Callback{Key: "sig-1", Action: ActionComplete, TenantID: tenant, UserID: bob.ID, TaskID: task.ID, NotificationID: "ntf_9"}
 
 		dup, err := it.webhooks.Handle(ctx, cb)
@@ -244,6 +272,7 @@ func TestWebhookComplete(t *testing.T) {
 func TestWebhookUnblock(t *testing.T) {
 	eachIntegration(t, func(t *testing.T, it *integration) {
 		// A manual block and a dependency block are both lifted.
+		it.mock.SeedNotification("ntf_u", map[string]any{"tenantId": tenant, "userId": "usr_dave"})
 		manual := it.create(t, nil)
 		it.setStatus(t, manual, domain.StatusBlocked)
 		dependent := it.create(t, nil)
@@ -319,7 +348,7 @@ func TestWebhookFailuresAndValidation(t *testing.T) {
 		}
 
 		// Feedback failing does not undo or fail the action.
-		it.mock.FailNext("POST", "/feedback", http.StatusServiceUnavailable, 1)
+		it.mock.FailNext("POST", "/v1/feedback", http.StatusServiceUnavailable, 1)
 		dup, err := it.webhooks.Handle(ctx, Callback{Key: "sig-y", Action: ActionComplete, TenantID: tenant, UserID: bob.ID, TaskID: task.ID})
 		if err != nil || dup {
 			t.Fatalf("Handle with AgentPulse feedback down = %v, %v", dup, err)

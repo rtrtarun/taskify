@@ -60,18 +60,17 @@ func (w *Workspace) Rename(name string, now time.Time) error {
 // NewWorkspace validates and returns a workspace.
 func NewWorkspace(tenantID, id, name string, now time.Time) (Workspace, error) {
 	w := Workspace{
-		TenantID:      strings.TrimSpace(tenantID),
+		TenantID:      tenantID, // never trimmed (AP-04)
 		ID:            strings.TrimSpace(id),
 		Name:          strings.TrimSpace(name),
 		AgentSettings: DefaultAgentSettings(),
 		CreatedAt:     now.UTC(),
 		UpdatedAt:     now.UTC(),
 	}
+	if err := ValidateTenantID(w.TenantID); err != nil {
+		return Workspace{}, err
+	}
 	switch {
-	case w.TenantID == "":
-		return Workspace{}, invalid("tenant_id is required")
-	case len(w.TenantID) > maxTenantLen:
-		return Workspace{}, invalid("tenant_id must be at most %d characters", maxTenantLen)
 	case !workspaceIDRe.MatchString(w.ID):
 		return Workspace{}, invalid("workspace id must be 1 to 64 letters, digits, underscores, or hyphens")
 	case w.Name == "":

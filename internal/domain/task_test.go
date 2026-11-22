@@ -61,7 +61,7 @@ func eventTypes(events []Event) []string {
 
 func TestNewTask(t *testing.T) {
 	task, events, err := NewTask(NewTaskInput{
-		TenantID:    " tenant_acme ",
+		TenantID:    "tenant_acme",
 		WorkspaceID: "ws_core",
 		Title:       "  Fix checkout crash  ",
 		AssigneeID:  bob.ID,
@@ -131,6 +131,9 @@ func TestNewTaskValidation(t *testing.T) {
 	}{
 		{"missing tenant", func(in *NewTaskInput) { in.TenantID = " " }, alice},
 		{"long tenant", func(in *NewTaskInput) { in.TenantID = strings.Repeat("t", 65) }, alice},
+		{"padded tenant", func(in *NewTaskInput) { in.TenantID = " tenant_acme " }, alice},
+		{"reserved tenant", func(in *NewTaskInput) { in.TenantID = "default" }, alice},
+		{"tenant with a space", func(in *NewTaskInput) { in.TenantID = "tenant acme" }, alice},
 		{"missing workspace", func(in *NewTaskInput) { in.WorkspaceID = "" }, alice},
 		{"long workspace", func(in *NewTaskInput) { in.WorkspaceID = strings.Repeat("w", 65) }, alice},
 		{"missing title", func(in *NewTaskInput) { in.Title = "   " }, alice},

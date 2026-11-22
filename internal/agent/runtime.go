@@ -70,9 +70,11 @@ type Config struct {
 	Logger        *slog.Logger
 	// Metrics may be nil.
 	Metrics *observability.Metrics
-	// PublicBaseURL and OutboxMaxAttempts shape approval notifications, as
-	// for TaskService.
+	// PublicBaseURL, AppBaseURL, and OutboxMaxAttempts shape approval
+	// notifications and reports, as for TaskService. AppBaseURL is empty
+	// when APP_BASE_URL is not set (AP-10).
 	PublicBaseURL     string
+	AppBaseURL        string
 	OutboxMaxAttempts int
 	// Wake is called after an approval request is committed, so the relay
 	// sends it at once. Nil does nothing.
@@ -119,6 +121,11 @@ func (c *Config) defaults() {
 	if c.Logger == nil {
 		c.Logger = slog.Default()
 	}
+}
+
+// links are the addresses notifications link to.
+func (c *Config) links() domain.Links {
+	return domain.Links{API: c.PublicBaseURL, App: c.AppBaseURL}
 }
 
 // backoff returns the wait after failed attempt n.
@@ -427,7 +434,7 @@ func (ru *run) deliver() error {
 	if ru.stopped != stoppedFinal || strings.TrimSpace(ru.final) == "" {
 		return errors.New("the model wrote no report")
 	}
-	result, notes, err := ru.report.Deliver(ru.final, ru.rt.cfg.PublicBaseURL)
+	result, notes, err := ru.report.Deliver(ru.final, ru.rt.cfg.links())
 	if err != nil {
 		return permanent("report: %v", err)
 	}
@@ -658,6 +665,7 @@ func (r *Runtime) finish(ctx context.Context, ru *run, runErr error) (outcome st
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	job, log, now := ru.job, ru.log, r.now()
+	before := *job // the job as claimed, should the result have to be redone
 	var perm *permanentError
 	retryIn := func(d time.Duration) {
 		at := now.Add(d)
@@ -731,6 +739,13 @@ func (r *Runtime) finish(ctx context.Context, ru *run, runErr error) (outcome st
 	job.ExecutionResult, _ = json.Marshal(result)
 
 	notified, err := r.save(wctx, ctx, ru)
+	if errors.Is(err, errReportStale) && runErr == nil {
+		// Nothing was written. Run again, as after a version conflict, so
+		// the report is gathered without the deleted task.
+		log.Info("agent runtime: a task the report names was deleted; gathering it again")
+		*job = before
+		return r.finish(ctx, ru, errReportStale)
+	}
 	if err != nil {
 		if errors.Is(err, repository.ErrJobMoved) || errors.Is(err, domain.ErrNotFound) {
 			log.Warn("agent runtime: job was taken over or deleted; result dropped")
@@ -774,6 +789,21 @@ type Reporter interface {
 	Gather(ctx context.Context, job *domain.AgentJob) (Report, error)
 }
 
+// TaskNamer is a Report that names tasks, such as a morning brief. The
+// runtime stores and sends it only if every task it names still exists,
+// checked under the tenant's brief lock (repository.AgentJobRepository
+// LockBriefs), which a permanent task delete takes exclusively (AP-08). A
+// report gathered before a delete and saved after it is therefore gathered
+// again instead of stored, and one saved first is found and scrubbed by the
+// delete.
+type TaskNamer interface {
+	TaskIDs() []uuid.UUID
+}
+
+// errReportStale is a report naming a task that was deleted while the run
+// wrote it. It is a conflict, retried like one.
+var errReportStale = fmt.Errorf("%w: a task the report names was deleted", domain.ErrVersionConflict)
+
 // Report is the facts of one Reporter run.
 type Report interface {
 	// Messages opens the conversation with the model.
@@ -783,7 +813,7 @@ type Report interface {
 	// no calls: the runtime writes both in the transaction that completes
 	// the job, so a report is stored and sent once, and never by a run that
 	// failed or will be retried.
-	Deliver(text, publicBaseURL string) (json.RawMessage, []domain.Notification, error)
+	Deliver(text string, links domain.Links) (json.RawMessage, []domain.Notification, error)
 }
 
 // save writes the job's next status, and reports whether it also wrote
@@ -796,6 +826,9 @@ func (r *Runtime) save(ctx, traceCtx context.Context, ru *run) (notified bool, e
 	job := ru.job
 	err = r.deps.Tx.WithTx(ctx, func(ctx context.Context) error {
 		notified = false // a retried transaction starts again
+		if err := r.checkNamedTasks(ctx, ru); err != nil {
+			return err
+		}
 		if err := r.deps.Jobs.Update(ctx, job, domain.JobRunning, ru.lease); err != nil {
 			return err
 		}
@@ -821,6 +854,33 @@ func (r *Runtime) save(ctx, traceCtx context.Context, ru *run) (notified bool, e
 		return err
 	})
 	return notified, err
+}
+
+// checkNamedTasks returns errReportStale when the report about to be stored
+// names a task that no longer exists. It takes the tenant's brief lock
+// shared first, so a permanent delete either finished before the check (and
+// the task is gone) or starts after this transaction commits (and finds the
+// stored report).
+func (r *Runtime) checkNamedTasks(ctx context.Context, ru *run) error {
+	namer, ok := ru.report.(TaskNamer)
+	if !ok || ru.reported == nil || ru.job.Status != domain.JobCompleted {
+		return nil
+	}
+	ids := namer.TaskIDs()
+	if len(ids) == 0 {
+		return nil
+	}
+	if err := r.deps.Jobs.LockBriefs(ctx, ru.job.TenantID, false); err != nil {
+		return err
+	}
+	found, err := r.deps.Tasks.Existing(ctx, ru.job.TenantID, ids)
+	if err != nil {
+		return err
+	}
+	if len(found) < len(ids) {
+		return errReportStale
+	}
+	return nil
 }
 
 // taskEvents returns the outbox rows a job about a task writes as it ends:
@@ -852,7 +912,7 @@ func (r *Runtime) taskEvents(ctx context.Context, ru *run) ([]domain.OutboxEntry
 		}
 		events = append(events, more...)
 	}
-	return domain.NewOutboxEntries(events, r.cfg.PublicBaseURL, r.cfg.OutboxMaxAttempts, job.UpdatedAt)
+	return domain.NewOutboxEntries(events, r.cfg.links(), r.cfg.OutboxMaxAttempts, job.UpdatedAt)
 }
 
 // outcomeOf is the metric outcome of a run that ended with the job in status.

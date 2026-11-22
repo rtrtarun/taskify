@@ -42,10 +42,10 @@ type OutboxEntry struct {
 
 // NewOutboxEntries turns events into pending outbox rows, one per event per
 // recipient. An event with no recipients produces no rows.
-func NewOutboxEntries(events []Event, publicBaseURL string, maxAttempts int, now time.Time) ([]OutboxEntry, error) {
+func NewOutboxEntries(events []Event, links Links, maxAttempts int, now time.Time) ([]OutboxEntry, error) {
 	var out []OutboxEntry
 	for _, e := range events {
-		entries, err := NewNotificationEntries(e.Notifications(publicBaseURL), e.Task.ID, maxAttempts, now)
+		entries, err := NewNotificationEntries(e.Notifications(links), e.Task.ID, maxAttempts, now)
 		if err != nil {
 			return nil, err
 		}

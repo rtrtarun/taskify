@@ -42,12 +42,20 @@ type Deps struct {
 
 // Config holds the settings that shape outbox rows.
 type Config struct {
-	PublicBaseURL     string
+	PublicBaseURL string
+	// AppBaseURL is the web app's address (APP_BASE_URL), or empty: with
+	// it, notifications link to the task's page there (AP-10).
+	AppBaseURL        string
 	OutboxMaxAttempts int
 	// DigestLoadThreshold is how many in_progress p1_critical tasks make an
 	// assignee overloaded, so that a non-critical assignment is held for
 	// their digest (DIGEST_LOAD_THRESHOLD, default 3, G14).
 	DigestLoadThreshold int
+}
+
+// links are the addresses notifications link to.
+func (c Config) links() domain.Links {
+	return domain.Links{API: c.PublicBaseURL, App: c.AppBaseURL}
 }
 
 // DefaultDigestLoadThreshold is the default of Config.DigestLoadThreshold.
@@ -219,10 +227,25 @@ func (s *TaskService) SnoozeTask(ctx context.Context, actor domain.Actor, tenant
 // blocker was this task is unblocked. The check runs after the delete, in the
 // same transaction, so the deleted task no longer counts as an open blocker.
 // Agent jobs for the task go with it through ON DELETE CASCADE.
+//
+// Morning briefs that name the task are deleted too, in the same
+// transaction (AP-08): the digest jobs whose stored report lists it, and
+// every outbox row of theirs, so GET /me/brief falls back to an older brief
+// or 404 and no pending notification names the task. The tenant's brief
+// lock is taken first, exclusive: a brief being stored when the delete
+// starts commits first and is then found and deleted, and one stored after
+// it finds the task gone and is gathered again (agent.TaskNamer).
 func (s *TaskService) DeleteTask(ctx context.Context, tenantID string, id uuid.UUID) error {
 	now := s.clock()
 	var events []domain.Event
 	err := s.deps.Tx.WithTx(ctx, func(ctx context.Context) error {
+		if s.deps.AgentJobs != nil {
+			// Before any task lock, so it cannot deadlock with the
+			// dependents locked below.
+			if err := s.deps.AgentJobs.LockBriefs(ctx, tenantID, true); err != nil {
+				return err
+			}
+		}
 		task, err := s.deps.Tasks.GetForUpdate(ctx, tenantID, id)
 		if err != nil {
 			return err
@@ -233,6 +256,17 @@ func (s *TaskService) DeleteTask(ctx context.Context, tenantID string, id uuid.U
 		}
 		if _, err := s.deps.Outbox.DeleteForAggregate(ctx, tenantID, id); err != nil {
 			return err
+		}
+		if s.deps.AgentJobs != nil {
+			briefs, err := s.deps.AgentJobs.DeleteBriefsMentioning(ctx, tenantID, id)
+			if err != nil {
+				return err
+			}
+			for _, job := range briefs {
+				if _, err := s.deps.Outbox.DeleteForAggregate(ctx, tenantID, job); err != nil {
+					return err
+				}
+			}
 		}
 		if err := s.deps.Tasks.Delete(ctx, tenantID, id); err != nil {
 			return err
@@ -393,7 +427,7 @@ func (s *TaskService) emit(ctx context.Context, events []domain.Event, now time.
 	if err := s.deferForLoad(ctx, events); err != nil {
 		return err
 	}
-	entries, err := domain.NewOutboxEntries(events, s.cfg.PublicBaseURL, s.cfg.OutboxMaxAttempts, now)
+	entries, err := domain.NewOutboxEntries(events, s.cfg.links(), s.cfg.OutboxMaxAttempts, now)
 	if err != nil {
 		return err
 	}

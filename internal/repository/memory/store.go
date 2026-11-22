@@ -41,6 +41,8 @@ type state struct {
 	jobs       map[uuid.UUID]*domain.AgentJob
 	jobKeys    map[string]uuid.UUID
 	runs       []domain.AgentRun
+	contacts   map[contactKey]domain.Contact
+	callbacks  map[callbackKey]time.Time
 }
 
 type ruleKey struct{ tenant, workspace, key string }
@@ -59,6 +61,8 @@ func New() *Store {
 		deps:       map[depKey]domain.Dependency{},
 		jobs:       map[uuid.UUID]*domain.AgentJob{},
 		jobKeys:    map[string]uuid.UUID{},
+		contacts:   map[contactKey]domain.Contact{},
+		callbacks:  map[callbackKey]time.Time{},
 	}}
 }
 
@@ -112,6 +116,8 @@ func (s state) clone() state {
 		jobs:       make(map[uuid.UUID]*domain.AgentJob, len(s.jobs)),
 		jobKeys:    maps.Clone(s.jobKeys),
 		runs:       slices.Clone(s.runs),
+		contacts:   maps.Clone(s.contacts),
+		callbacks:  maps.Clone(s.callbacks),
 	}
 	for id, j := range s.jobs {
 		c.jobs[id] = copyJob(j)
