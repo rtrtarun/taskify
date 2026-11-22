@@ -12,9 +12,10 @@ info:
 
     Conventions:
 
-    - Field names are snake_case. The two exceptions are bodies AgentPulse
-      writes and Taskify passes through: the webhook callback, and the
-      learning suggestions relayed by the admin proxy, which are camelCase.
+    - Field names are snake_case. The exceptions are AgentPulse's own
+      bodies, in camelCase: the webhook callback it sends, and the
+      `payload` of an outbox row in the admin outbox list, which is what
+      Taskify sends it.
     - Timestamps are RFC 3339 in UTC with a `Z` suffix. IDs are UUIDs in
       lower case, except workspace IDs, which are names.
     - Clients ignore response fields they do not know. The server sends no
@@ -946,7 +947,9 @@ paths:
       tags: [admin]
       operationId: listLearningSuggestions
       summary: The tenant's learning suggestions, from AgentPulse (admin)
-      description: AgentPulse's response body, relayed unchanged (camelCase).
+      description: |
+        Read from AgentPulse and returned in snake_case, like every
+        Taskify response; fields the contract does not list are left out.
       responses:
         "200":
           description: AgentPulse's list.
@@ -985,8 +988,8 @@ paths:
       summary: Approve or reject a learning suggestion (admin)
       description: |
         Decided at AgentPulse in the caller's tenant, as the caller. Another
-        tenant's suggestion is `404`; one already decided, `409`. The body is
-        AgentPulse's, relayed unchanged.
+        tenant's suggestion is `404`; one already decided, `409`. The
+        response is the decided suggestion, in snake_case.
       requestBody:
         required: true
         content:
@@ -995,7 +998,7 @@ paths:
               $ref: "#/components/schemas/LearningDecision"
       responses:
         "200":
-          description: The decided suggestion, as AgentPulse returns it.
+          description: The decided suggestion.
           content:
             application/json:
               schema:
@@ -1947,8 +1950,7 @@ components:
 
     LearningSuggestionList:
       type: object
-      description: AgentPulse's body for `GET /v1/learning/suggestions`, relayed unchanged.
-      additionalProperties: true
+      required: [suggestions]
       properties:
         suggestions:
           type: array
@@ -1956,17 +1958,48 @@ components:
             $ref: "#/components/schemas/LearningSuggestion"
     LearningSuggestion:
       type: object
-      description: One AgentPulse learning suggestion, relayed unchanged.
-      additionalProperties: true
+      description: |
+        One of the tenant's learning suggestions, as AgentPulse holds it,
+        with its fields in snake_case. Fields AgentPulse adds that this
+        schema does not list are left out.
+      required: [id, status, rule_id, event_pattern, current_adjustment, proposed_adjustment, signal_count, rationale]
       properties:
         id:
           type: string
+          description: AgentPulse's ID for the suggestion.
         status:
           type: string
-          description: Such as `PENDING_APPROVAL`, `APPROVED`, or `REJECTED`.
-        suggestion:
+          description: AgentPulse's status, such as `PENDING_APPROVAL`, `APPROVED`, or `REJECTED`.
+        rule_id:
+          type: string
+          nullable: true
+          description: The rule the suggestion adjusts, or null when it names an event pattern.
+        event_pattern:
           type: object
-          additionalProperties: true
+          nullable: true
+          description: The notifications the suggestion adjusts, or null when it names a rule.
+          required: [event_type, label]
+          properties:
+            event_type:
+              type: string
+            label:
+              type: string
+              nullable: true
+              description: One payload label, or null for the notifications that carry none.
+        current_adjustment:
+          type: integer
+          minimum: -20
+          maximum: 20
+        proposed_adjustment:
+          type: integer
+          minimum: -20
+          maximum: 20
+          description: The score adjustment AgentPulse applies to the scope once an admin approves.
+        signal_count:
+          type: integer
+          minimum: 0
+        rationale:
+          type: string
     LearningDecision:
       type: object
       required: [decision]

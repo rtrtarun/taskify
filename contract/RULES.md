@@ -8,7 +8,7 @@ The rules a schema cannot express. [openapi.yaml](openapi.yaml) is normative for
 | --- | --- | --- |
 | R1.1 Timestamps | RFC 3339 in UTC with a `Z` suffix, such as `2026-11-22T09:00:00Z`, with up to six fractional digits. A request may send any offset; the server stores and returns UTC. | `tasks/create.json`, `tasks/update-clears-fields.json` |
 | R1.2 IDs | Task, comment, and agent job IDs are UUIDs in lower-case hyphenated form (version 7 for new rows). Workspace IDs are names chosen by an admin. | `tasks/create.json` |
-| R1.3 Field names | snake_case in Taskify's API. The webhook callback, the relayed learning suggestions, and outbox payloads are AgentPulse's, in camelCase. | `webhooks/complete.json`, `events/task-created.json` |
+| R1.3 Field names | snake_case in Taskify's API, the admin learning suggestions included. The webhook callback and outbox payloads (the bodies Taskify sends AgentPulse, also shown in the admin outbox list) are AgentPulse's, in camelCase. | `webhooks/complete.json`, `events/task-created.json` |
 | R1.4 Unknown fields | Clients ignore response fields they do not know. The server refuses unknown request fields with `400 invalid_request`, except in the webhook callback, which AgentPulse may extend. | `tasks/validation.json` |
 | R1.5 Bodies | One JSON object of at most 1 MiB; a larger body is `413`. | `tasks/validation.json` |
 

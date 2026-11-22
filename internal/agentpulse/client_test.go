@@ -135,14 +135,14 @@ func TestOtherCalls(t *testing.T) {
 	last("GET", "/v1/rules", "tenantId=t", "")
 
 	sid := mock.SeedSuggestion(map[string]any{"tenantId": "t.a-1", "proposedAdjustment": 5.0})
-	raw, err = c.ListLearningSuggestions(ctx, "t.a-1")
-	if err != nil || !strings.Contains(string(raw), sid) {
-		t.Fatalf("ListLearningSuggestions = %s, %v", raw, err)
+	listed, err := c.LearningSuggestions(ctx, "t.a-1")
+	if err != nil || len(listed) != 1 || listed[0].ID != sid || listed[0].Body.ProposedAdjustment != 5 {
+		t.Fatalf("LearningSuggestions = %+v, %v", listed, err)
 	}
 	last("GET", "/v1/learning/suggestions", "tenantId=t.a-1", "")
-	raw, err = c.ReviewLearningSuggestion(ctx, "t.a-1", sid, "approve", "usr_admin")
-	if err != nil || !strings.Contains(string(raw), "APPROVED") {
-		t.Fatalf("ReviewLearningSuggestion = %s, %v", raw, err)
+	decided, err := c.ReviewLearningSuggestion(ctx, "t.a-1", sid, "approve", "usr_admin")
+	if err != nil || decided.ID != sid || decided.Status != SuggestionApproved || decided.Body.ProposedAdjustment != 5 {
+		t.Fatalf("ReviewLearningSuggestion = %+v, %v", decided, err)
 	}
 	last("POST", "/v1/learning/suggestions/"+sid+"/decision", "", `{"decidedBy":"usr_admin","decision":"approve","tenantId":"t.a-1"}`)
 	if _, err := c.ReviewLearningSuggestion(ctx, "t.a-1", "missing", "approve", "u"); err == nil {

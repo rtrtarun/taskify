@@ -10,6 +10,8 @@
     {"request": {"method": "POST", "path": "/api/v1/admin/outbox/{{random_uuid}}/replay"}, "expect": {"status": 403, "error_code": "forbidden"}},
     {"name": "an admin may", "as": "admin", "request": {"method": "GET", "path": "/api/v1/workspaces/{{workspace}}/settings"},
       "expect": {"status": 200, "body": {"id": "{{workspace}}", "agent_settings": {"agents_enabled": false, "require_hitl_for_all": true}}}},
+    {"name": "an admin reads the learning suggestions, in snake_case", "as": "admin", "request": {"method": "GET", "path": "/api/v1/admin/learning/suggestions"},
+      "expect": {"status": 200, "body": {"suggestions": []}}},
     {"name": "bootstrap again changes nothing", "as": "admin", "request": {"method": "POST", "path": "/api/v1/workspaces/{{workspace}}/bootstrap-rules"},
       "expect": {"status": 200, "body": {"rules": {"$length": 3}}}}
   ]

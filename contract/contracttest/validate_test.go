@@ -48,8 +48,11 @@ func TestValidatorRefusesWhatTheContractDoesNotDescribe(t *testing.T) {
 			204, json, `{}`, false},
 		"empty 204": {httptest.NewRequest("DELETE", "/api/v1/tasks/0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b?permanent=true", nil),
 			204, http.Header{}, ``, true},
-		"open relay body": {httptest.NewRequest("GET", "/api/v1/admin/learning/suggestions", nil), 200, json,
-			`{"suggestions":[{"id":"s1","status":"PENDING_APPROVAL","suggestion":{"x":1},"extra":true}],"more":1}`, true},
+		"suggestions": {httptest.NewRequest("GET", "/api/v1/admin/learning/suggestions", nil), 200, json,
+			`{"suggestions":[{"id":"s1","status":"PENDING_APPROVAL","rule_id":null,"event_pattern":{"event_type":"task.updated","label":null},` +
+				`"current_adjustment":0,"proposed_adjustment":-5,"signal_count":7,"rationale":"r"}]}`, true},
+		"camelCase suggestions": {httptest.NewRequest("GET", "/api/v1/admin/learning/suggestions", nil), 200, json,
+			`{"suggestions":[{"id":"s1","status":"PENDING_APPROVAL","suggestion":{"proposedAdjustment":-5}}]}`, false},
 	} {
 		err := v.Check(tc.req, tc.status, tc.header, []byte(tc.body))
 		if tc.ok && err != nil {

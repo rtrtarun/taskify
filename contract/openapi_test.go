@@ -25,7 +25,7 @@ func TestOpenAPILint(t *testing.T) {
 	}
 	snake := regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 	camelBodies := map[string]bool{ // AgentPulse's bodies, passed through
-		"WebhookCallback": true, "LearningSuggestionList": true, "LearningSuggestion": true,
+		"WebhookCallback": true,
 	}
 	errorSchema := doc.Components.Schemas["Error"]
 	if errorSchema == nil {
