@@ -29,6 +29,10 @@ func (h *handlers) adminRoutes(r chi.Router) {
 	r.Post("/workspaces/{id}/bootstrap-rules", h.bootstrapRules)
 	r.Get("/admin/learning/suggestions", h.listSuggestions)
 	r.Post("/admin/learning/suggestions/{id}/decision", h.decideSuggestion)
+	if h.outbox != nil {
+		r.Get("/admin/outbox", h.listOutbox)
+		r.Post("/admin/outbox/{id}/replay", h.replayOutbox)
+	}
 }
 
 func adminOnly(h *handlers) func(http.Handler) http.Handler {

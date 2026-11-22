@@ -97,6 +97,8 @@ func classify(err error) *httpError {
 		return newError(http.StatusConflict, CodeNotAwaitingApproval, err.Error())
 	case errors.Is(err, service.ErrAgentDisabled):
 		return newError(http.StatusConflict, CodeAgentDisabled, err.Error())
+	case errors.Is(err, domain.ErrNotDeadLetter):
+		return newError(http.StatusConflict, CodeNotDeadLetter, err.Error())
 	case errors.Is(err, domain.ErrAlreadyExists):
 		return newError(http.StatusConflict, CodeAlreadyExists, err.Error())
 	case errors.Is(err, domain.ErrInvalidStateTransition):

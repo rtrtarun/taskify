@@ -24,7 +24,9 @@ type Deps struct {
 	Contacts *service.ContactService
 	// AgentJobs serves /agent-jobs. Nil leaves those routes out.
 	AgentJobs *service.AgentJobService
-	Learning  LearningClient
+	// Outbox serves /admin/outbox. Nil leaves those routes out.
+	Outbox   *service.OutboxService
+	Learning LearningClient
 
 	Auth          AuthConfig
 	WebhookSecret string
@@ -45,6 +47,7 @@ type handlers struct {
 	feedback      *service.FeedbackService
 	webhooks      *service.WebhookService
 	agentJobs     *service.AgentJobService
+	outbox        *service.OutboxService
 	contacts      *service.ContactService
 	learning      LearningClient
 	webhookSecret string
@@ -89,7 +92,7 @@ func newMux(d Deps) (*chi.Mux, error) {
 	}
 	limiter := newRateLimiter(d.RateLimit)
 	h := &handlers{
-		tasks: d.Tasks, workspaces: d.Workspaces, feedback: d.Feedback, webhooks: d.Webhooks, agentJobs: d.AgentJobs,
+		tasks: d.Tasks, workspaces: d.Workspaces, feedback: d.Feedback, webhooks: d.Webhooks, agentJobs: d.AgentJobs, outbox: d.Outbox,
 		contacts: d.Contacts, learning: d.Learning, webhookSecret: d.WebhookSecret, version: d.Version, logger: d.Logger, now: d.Now,
 	}
 
@@ -120,6 +123,7 @@ func newMux(d Deps) (*chi.Mux, error) {
 		r.Post("/webhooks/agentpulse", h.webhook)
 		r.Group(func(r chi.Router) {
 			authenticated(r)
+			r.Get("/me", h.getMe)
 			r.Route("/tasks", h.taskRoutes)
 			if h.agentJobs != nil {
 				r.Route("/agent-jobs", h.agentJobRoutes)

@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -25,6 +24,10 @@ func (h *handlers) taskRoutes(r chi.Router) {
 		r.Post("/comments", h.addComment)
 		r.Post("/feedback", h.recordFeedback)
 		r.Post("/decompose", h.decomposeTask)
+		r.Get("/subtasks", h.listSubtasks)
+		if h.agentJobs != nil {
+			r.Get("/agent-runs", h.listAgentRuns)
+		}
 	})
 }
 
@@ -82,22 +85,12 @@ func (h *handlers) listTasks(w http.ResponseWriter, r *http.Request) {
 		AssigneeID: q.Get("assignee_id"),
 		Status:     domain.Status(q.Get("status")),
 		Priority:   domain.Priority(q.Get("priority")),
+		IDPrefix:   q.Get("id_prefix"),
 	}
-	if v := q.Get("limit"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 || n > service.MaxListLimit {
-			h.fail(w, r, badRequest("limit must be an integer from 1 to 200"))
-			return
-		}
-		f.Limit = n
-	}
-	if v := q.Get("cursor"); v != "" {
-		c, err := decodeCursor(v)
-		if err != nil {
-			h.fail(w, r, err)
-			return
-		}
-		f.After = c
+	var err error
+	if f.Limit, f.After, err = pageParams(r); err != nil {
+		h.fail(w, r, err)
+		return
 	}
 	page, err := h.tasks.ListTasks(r.Context(), f)
 	if err != nil {

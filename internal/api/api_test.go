@@ -45,6 +45,7 @@ type env struct {
 	handler http.Handler
 	b       repotest.Backend
 	mock    *mockagentpulse.Server
+	apURL   string
 	now     time.Time
 	tasks   *service.TaskService
 	deps    Deps
@@ -59,6 +60,7 @@ func newEnv(t *testing.T, opts ...option) *env {
 	e.mock = mockagentpulse.New()
 	ts := httptest.NewServer(e.mock)
 	t.Cleanup(ts.Close)
+	e.apURL = ts.URL
 	client := agentpulse.New(ts.URL, "k", agentpulse.WithBreaker(nil))
 
 	clock := func() time.Time { return e.now }
@@ -73,6 +75,7 @@ func newEnv(t *testing.T, opts ...option) *env {
 	agentJobs := service.NewAgentJobService(b.Tx, b.AgentJobs, b.Tasks, registry, nil, clock)
 	d := Deps{
 		AgentJobs:     agentJobs,
+		Outbox:        service.NewOutboxService(b.Outbox, clock, nil),
 		Contacts:      service.NewContactService(b.Tx, b.Contacts, b.Outbox, 10, clock, nil),
 		Tasks:         tasks,
 		Workspaces:    service.NewWorkspaceService(b.Tx, b.Workspaces, b.Rules, client, clock),
@@ -763,6 +766,8 @@ func TestAdminRoutesNeedAdmin(t *testing.T) {
 		{method: "POST", path: "/api/v1/workspaces/ws_core/bootstrap-rules"},
 		{method: "GET", path: "/api/v1/admin/learning/suggestions"},
 		{method: "POST", path: "/api/v1/admin/learning/suggestions/x/decision", body: map[string]any{"decision": "approve"}},
+		{method: "GET", path: "/api/v1/admin/outbox"},
+		{method: "POST", path: "/api/v1/admin/outbox/" + uuid.NewString() + "/replay"},
 	} {
 		if r := e.do(rq); r.status != 403 || r.errCode() != CodeForbidden {
 			t.Errorf("%s %s as member: %d", rq.method, rq.path, r.status)

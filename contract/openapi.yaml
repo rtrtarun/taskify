@@ -165,18 +165,19 @@ paths:
           in: query
           schema:
             $ref: "#/components/schemas/Priority"
-        - name: limit
+        - name: id_prefix
           in: query
-          description: Page size, 1 to 200. Default 50.
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 200
-        - name: cursor
-          in: query
-          description: The `next_cursor` of the previous page. Opaque.
+          description: |
+            Only tasks whose ID starts with this prefix of the canonical,
+            lower-case form, hyphens included, such as `0193a1b2` or
+            `0193a1b2-c3`. 1 to 36 characters; upper case is read as lower.
+            Lets a client accept a short ID.
           schema:
             type: string
+            minLength: 1
+            maxLength: 36
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
           description: One page.
@@ -538,6 +539,101 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/v1/tasks/{id}/subtasks:
+    parameters:
+      - $ref: "#/components/parameters/TaskID"
+    get:
+      tags: [tasks]
+      operationId: listSubtasks
+      summary: A task's children, with their dependency links
+      description: |
+        The tasks whose parent is this one (created by a decomposition),
+        oldest first, archived ones included, each with the IDs of the
+        tasks it depends on.
+      responses:
+        "200":
+          description: The children.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubtaskList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/tasks/{id}/agent-runs:
+    parameters:
+      - $ref: "#/components/parameters/TaskID"
+    get:
+      tags: [tasks, agent-jobs]
+      operationId: listAgentRuns
+      summary: Agent activity on a task
+      description: |
+        Every agent job about the task, oldest first, each with its model
+        turns from the run history: the tool called, its arguments (which
+        hold the model's reasoning), its result, and the tokens used.
+      responses:
+        "200":
+          description: The task's agent activity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRunList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/agent-jobs:
+    get:
+      tags: [agent-jobs]
+      operationId: listAgentJobs
+      summary: List agent jobs
+      description: |
+        The tenant's agent jobs, newest first, a page at a time. With
+        `status=awaiting_approval` it feeds the approvals inbox.
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/AgentJobStatus"
+        - name: task_id
+          in: query
+          schema:
+            $ref: "#/components/schemas/Uuid"
+        - name: agent_type
+          in: query
+          schema:
+            $ref: "#/components/schemas/AgentType"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentJobList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/v1/agent-jobs/{id}:
     parameters:
       - $ref: "#/components/parameters/JobID"
@@ -613,6 +709,26 @@ paths:
           $ref: "#/components/responses/Conflict"
         "422":
           $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/me:
+    get:
+      tags: [me]
+      operationId: getMe
+      summary: The caller's identity
+      description: The tenant, user, and role the server took from the caller's credentials.
+      responses:
+        "200":
+          description: The caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         "500":
@@ -897,6 +1013,78 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /api/v1/admin/outbox:
+    get:
+      tags: [admin]
+      operationId: listOutbox
+      summary: The tenant's outbox rows (admin)
+      description: |
+        The notifications and other calls waiting for, or past, delivery to
+        AgentPulse, newest first, a page at a time. `status=dead_letter`
+        lists the rows that will not be retried. Dispatched rows are kept
+        for 7 days.
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/OutboxStatus"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OutboxList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/admin/outbox/{id}/replay:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The outbox row's ID. A malformed ID answers `404`.
+        schema:
+          $ref: "#/components/schemas/Uuid"
+    post:
+      tags: [admin]
+      operationId: replayOutboxEntry
+      summary: Return a dead-letter row to pending (admin)
+      description: |
+        The row is sent again by the relay, with its attempts reset. A row
+        in any other status is `409 not_dead_letter`.
+      responses:
+        "200":
+          description: The row, pending again.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OutboxEntry"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/v1/webhooks/agentpulse:
     post:
       tags: [webhooks]
@@ -989,6 +1177,20 @@ components:
       required: true
       schema:
         type: string
+    Limit:
+      name: limit
+      in: query
+      description: Page size, 1 to 200. Default 50.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+    Cursor:
+      name: cursor
+      in: query
+      description: The `next_cursor` of the previous page. Opaque.
+      schema:
+        type: string
     IfMatch:
       name: If-Match
       in: header
@@ -1073,7 +1275,7 @@ components:
       description: |
         Conflicts with the current state. Codes: `version_conflict` (with
         `details.current_version`), `already_exists`, `agent_disabled`,
-        `stale_version`, `already_decided`, `not_awaiting_approval`.
+        `stale_version`, `already_decided`, `not_awaiting_approval`, `not_dead_letter`.
       content:
         application/json:
           schema:
@@ -1171,7 +1373,7 @@ components:
                 `invalid_transition`, `unauthorized`, `forbidden`,
                 `not_found`, `version_conflict`, `already_exists`,
                 `version_required`, `rate_limited`, `agent_disabled`,
-                `stale_version`, `already_decided`, `not_awaiting_approval`,
+                `stale_version`, `already_decided`, `not_awaiting_approval`, `not_dead_letter`.
                 `upstream_error`, `upstream_unavailable`, `internal_error`.
                 A client treats a code it does not know by its status.
             message:
@@ -1800,3 +2002,151 @@ components:
         status:
           type: string
           enum: [applied, duplicate]
+
+    Me:
+      type: object
+      required: [tenant_id, user_id, role]
+      properties:
+        tenant_id:
+          type: string
+        user_id:
+          type: string
+        role:
+          type: string
+          enum: [admin, member]
+
+    Subtask:
+      type: object
+      required: [task, depends_on]
+      properties:
+        task:
+          $ref: "#/components/schemas/Task"
+        depends_on:
+          type: array
+          description: The IDs of the tasks this one waits for, siblings or not.
+          items:
+            $ref: "#/components/schemas/Uuid"
+    SubtaskList:
+      type: object
+      required: [subtasks]
+      properties:
+        subtasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/Subtask"
+
+    AgentJobList:
+      type: object
+      required: [agent_jobs, next_cursor]
+      properties:
+        agent_jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentJob"
+        next_cursor:
+          type: string
+          nullable: true
+    AgentRun:
+      type: object
+      description: One model turn of a job's run, from the run history.
+      required: [turn, model, tool_name, tool_args, tool_result, outcome, prompt_tokens, completion_tokens, latency_ms,
+        created_at]
+      properties:
+        turn:
+          type: integer
+          minimum: 1
+        model:
+          type: string
+        tool_name:
+          type: string
+          nullable: true
+          description: The tool called, `multiple` when the turn called several, or null for a turn without a call.
+        tool_args:
+          nullable: true
+          description: The call's arguments, as the model sent them; a list for several calls.
+        tool_result:
+          nullable: true
+          description: What the call returned or why it was refused; a list for several calls.
+        outcome:
+          type: string
+          description: Such as `final`, `executed`, `proposed`, `rejected`, `invalid`, or `error`.
+        prompt_tokens:
+          type: integer
+          minimum: 0
+        completion_tokens:
+          type: integer
+          minimum: 0
+        latency_ms:
+          type: integer
+          minimum: 0
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+    AgentJobRuns:
+      type: object
+      required: [job, runs]
+      properties:
+        job:
+          $ref: "#/components/schemas/AgentJob"
+        runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentRun"
+    AgentRunList:
+      type: object
+      required: [agent_runs]
+      properties:
+        agent_runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentJobRuns"
+
+    OutboxStatus:
+      type: string
+      enum: [pending, processing, dispatched, dead_letter]
+    OutboxEntry:
+      type: object
+      description: One outbox row. `aggregate_id` is the task it is about, or the job or person for a row about no task.
+      required: [id, aggregate_id, event_type, idempotency_key, status, attempts, max_attempts, next_attempt_at,
+        last_error, created_at, dispatched_at, payload]
+      properties:
+        id:
+          $ref: "#/components/schemas/Uuid"
+        aggregate_id:
+          $ref: "#/components/schemas/Uuid"
+        event_type:
+          type: string
+          description: An event type with a schema in contract/events.
+        idempotency_key:
+          type: string
+        status:
+          $ref: "#/components/schemas/OutboxStatus"
+        attempts:
+          type: integer
+          minimum: 0
+        max_attempts:
+          type: integer
+          minimum: 1
+        next_attempt_at:
+          $ref: "#/components/schemas/Timestamp"
+        last_error:
+          type: string
+          nullable: true
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        dispatched_at:
+          $ref: "#/components/schemas/NullableTimestamp"
+        payload:
+          type: object
+          additionalProperties: true
+          description: What the relay sends AgentPulse, in AgentPulse's camelCase; its shape is contract/events/{event_type}.schema.json.
+    OutboxList:
+      type: object
+      required: [entries, next_cursor]
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/OutboxEntry"
+        next_cursor:
+          type: string
+          nullable: true

@@ -127,6 +127,7 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 		Feedback:   feedback,
 		Webhooks:   service.NewWebhookService(db, deliveries, taskSvc, feedback, logger, nil).WithAgentJobs(agentJobs),
 		AgentJobs:  agentJobs,
+		Outbox:     service.NewOutboxService(outbox, nil, relay.Wake),
 		Contacts:   service.NewContactService(db, postgres.NewContactRepo(db), outbox, cfg.OutboxMaxAttempts, nil, relay.Wake),
 		Learning:   client,
 		Auth: api.AuthConfig{

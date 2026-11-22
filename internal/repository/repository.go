@@ -42,8 +42,18 @@ type TaskFilter struct {
 	AssigneeID string
 	Status     domain.Status
 	Priority   domain.Priority
-	Limit      int // must be positive
-	After      *Cursor
+	// IDPrefix, when set, keeps tasks whose ID starts with it; it must pass
+	// domain.IDPrefixRange.
+	IDPrefix string
+	Limit    int // must be positive
+	After    *Cursor
+}
+
+// ListCursor marks a position in a list ordered by (created_at, id)
+// descending: agent jobs and outbox rows.
+type ListCursor struct {
+	CreatedAt time.Time
+	ID        uuid.UUID
 }
 
 // TaskPage is one page of a list. Next is nil on the last page.
@@ -64,6 +74,9 @@ type TaskRepository interface {
 	// ErrVersionConflict otherwise. Watchers are replaced.
 	Update(ctx context.Context, t *domain.Task, expectedVersion int) error
 	List(ctx context.Context, f TaskFilter) (TaskPage, error)
+	// ListChildren returns the tasks whose parent is parentID, in the tenant,
+	// oldest first, archived ones included.
+	ListChildren(ctx context.Context, tenantID string, parentID uuid.UUID) ([]*domain.Task, error)
 	// Delete removes the task permanently, with its watchers, comments, and
 	// dependency links in both directions.
 	// It returns ErrNotFound when no row was deleted.
@@ -184,6 +197,24 @@ type ContactRepository interface {
 // changed it.
 var ErrJobMoved = errors.New("repository: agent job is no longer in the expected status")
 
+// AgentJobFilter selects agent jobs within one tenant. Empty fields match
+// anything.
+type AgentJobFilter struct {
+	TenantID  string
+	Status    domain.JobStatus
+	TaskID    *uuid.UUID
+	AgentType string
+	Limit     int // must be positive
+	After     *ListCursor
+}
+
+// AgentJobPage is one page of agent jobs, newest first. Next is nil on the
+// last page.
+type AgentJobPage struct {
+	Jobs []*domain.AgentJob
+	Next *ListCursor
+}
+
 // AgentJobRepository stores agent_jobs and agent_run_history rows.
 type AgentJobRepository interface {
 	// Insert queues a job. A job whose dedup key is already stored is not an
@@ -207,6 +238,8 @@ type AgentJobRepository interface {
 	// worker that died (default G11): each gets one more attempt and returns
 	// to pending, or fails once it reaches maxAttempts.
 	RecoverStuck(ctx context.Context, olderThan, now time.Time, maxAttempts int) (requeued, failed int, err error)
+	// List returns a page of the tenant's jobs, newest first.
+	List(ctx context.Context, f AgentJobFilter) (AgentJobPage, error)
 	// ListForTask returns the task's jobs, oldest first.
 	ListForTask(ctx context.Context, tenantID string, taskID uuid.UUID) ([]*domain.AgentJob, error)
 	// ListAwaitingApproval returns the tenant's jobs awaiting approval on a
@@ -262,6 +295,22 @@ type CommentRepository interface {
 	ListRecent(ctx context.Context, taskID uuid.UUID, limit int) ([]domain.Comment, error)
 }
 
+// OutboxFilter selects outbox rows within one tenant. An empty Status
+// matches every status.
+type OutboxFilter struct {
+	TenantID string
+	Status   domain.OutboxStatus
+	Limit    int // must be positive
+	After    *ListCursor
+}
+
+// OutboxPage is one page of outbox rows, newest first. Next is nil on the
+// last page.
+type OutboxPage struct {
+	Entries []domain.OutboxEntry
+	Next    *ListCursor
+}
+
 // OutboxRepository stores notifications waiting for delivery.
 //
 // The Mark and Release calls take the ClaimedAt of the claim being settled
@@ -313,4 +362,11 @@ type OutboxRepository interface {
 	// ListForAggregate returns every row for one task, oldest first.
 	ListForAggregate(ctx context.Context, aggregateID uuid.UUID) ([]domain.OutboxEntry, error)
 	CountByStatus(ctx context.Context, status domain.OutboxStatus) (int, error)
+	// List returns a page of the tenant's rows, newest first (M12-04).
+	List(ctx context.Context, f OutboxFilter) (OutboxPage, error)
+	// Replay returns the tenant's dead-letter row to pending, with no
+	// attempts and no claim, due at now, and returns it. A row of another
+	// tenant, or none, is ErrNotFound; a row in another status is
+	// domain.ErrNotDeadLetter and is left alone.
+	Replay(ctx context.Context, tenantID string, id uuid.UUID, now time.Time) (domain.OutboxEntry, error)
 }

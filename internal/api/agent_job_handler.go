@@ -21,6 +21,7 @@ const (
 )
 
 func (h *handlers) agentJobRoutes(r chi.Router) {
+	r.Get("/", h.listAgentJobs)
 	r.Route("/{id}", func(r chi.Router) {
 		r.Get("/", h.getAgentJob)
 		r.Post("/apply", h.applyAgentJob)

@@ -307,6 +307,7 @@ func (r *TaskRepo) List(ctx context.Context, f repository.TaskFilter) (page repo
 				f.Status != "" && t.Status != f.Status,
 				f.AssigneeID != "" && t.AssigneeID != f.AssigneeID,
 				f.Priority != "" && t.Priority != f.Priority,
+				f.IDPrefix != "" && !strings.HasPrefix(t.ID.String(), strings.ToLower(f.IDPrefix)),
 				f.After != nil && !before(t, *f.After):
 				continue
 			}
