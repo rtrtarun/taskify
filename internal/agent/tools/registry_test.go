@@ -58,9 +58,11 @@ func (f *fakeTool) Execute(_ context.Context, s Scope, args json.RawMessage) (an
 func (f *fakeTool) ran() int { f.mu.Lock(); defer f.mu.Unlock(); return len(f.calls) }
 
 // updateTool is shaped like UpdateTaskAttributes: Tier 2 when priority is set.
+// The fakes carry their own schemas, so they take names the contract does
+// not define.
 func updateTool() *fakeTool {
 	return &fakeTool{
-		name: "UpdateTaskAttributes",
+		name: "FakeUpdate",
 		params: `{
 			"type": "object",
 			"properties": {
@@ -84,7 +86,7 @@ func updateTool() *fakeTool {
 }
 
 func linkTool() *fakeTool {
-	return &fakeTool{name: "LinkDependencies", params: `{
+	return &fakeTool{name: "FakeLink", params: `{
 		"type": "object",
 		"properties": {
 			"task_id": {"type": "string", "format": "uuid"},
@@ -142,7 +144,7 @@ func newEnv(t *testing.T) *env {
 	job := &domain.AgentJob{ID: uuid.New(), TenantID: "tenant_acme", TaskID: &e.task.ID, AgentType: domain.AgentTriage, BaseTaskVersion: &version}
 	settings := domain.DefaultAgentSettings()
 	settings.RequireHITLForAll = false
-	e.scope = NewScope(job, settings, []string{"UpdateTaskAttributes", "LinkDependencies", "Ping"})
+	e.scope = NewScope(job, settings, []string{"FakeUpdate", "FakeLink", "Ping"})
 	return e
 }
 
@@ -165,7 +167,7 @@ func wantRejected(t *testing.T, name string, err error, code string) {
 
 func TestTier1Executes(t *testing.T) {
 	e := newEnv(t)
-	res, err := e.reg.Dispatch(ctx, e.scope, toolCall("UpdateTaskAttributes", `{ "task_id": "`+e.task.ID.String()+`", "labels": ["bug"], "reasoning": "crash" }`))
+	res, err := e.reg.Dispatch(ctx, e.scope, toolCall("FakeUpdate", `{ "task_id": "`+e.task.ID.String()+`", "labels": ["bug"], "reasoning": "crash" }`))
 	if err != nil || !res.Executed() || res.Tier != domain.Tier1 || res.Output == nil {
 		t.Fatalf("Dispatch = %+v, %v", res, err)
 	}
@@ -181,19 +183,19 @@ func TestTier1Executes(t *testing.T) {
 		t.Errorf("args = %q", c.args)
 	}
 	// A child of the job's task is in scope too.
-	if _, err := e.reg.Dispatch(ctx, e.scope, toolCall("UpdateTaskAttributes", map[string]any{"task_id": e.child.ID, "reasoning": "x"})); err != nil {
+	if _, err := e.reg.Dispatch(ctx, e.scope, toolCall("FakeUpdate", map[string]any{"task_id": e.child.ID, "reasoning": "x"})); err != nil {
 		t.Errorf("child task: %v", err)
 	}
 }
 
 func TestTier2IsProposed(t *testing.T) {
 	e := newEnv(t)
-	res, err := e.reg.Dispatch(ctx, e.scope, toolCall("UpdateTaskAttributes", map[string]any{"task_id": e.task.ID, "priority": "high", "reasoning": "outage"}))
+	res, err := e.reg.Dispatch(ctx, e.scope, toolCall("FakeUpdate", map[string]any{"task_id": e.task.ID, "priority": "high", "reasoning": "outage"}))
 	if err != nil || res.Executed() || res.Tier != domain.Tier2 {
 		t.Fatalf("Dispatch = %+v, %v", res, err)
 	}
 	p := res.Proposal
-	if p.Tool != "UpdateTaskAttributes" || p.CallID != "call_1" || !strings.Contains(string(p.Arguments), `"priority":"high"`) {
+	if p.Tool != "FakeUpdate" || p.CallID != "call_1" || !strings.Contains(string(p.Arguments), `"priority":"high"`) {
 		t.Errorf("proposal = %+v (%s)", p, p.Arguments)
 	}
 	if e.update.ran() != 0 {
@@ -211,7 +213,7 @@ func TestTier2IsProposed(t *testing.T) {
 func TestRequireHITLTurnsTier1IntoProposal(t *testing.T) {
 	e := newEnv(t)
 	e.scope.RequireHITL = true
-	res, err := e.reg.Dispatch(ctx, e.scope, toolCall("UpdateTaskAttributes", map[string]any{"task_id": e.task.ID, "labels": []string{"bug"}, "reasoning": "x"}))
+	res, err := e.reg.Dispatch(ctx, e.scope, toolCall("FakeUpdate", map[string]any{"task_id": e.task.ID, "labels": []string{"bug"}, "reasoning": "x"}))
 	if err != nil || res.Executed() || res.Tier != domain.Tier2 || res.Proposal == nil {
 		t.Fatalf("Dispatch = %+v, %v", res, err)
 	}
@@ -230,8 +232,8 @@ func TestUnknownAndDisallowedTools(t *testing.T) {
 	_, err := e.reg.Dispatch(ctx, e.scope, toolCall("DropDatabase", "{}"))
 	wantRejected(t, "unknown", err, CodeUnknownTool)
 
-	e.scope.AllowedTools = []string{"LinkDependencies"}
-	_, err = e.reg.Dispatch(ctx, e.scope, toolCall("UpdateTaskAttributes", map[string]any{"task_id": e.task.ID, "reasoning": "x"}))
+	e.scope.AllowedTools = []string{"FakeLink"}
+	_, err = e.reg.Dispatch(ctx, e.scope, toolCall("FakeUpdate", map[string]any{"task_id": e.task.ID, "reasoning": "x"}))
 	wantRejected(t, "not offered", err, CodeNotAllowed)
 	if e.update.ran() != 0 {
 		t.Error("a disallowed tool ran")
@@ -253,7 +255,7 @@ func TestBadArguments(t *testing.T) {
 		"task_id not a uuid": `{"task_id": "../../etc", "reasoning": "x"}`,
 		"empty for required": ``,
 	} {
-		_, err := e.reg.Dispatch(ctx, e.scope, toolCall("UpdateTaskAttributes", args))
+		_, err := e.reg.Dispatch(ctx, e.scope, toolCall("FakeUpdate", args))
 		wantRejected(t, name, err, CodeInvalidArguments)
 	}
 	if e.update.ran() != 0 {
@@ -261,7 +263,7 @@ func TestBadArguments(t *testing.T) {
 	}
 
 	// The message tells the model what to fix.
-	_, err := e.reg.Dispatch(ctx, e.scope, toolCall("UpdateTaskAttributes", `{"task_id": "`+id+`"}`))
+	_, err := e.reg.Dispatch(ctx, e.scope, toolCall("FakeUpdate", `{"task_id": "`+id+`"}`))
 	if !strings.Contains(err.Error(), "reasoning") {
 		t.Errorf("message = %v", err)
 	}
@@ -279,20 +281,20 @@ func TestTasksOutsideTheScope(t *testing.T) {
 		"an unrelated task":      e.sibling.ID,
 		"a task that is missing": uuid.New(),
 	} {
-		_, err := e.reg.Dispatch(ctx, e.scope, toolCall("UpdateTaskAttributes", map[string]any{"task_id": id, "reasoning": "x"}))
+		_, err := e.reg.Dispatch(ctx, e.scope, toolCall("FakeUpdate", map[string]any{"task_id": id, "reasoning": "x"}))
 		wantRejected(t, name, err, CodeOutOfScope)
 	}
 	// Another tenant's task looks exactly like a missing one.
-	_, errForeign := e.reg.Dispatch(ctx, e.scope, toolCall("UpdateTaskAttributes", map[string]any{"task_id": e.foreign.ID, "reasoning": "x"}))
+	_, errForeign := e.reg.Dispatch(ctx, e.scope, toolCall("FakeUpdate", map[string]any{"task_id": e.foreign.ID, "reasoning": "x"}))
 	if strings.Contains(errForeign.Error(), "tenant") {
 		t.Errorf("message mentions the tenant: %v", errForeign)
 	}
 
 	// A dependency may name any task in the tenant, but not one outside it.
-	if _, err := e.reg.Dispatch(ctx, e.scope, toolCall("LinkDependencies", map[string]any{"task_id": e.task.ID, "depends_on_task_ids": []uuid.UUID{e.sibling.ID}})); err != nil {
+	if _, err := e.reg.Dispatch(ctx, e.scope, toolCall("FakeLink", map[string]any{"task_id": e.task.ID, "depends_on_task_ids": []uuid.UUID{e.sibling.ID}})); err != nil {
 		t.Errorf("same-tenant dependency: %v", err)
 	}
-	_, err := e.reg.Dispatch(ctx, e.scope, toolCall("LinkDependencies", map[string]any{"task_id": e.task.ID, "depends_on_task_ids": []uuid.UUID{e.sibling.ID, e.foreign.ID}}))
+	_, err := e.reg.Dispatch(ctx, e.scope, toolCall("FakeLink", map[string]any{"task_id": e.task.ID, "depends_on_task_ids": []uuid.UUID{e.sibling.ID, e.foreign.ID}}))
 	wantRejected(t, "cross-tenant dependency", err, CodeOutOfScope)
 	if e.update.ran() != 0 || e.link.ran() != 1 {
 		t.Errorf("ran: update %d, link %d", e.update.ran(), e.link.ran())
@@ -301,17 +303,17 @@ func TestTasksOutsideTheScope(t *testing.T) {
 	// A job without a task is limited to its tenant.
 	tenantScope := e.scope
 	tenantScope.TaskID = nil
-	if _, err := e.reg.Dispatch(ctx, tenantScope, toolCall("UpdateTaskAttributes", map[string]any{"task_id": e.sibling.ID, "reasoning": "x"})); err != nil {
+	if _, err := e.reg.Dispatch(ctx, tenantScope, toolCall("FakeUpdate", map[string]any{"task_id": e.sibling.ID, "reasoning": "x"})); err != nil {
 		t.Errorf("tenant-scoped job, own tenant: %v", err)
 	}
-	_, err = e.reg.Dispatch(ctx, tenantScope, toolCall("UpdateTaskAttributes", map[string]any{"task_id": e.foreign.ID, "reasoning": "x"}))
+	_, err = e.reg.Dispatch(ctx, tenantScope, toolCall("FakeUpdate", map[string]any{"task_id": e.foreign.ID, "reasoning": "x"}))
 	wantRejected(t, "tenant-scoped job, other tenant", err, CodeOutOfScope)
 }
 
 func TestToolErrorsPassThrough(t *testing.T) {
 	e := newEnv(t)
 	e.update.err = domain.ErrVersionConflict
-	_, err := e.reg.Dispatch(ctx, e.scope, toolCall("UpdateTaskAttributes", map[string]any{"task_id": e.task.ID, "reasoning": "x"}))
+	_, err := e.reg.Dispatch(ctx, e.scope, toolCall("FakeUpdate", map[string]any{"task_id": e.task.ID, "reasoning": "x"}))
 	if !errors.Is(err, domain.ErrVersionConflict) || errors.Is(err, ErrRejected) {
 		t.Errorf("error = %v", err)
 	}
@@ -336,8 +338,8 @@ func TestRegisterAndSchemas(t *testing.T) {
 		t.Error("unnamed tool accepted")
 	}
 
-	schemas, err := e.reg.Schemas([]string{"LinkDependencies", "UpdateTaskAttributes"})
-	if err != nil || len(schemas) != 2 || schemas[0].Name != "LinkDependencies" || schemas[1].Description != "fake UpdateTaskAttributes" ||
+	schemas, err := e.reg.Schemas([]string{"FakeLink", "FakeUpdate"})
+	if err != nil || len(schemas) != 2 || schemas[0].Name != "FakeLink" || schemas[1].Description != "fake FakeUpdate" ||
 		!json.Valid(schemas[1].Parameters) {
 		t.Errorf("Schemas = %+v, %v", schemas, err)
 	}

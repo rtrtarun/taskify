@@ -51,20 +51,6 @@ func (LinkDependencies) Description() string {
 		"Use only when the dependency is clear from the tasks themselves."
 }
 
-func (LinkDependencies) Parameters() json.RawMessage {
-	return json.RawMessage(`{
-		"type": "object",
-		"properties": {
-			"task_id": {"type": "string", "format": "uuid", "description": "The task that has to wait."},
-			"depends_on_task_ids": {"type": "array", "items": {"type": "string", "format": "uuid"},
-				"minItems": 1, "maxItems": 10, "uniqueItems": true, "description": "The tasks it waits for."},
-			"reasoning": {"type": "string", "maxLength": 1000}
-		},
-		"required": ["task_id", "depends_on_task_ids"],
-		"additionalProperties": false
-	}`)
-}
-
 func (LinkDependencies) Tier(json.RawMessage) domain.SafetyTier { return domain.Tier1 }
 
 // Execute links the task to every blocker in one transaction.

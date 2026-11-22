@@ -32,19 +32,6 @@ func (ArchiveTask) Description() string {
 	return "Propose archiving a task that is no longer needed, with your reasoning. A person approves it first."
 }
 
-func (ArchiveTask) Parameters() json.RawMessage {
-	return json.RawMessage(`{
-		"type": "object",
-		"properties": {
-			"task_id": {"type": "string", "format": "uuid", "description": "The task to archive."},
-			"reasoning": {"type": "string", "minLength": 1, "maxLength": 1000,
-				"description": "Why the task is no longer needed, in one or two sentences."}
-		},
-		"required": ["task_id", "reasoning"],
-		"additionalProperties": false
-	}`)
-}
-
 func (ArchiveTask) Tier(json.RawMessage) domain.SafetyTier { return domain.Tier2 }
 
 // Execute applies an approved archive.

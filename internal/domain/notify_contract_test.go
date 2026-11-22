@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/rtrtarun/taskify/contract"
 	"github.com/rtrtarun/taskify/internal/domain"
 	"github.com/rtrtarun/taskify/tests/mockagentpulse"
 )
@@ -142,7 +143,10 @@ func checkEveryNotification(t *testing.T, links domain.Links) {
 	addEvents(domain.NewEscalationEvents(stuck, &investigation, []*domain.Task{owner}, t0)...)
 	addEvents(domain.NewEscalationEvents(stale, &investigation, []*domain.Task{owner}, t0)...)
 	brief := domain.MorningBrief{TenantID: tenant, JobID: uuid.New(), Date: "2026-11-22", UserID: bob, Text: "Two things today.",
-		TopItems: []domain.BriefTask{{ID: created.ID, Title: "Created", WorkspaceID: "ws_core", Status: domain.StatusTodo}}}
+		TopItems: []domain.BriefTask{{ID: created.ID, Title: "Created", WorkspaceID: "ws_core", Status: domain.StatusTodo,
+			Priority: domain.PriorityMedium, DueAt: &due}},
+		PendingApprovals: []domain.BriefApproval{{JobID: job.ID, AgentType: domain.AgentTriage, TaskID: proposed.ID,
+			TaskTitle: "Proposed", Tools: []string{"UpdateTaskAttributes"}, AskedAt: t0}}, PendingApprovalsTotal: 1}
 	notes = append(notes, brief.Notification(links))
 
 	mock := mockagentpulse.New()
@@ -155,6 +159,10 @@ func checkEveryNotification(t *testing.T, links domain.Links) {
 		raw, err := json.Marshal(n)
 		if err != nil {
 			t.Fatal(err)
+		}
+		// M12-02: the payload matches contract/events/{eventType}.schema.json.
+		if err := contract.ValidateEvent(n.EventType, raw); err != nil {
+			t.Errorf("%s to %s: %v", n.EventType, n.UserID, err)
 		}
 		resp, err := http.Post(srv.URL+"/v1/notify", "application/json", bytes.NewReader(raw))
 		if err != nil {

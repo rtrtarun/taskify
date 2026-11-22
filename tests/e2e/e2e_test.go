@@ -57,6 +57,10 @@ func start(t *testing.T) *harness {
 	}
 	srv := httptest.NewServer(a.Handler)
 	t.Cleanup(srv.Close)
+	// M12-02: every notification the assembled server sent matches its
+	// contract/events schema. Registered before the workers' cleanup, so it
+	// runs after they stop.
+	t.Cleanup(func() { checkSentEvents(t, mock) })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
