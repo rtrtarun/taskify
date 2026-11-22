@@ -13,7 +13,6 @@ import (
 const (
 	maxTitleLen     = 255
 	maxWorkspaceLen = 64
-	maxUserIDLen    = 128
 	maxLabels       = 50
 	maxLabelLen     = 64
 )
@@ -363,10 +362,10 @@ func (t *Task) validate() error {
 		return invalid("unknown priority %q", t.Priority)
 	case t.CreatorID == "":
 		return invalid("creator_id is required")
-	case len(t.CreatorID) > maxUserIDLen:
-		return invalid("creator_id must be at most %d characters", maxUserIDLen)
-	case len(t.AssigneeID) > maxUserIDLen:
-		return invalid("assignee_id must be at most %d characters", maxUserIDLen)
+	case !userIDOK(t.CreatorID):
+		return ValidateUserID("creator_id", t.CreatorID)
+	case t.AssigneeID != "" && !userIDOK(t.AssigneeID):
+		return ValidateUserID("assignee_id", t.AssigneeID)
 	case len(t.Labels) > maxLabels:
 		return invalid("a task can have at most %d labels", maxLabels)
 	case t.EstimatedMinutes != nil && (*t.EstimatedMinutes <= 0 || *t.EstimatedMinutes > maxEstimateMinutes):
@@ -378,8 +377,8 @@ func (t *Task) validate() error {
 		}
 	}
 	for _, w := range t.Watchers {
-		if len(w) > maxUserIDLen {
-			return invalid("a watcher ID must be at most %d characters", maxUserIDLen)
+		if err := ValidateUserID("a watcher ID", w); err != nil {
+			return err
 		}
 	}
 	return nil

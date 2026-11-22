@@ -66,7 +66,7 @@ func (in BriefInput) Since() time.Time { return in.At.Add(-24 * time.Hour) }
 // NewBriefJob returns the digest job that writes r's brief for the day of
 // at. The scheduler is the actor, so the job names no requester.
 func NewBriefJob(r BriefRecipient, at, now time.Time) (AgentJob, error) {
-	if r.UserID == "" || r.WorkspaceID == "" {
+	if !userIDOK(r.UserID) || r.WorkspaceID == "" {
 		return AgentJob{}, invalid("a brief needs a user and a workspace")
 	}
 	at = at.UTC()
@@ -89,7 +89,7 @@ func ParseBriefInput(raw json.RawMessage) (BriefInput, error) {
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return BriefInput{}, invalid("brief input: %v", err)
 	}
-	if in.Trigger != TriggerMorningBrief || in.UserID == "" || in.Date == "" || in.At.IsZero() {
+	if in.Trigger != TriggerMorningBrief || !userIDOK(in.UserID) || in.Date == "" || in.At.IsZero() {
 		return BriefInput{}, invalid("brief input is incomplete")
 	}
 	return in, nil

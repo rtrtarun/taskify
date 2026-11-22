@@ -33,6 +33,8 @@ func NewComment(t *Task, body string, actor Actor, now time.Time) (Comment, []Ev
 		return Comment{}, nil, invalid("comment body must be at most %d characters", maxCommentLen)
 	case strings.TrimSpace(actor.ID) == "":
 		return Comment{}, nil, invalid("comment author is required")
+	case !userIDOK(actor.ID):
+		return Comment{}, nil, ValidateUserID("comment author", actor.ID)
 	}
 	id, err := uuid.NewV7()
 	if err != nil {

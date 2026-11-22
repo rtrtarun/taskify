@@ -61,3 +61,28 @@ func TestDevTokenOtherFlags(t *testing.T) {
 		}
 	}
 }
+
+// TestDevTokenUsers is AP-11: -user must be a user ID the server accepts, 1
+// to 128 printable ASCII characters, with no spaces around it.
+func TestDevTokenUsers(t *testing.T) {
+	now := time.Now()
+	for _, user := range []string{"usr_bob", "a", "alice@example.com", "Bob Smith", strings.Repeat("u", 128)} {
+		var out, errOut bytes.Buffer
+		if code := run([]string{"-user", user}, secret, now, &out, &errOut); code != 0 {
+			t.Errorf("user %q: exit %d: %s", user, code, errOut.String())
+			continue
+		}
+		var c jwt.MapClaims
+		_, err := jwt.ParseWithClaims(strings.TrimSpace(out.String()), &c, func(*jwt.Token) (any, error) { return []byte(secret), nil })
+		if err != nil || c["sub"] != user {
+			t.Errorf("user %q: claims %v, err %v", user, c, err)
+		}
+	}
+	for _, user := range []string{"", " usr_bob", "usr_bob ", "josé", "usr\tbob", "usr\nbob", strings.Repeat("u", 129)} {
+		var out, errOut bytes.Buffer
+		if code := run([]string{"-user", user}, secret, now, &out, &errOut); code != 2 || out.Len() != 0 ||
+			!strings.Contains(errOut.String(), "-user must be 1 to 128 printable ASCII") {
+			t.Errorf("user %q: exit %d, stdout %q, stderr %q", user, code, out.String(), errOut.String())
+		}
+	}
+}

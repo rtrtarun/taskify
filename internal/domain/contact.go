@@ -150,8 +150,8 @@ func NewContactEntry(c Contact, maxAttempts int, now time.Time) (OutboxEntry, er
 	if err := ValidateTenantID(c.TenantID); err != nil {
 		return OutboxEntry{}, err
 	}
-	if c.UserID == "" {
-		return OutboxEntry{}, invalid("a contact needs a user")
+	if err := ValidateUserID("user_id", c.UserID); err != nil {
+		return OutboxEntry{}, err
 	}
 	body, err := json.Marshal(ContactUpdate{UserID: c.UserID, Email: c.Email, SlackUserID: c.SlackUserID, Phone: c.Phone})
 	if err != nil {

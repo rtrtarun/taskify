@@ -207,6 +207,14 @@ func (s *WebhookService) Handle(ctx context.Context, cb Callback) (duplicate boo
 	if err := domain.ValidateTenantID(cb.TenantID); err != nil {
 		return false, err
 	}
+	// So must the user, who appears in the keys of the notifications the
+	// action sends (AP-11). A missing one is reported with the other
+	// required fields below.
+	if strings.TrimSpace(cb.UserID) != "" {
+		if err := domain.ValidateUserID("userId", cb.UserID); err != nil {
+			return false, err
+		}
+	}
 	if cb.CallbackID != "" && !callbackIDRe.MatchString(cb.CallbackID) {
 		return false, fmt.Errorf("%w: callbackId must be cb- and 32 lower-case hex digits", domain.ErrValidation)
 	}

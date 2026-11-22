@@ -167,15 +167,17 @@ func errUnwrapJWT(err error) error {
 // newIdentity checks an identity from a token or the development headers.
 // The tenant ID must match domain.TenantIDPattern exactly as given, never
 // trimmed and compared case-sensitively, and must not be "default" (AP-04):
-// a tenant AgentPulse would refuse is refused here first.
+// a tenant AgentPulse would refuse is refused here first. The user ID is
+// trimmed, as it always was, and must then be 1 to 128 printable ASCII
+// characters (AP-11), since it appears in AgentPulse idempotency keys.
 func newIdentity(tenant, user, role string) (Identity, error) {
 	user = strings.TrimSpace(user)
 	if domain.ValidateTenantID(tenant) != nil {
 		return Identity{}, fmt.Errorf("the identity must carry a tenant ID matching %s, other than %q",
 			domain.TenantIDPattern, domain.ReservedTenantID)
 	}
-	if user == "" || len(user) > 128 {
-		return Identity{}, errors.New("the identity must carry a user ID of 1 to 128 characters")
+	if domain.ValidateUserID("user ID", user) != nil {
+		return Identity{}, fmt.Errorf("the identity must carry a user ID of 1 to %d printable ASCII characters", domain.MaxUserIDLen)
 	}
 	if role != RoleAdmin {
 		role = RoleMember

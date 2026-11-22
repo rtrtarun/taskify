@@ -76,6 +76,9 @@ func (s *ContactService) Update(ctx context.Context, tenantID, userID string, p 
 	if err := domain.ValidateTenantID(tenantID); err != nil {
 		return domain.Contact{}, err
 	}
+	if err := domain.ValidateUserID("user_id", userID); err != nil {
+		return domain.Contact{}, err
+	}
 	var result domain.Contact
 	now := s.now().UTC().Truncate(time.Microsecond)
 	err := s.tx.WithTx(ctx, func(ctx context.Context) error {

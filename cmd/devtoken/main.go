@@ -4,7 +4,9 @@
 // Never use it to mint tokens for a production deployment.
 //
 // The tenant must be one the server accepts: it matches
-// domain.TenantIDPattern exactly as given and is not "default".
+// domain.TenantIDPattern exactly as given and is not "default". So must the
+// user: 1 to 128 printable ASCII characters (domain.ValidateUserID), with no
+// spaces around it, which the server would trim away.
 package main
 
 import (
@@ -12,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -48,8 +51,9 @@ func run(args []string, secret string, now time.Time, stdout, stderr io.Writer) 
 		_, _ = fmt.Fprintf(stderr, "devtoken: -tenant must match %s and not be %q\n", domain.TenantIDPattern, domain.ReservedTenantID)
 		return 2
 	}
-	if *user == "" {
-		_, _ = fmt.Fprintln(stderr, "devtoken: -user is required")
+	if domain.ValidateUserID("-user", *user) != nil || strings.TrimSpace(*user) != *user {
+		_, _ = fmt.Fprintf(stderr, "devtoken: -user must be 1 to %d printable ASCII characters, without leading or trailing spaces\n",
+			domain.MaxUserIDLen)
 		return 2
 	}
 
