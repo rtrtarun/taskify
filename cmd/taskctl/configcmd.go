@@ -31,6 +31,10 @@ func (a *app) newConfigCmd() *cobra.Command {
 					cred = "set (" + where + ")"
 				}
 			}
+			if a.jsonOut {
+				return a.note(map[string]any{"config_file": s.cfg.path, "profile": s.profile, "server": s.server,
+					"tenant": s.tenant, "workspace": s.workspace, "credentials": cred, "profiles": s.cfg.profiles()}, "")
+			}
 			w := a.stdout
 			_, _ = fmt.Fprintf(w, "config file: %s\n", s.cfg.path)
 			_, _ = fmt.Fprintf(w, "profile:     %s (%s)\n", s.profile, s.sources["profile"])
@@ -64,8 +68,8 @@ func (a *app) newConfigCmd() *cobra.Command {
 			if err := s.cfg.save(); err != nil {
 				return failure(err)
 			}
-			_, _ = fmt.Fprintf(a.stdout, "%s set for profile %q\n", args[0], s.profile)
-			return nil
+			return a.note(map[string]string{"profile": s.profile, "key": args[0], "value": args[1]},
+				fmt.Sprintf("%s set for profile %q", args[0], s.profile))
 		},
 	}
 
@@ -85,8 +89,7 @@ func (a *app) newConfigCmd() *cobra.Command {
 			if err := cfg.save(); err != nil {
 				return failure(err)
 			}
-			_, _ = fmt.Fprintf(a.stdout, "current profile is now %q\n", args[0])
-			return nil
+			return a.note(map[string]string{"current_profile": args[0]}, fmt.Sprintf("current profile is now %q", args[0]))
 		},
 	}
 	cmd.AddCommand(view, set, use)

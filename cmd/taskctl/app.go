@@ -32,11 +32,16 @@ type app struct {
 
 	// Global flags.
 	profileFlag, serverFlag, workspaceFlag string
-	verbose                                bool
+	verbose, jsonOut, quiet                bool
+
+	// pollEvery is how often --watch and --wait ask the server again.
+	pollEvery time.Duration
+	// ctx is cancelled by Ctrl-C (set in main).
+	ctx context.Context
 }
 
 func newApp(stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) *app {
-	a := &app{stdin: stdin, stdout: stdout, getenv: getenv, keychain: osKeychain{}, red: &redactor{}}
+	a := &app{stdin: stdin, stdout: stdout, getenv: getenv, keychain: osKeychain{}, red: &redactor{}, pollEvery: 2 * time.Second, ctx: context.Background()}
 	a.stderr = &redactWriter{w: stderr, r: a.red}
 	return a
 }
@@ -59,7 +64,7 @@ func (rw *redactWriter) Write(p []byte) (int, error) {
 func (a *app) run(args []string) int {
 	root := a.newRoot()
 	root.SetArgs(args)
-	err := root.Execute()
+	err := root.ExecuteContext(a.ctx)
 	if err == nil {
 		return exitOK
 	}
@@ -88,7 +93,15 @@ func (a *app) newRoot() *cobra.Command {
 	f.StringVar(&a.profileFlag, "profile", "", "profile to use (env TASKIFY_PROFILE)")
 	f.StringVar(&a.serverFlag, "server", "", "server URL (env TASKIFY_SERVER)")
 	f.BoolVar(&a.verbose, "verbose", false, "trace requests on stderr (method, URL, status; never credentials)")
-	root.AddCommand(a.newLoginCmd(), a.newConfigCmd(), a.newTaskCmd(), a.newJobCmd(), a.newAdminCmd())
+	f.BoolVar(&a.jsonOut, "json", false, "print the API's response body unchanged, for scripts")
+	f.BoolVarP(&a.quiet, "quiet", "q", false, "print only IDs")
+	root.PersistentPreRunE = func(*cobra.Command, []string) error {
+		if a.jsonOut && a.quiet {
+			return fail(exitUsage, "--json and --quiet cannot be used together")
+		}
+		return nil
+	}
+	root.AddCommand(a.newVersionCmd(), a.newLoginCmd(), a.newConfigCmd(), a.newTaskCmd(), a.newJobCmd(), a.newAdminCmd())
 	return root
 }
 

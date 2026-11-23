@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -62,9 +63,10 @@ func (a *app) newLoginCmd() *cobra.Command {
 			if err := s.cfg.save(); err != nil {
 				return failure(err)
 			}
-			_, _ = fmt.Fprintf(a.stdout, "Logged in to %s as %s (%s) in tenant %s.\nCredentials for profile %q are stored in the %s.\n",
-				s.server, me.UserId, me.Role, me.TenantId, s.profile, where)
-			return nil
+			return a.print(result{raw: resp.Body, ids: []string{me.UserId}, table: func(w io.Writer) {
+				_, _ = fmt.Fprintf(w, "Logged in to %s as %s (%s) in tenant %s.\nCredentials for profile %q are stored in the %s.\n",
+					s.server, me.UserId, me.Role, me.TenantId, s.profile, where)
+			}})
 		},
 	}
 }

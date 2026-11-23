@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -110,19 +111,38 @@ func jobCard(w io.Writer, j client.AgentJob) {
 }
 
 func (a *app) jobShow() *cobra.Command {
-	return &cobra.Command{Use: "show <id>", Short: "Show a job and what it proposes", Args: cobra.ExactArgs(1),
-		RunE: a.api(func(ctx context.Context, s *session, c *client.ClientWithResponses, args []string) error {
-			id, err := parseJobID(args[0])
-			if err != nil {
-				return err
-			}
+	var watch bool
+	var timeout time.Duration
+	cmd := &cobra.Command{Use: "show <id>", Short: "Show a job and what it proposes", Args: cobra.ExactArgs(1)}
+	cmd.Flags().BoolVar(&watch, "watch", false, "follow the job until it finishes or waits for approval, printing each change")
+	cmd.Flags().DurationVar(&timeout, "timeout", 0, "with --watch, give up after this long (default: no limit)")
+	cmd.RunE = a.api(func(ctx context.Context, s *session, c *client.ClientWithResponses, args []string) error {
+		id, err := parseJobID(args[0])
+		if err != nil {
+			return err
+		}
+		show := func(body []byte, j *client.AgentJob) error {
+			return a.print(result{raw: body, ids: []string{j.Id.String()}, table: func(w io.Writer) { jobCard(w, *j) }})
+		}
+		if !watch {
 			resp, err := c.GetAgentJobWithResponse(ctx, id)
 			if err := s.check(resp, err, http.StatusOK); err != nil {
 				return err
 			}
-			j := resp.JSON200
-			return a.print(result{raw: resp.Body, ids: []string{j.Id.String()}, table: func(w io.Writer) { jobCard(w, *j) }})
-		})}
+			return show(resp.Body, resp.JSON200)
+		}
+		j, _, err := a.followJob(ctx, s, c, id, timeout, func(body []byte, j *client.AgentJob) error {
+			if !a.jsonOut && !a.quiet {
+				_, _ = fmt.Fprintf(a.stdout, "-- %s --\n", j.Status)
+			}
+			return show(body, j)
+		})
+		if err != nil {
+			return err
+		}
+		return finished(j)
+	})
+	return cmd
 }
 
 // jobDecide is approve (the server's apply) or reject (its dismiss). Whether

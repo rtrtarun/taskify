@@ -475,19 +475,38 @@ func (a *app) taskComment() *cobra.Command {
 }
 
 func (a *app) taskDecompose() *cobra.Command {
-	return &cobra.Command{Use: "decompose <id>", Short: "Ask the decomposer agent to split a task", Args: cobra.ExactArgs(1),
-		RunE: a.api(func(ctx context.Context, s *session, c *client.ClientWithResponses, args []string) error {
-			id, err := s.resolveTaskID(ctx, c, args[0])
-			if err != nil {
-				return err
-			}
-			resp, err := c.DecomposeTaskWithResponse(ctx, id)
-			if err := s.check(resp, err, http.StatusAccepted); err != nil {
-				return err
-			}
-			j := resp.JSON202
+	var wait bool
+	var timeout time.Duration
+	cmd := &cobra.Command{Use: "decompose <id>", Short: "Ask the decomposer agent to split a task", Args: cobra.ExactArgs(1)}
+	cmd.Flags().BoolVar(&wait, "wait", false, "wait until the job finishes or waits for approval")
+	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "with --wait, give up after this long")
+	cmd.RunE = a.api(func(ctx context.Context, s *session, c *client.ClientWithResponses, args []string) error {
+		id, err := s.resolveTaskID(ctx, c, args[0])
+		if err != nil {
+			return err
+		}
+		resp, err := c.DecomposeTaskWithResponse(ctx, id)
+		if err := s.check(resp, err, http.StatusAccepted); err != nil {
+			return err
+		}
+		j := resp.JSON202
+		if !wait {
 			return a.print(result{raw: resp.Body, ids: []string{j.Id.String()}, table: func(w io.Writer) {
-				_, _ = fmt.Fprintf(w, "decomposition queued: job %s (%s); follow it with: taskctl job show %s\n", j.Id, j.Status, shortID(j.Id.String()))
+				_, _ = fmt.Fprintf(w, "decomposition queued: job %s (%s); follow it with: taskctl job show --watch %s\n", j.Id, j.Status, j.Id)
 			}})
-		})}
+		}
+		progress(a, "decomposition queued as job %s; waiting", j.Id)
+		last, body, err := a.followJob(ctx, s, c, j.Id, timeout, func([]byte, *client.AgentJob) error { return nil })
+		if err != nil {
+			return err
+		}
+		if err := a.print(result{raw: body, ids: []string{last.Id.String()}, table: func(w io.Writer) { jobCard(w, *last) }}); err != nil {
+			return err
+		}
+		if last.Status == client.AgentJobStatusAwaitingApproval {
+			progress(a, "the plan waits for approval: taskctl job approve %s", last.Id)
+		}
+		return finished(last)
+	})
+	return cmd
 }

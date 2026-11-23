@@ -168,3 +168,25 @@ func (s *Server) EnableAgents(t testing.TB) {
 		t.Fatalf("enable agents: HTTP %d", resp.StatusCode)
 	}
 }
+
+// Advance moves a job to another status, as the agent runtime would, with
+// errMsg as its error when the new status is failed. It returns an error
+// rather than failing the test, so a goroutine may call it.
+func (s *Server) Advance(jobID uuid.UUID, to domain.JobStatus, errMsg string) error {
+	ctx := context.Background()
+	job, err := s.Backend.AgentJobs.Get(ctx, Tenant, jobID)
+	if err != nil {
+		return err
+	}
+	from, prev := job.Status, job.UpdatedAt
+	job.Status = to
+	if errMsg != "" {
+		job.ErrorMessage = errMsg
+	}
+	return s.Backend.AgentJobs.Update(ctx, job, from, prev)
+}
+
+// JobsOf lists the jobs about a task.
+func (s *Server) JobsOf(taskID uuid.UUID) ([]*domain.AgentJob, error) {
+	return s.Backend.AgentJobs.ListForTask(context.Background(), Tenant, taskID)
+}

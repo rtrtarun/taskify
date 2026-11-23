@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -18,10 +19,49 @@ type result struct {
 	table func(w io.Writer)
 }
 
-// print writes a result to standard output.
+// print writes a result to standard output in the mode the flags chose:
+// --json, the API's body exactly as it came; --quiet, the IDs, one per line;
+// otherwise a table or card for a person.
 func (a *app) print(r result) error {
+	switch {
+	case a.jsonOut:
+		_, err := a.stdout.Write(withNewline(r.raw))
+		return err
+	case a.quiet:
+		for _, id := range r.ids {
+			if _, err := fmt.Fprintln(a.stdout, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	r.table(a.stdout)
 	return nil
+}
+
+func withNewline(b []byte) []byte {
+	if len(b) == 0 || b[len(b)-1] != '\n' {
+		return append(append([]byte{}, b...), '\n')
+	}
+	return b
+}
+
+// note reports what a command with no API body did: v as JSON under --json,
+// nothing under --quiet, text otherwise.
+func (a *app) note(v any, text string) error {
+	switch {
+	case a.jsonOut:
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		_, err = a.stdout.Write(withNewline(raw))
+		return err
+	case a.quiet:
+		return nil
+	}
+	_, err := fmt.Fprintln(a.stdout, text)
+	return err
 }
 
 // tabular draws rows with aligned columns.
