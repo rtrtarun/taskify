@@ -75,7 +75,9 @@ Done. Departures D81 to D84 are in [README.md](README.md). The owner follow-ups 
 | M14-09 | **Agent activity and approvals inbox.** A per-task timeline naming the agent, what changed, and its reasoning. An inbox of proposals awaiting the user, showing current and proposed values side by side, with approve and reject. | `web/src/pages/approvals/`, `web/src/components/` | End-to-end tests: approve a proposal; reject a proposal; a stale proposal shows a clear message | Routine, M | M14-05, M6 |
 | M14-10 | **Morning brief.** A page at `/brief`, where the brief notification's view link points (AP-10), showing the caller's latest brief from `GET /me/brief`. | `web/src/pages/brief/` | Component tests cover a brief and the no-brief state | Routine, S | M14-05, M10-03 |
 
-### M14c. Admin and delivery (needs M12)
+### M14c. Admin and delivery (needs M12) (M14-11 and M14-12 done)
+
+M14-11 and M14-12 are done; departures D85 to D87 are in [README.md](README.md). M14-13 remains.
 
 | ID | Task | Files | Done when | Level, size | After |
 | --- | --- | --- | --- | --- | --- |
