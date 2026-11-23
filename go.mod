@@ -2,6 +2,9 @@ module github.com/rtrtarun/taskify
 
 go 1.26.0
 
+// web/node_modules holds a Go package of its own; ./... must not build it.
+ignore ./web/node_modules
+
 require (
 	github.com/getkin/kin-openapi v0.153.0
 	github.com/go-chi/chi/v5 v5.5.0
