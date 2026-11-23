@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"github.com/spf13/cobra"
 	"net/http"
 )
 
@@ -57,4 +58,17 @@ func statusExit(status int, errCode string) int {
 		return exitUsage
 	}
 	return exitUnexpected
+}
+
+// group makes a command that only holds subcommands runnable, so that
+// "taskctl task frobnicate" is a usage error (exit 2) instead of silently
+// printing help and succeeding. With no arguments it prints help.
+func group(cmd *cobra.Command) *cobra.Command {
+	cmd.RunE = func(c *cobra.Command, args []string) error {
+		if len(args) > 0 {
+			return fail(exitUsage, "unknown command %q for %q (see %s --help)", args[0], c.CommandPath(), c.CommandPath())
+		}
+		return c.Help()
+	}
+	return cmd
 }

@@ -24,7 +24,7 @@ func parseJobID(arg string) (uuid.UUID, error) {
 }
 
 func (a *app) newJobCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "job", Short: "Agent jobs and their proposals"}
+	cmd := group(&cobra.Command{Use: "job", Short: "Agent jobs and their proposals"})
 	cmd.AddCommand(a.jobList(), a.jobShow(), a.jobDecide("approve", "Approve a job's proposals and apply them"),
 		a.jobDecide("reject", "Reject a job's proposals"))
 	return cmd

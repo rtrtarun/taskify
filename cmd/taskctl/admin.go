@@ -15,9 +15,9 @@ import (
 // The admin commands call admin endpoints. Whether the caller is an admin is
 // the server's decision: a member gets 403, which is exit code 3.
 func (a *app) newAdminCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "admin", Short: "Administration (admins only)"}
+	cmd := group(&cobra.Command{Use: "admin", Short: "Administration (admins only)"})
 
-	suggestions := &cobra.Command{Use: "suggestions", Short: "Learning suggestions from AgentPulse"}
+	suggestions := group(&cobra.Command{Use: "suggestions", Short: "Learning suggestions from AgentPulse"})
 	suggestions.AddCommand(&cobra.Command{Use: "list", Short: "List the tenant's learning suggestions", Args: cobra.NoArgs,
 		RunE: a.api(func(ctx context.Context, s *session, c *client.ClientWithResponses, _ []string) error {
 			resp, err := c.ListLearningSuggestionsWithResponse(ctx)
@@ -69,7 +69,7 @@ func (a *app) newAdminCmd() *cobra.Command {
 	})
 	suggestions.AddCommand(decide)
 
-	rules := &cobra.Command{Use: "rules", Short: "AgentPulse rules"}
+	rules := group(&cobra.Command{Use: "rules", Short: "AgentPulse rules"})
 	rules.AddCommand(&cobra.Command{Use: "bootstrap <workspace>", Short: "Register a workspace's default rules (safe to repeat)", Args: cobra.ExactArgs(1),
 		RunE: a.api(func(ctx context.Context, s *session, c *client.ClientWithResponses, args []string) error {
 			resp, err := c.BootstrapWorkspaceRulesWithResponse(ctx, args[0])
@@ -87,7 +87,7 @@ func (a *app) newAdminCmd() *cobra.Command {
 			}})
 		})})
 
-	outbox := &cobra.Command{Use: "outbox", Short: "Notifications waiting for AgentPulse"}
+	outbox := group(&cobra.Command{Use: "outbox", Short: "Notifications waiting for AgentPulse"})
 	var status string
 	var limit int
 	list := &cobra.Command{Use: "list", Short: "List outbox rows, newest first", Args: cobra.NoArgs}

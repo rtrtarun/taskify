@@ -8,7 +8,7 @@ import (
 )
 
 func (a *app) newConfigCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "config", Short: "View and change the configuration"}
+	cmd := group(&cobra.Command{Use: "config", Short: "View and change the configuration"})
 
 	view := &cobra.Command{
 		Use:   "view",

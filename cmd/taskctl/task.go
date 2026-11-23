@@ -85,7 +85,7 @@ func (s *session) resolveTaskID(ctx context.Context, c *client.ClientWithRespons
 }
 
 func (a *app) newTaskCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "task", Short: "Create, view, and change tasks"}
+	cmd := group(&cobra.Command{Use: "task", Short: "Create, view, and change tasks"})
 	cmd.AddCommand(a.taskAdd(), a.taskList(), a.taskShow(), a.taskUpdate(), a.taskDone(),
 		a.taskBlock(), a.taskUnblock(), a.taskArchive(), a.taskComment(), a.taskDecompose())
 	return cmd

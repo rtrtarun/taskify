@@ -80,6 +80,8 @@ func TestConfigRefusesWhatItShouldNot(t *testing.T) {
 		"missing value":          {"config", "set", "server"},
 		"unknown flag":           {"--nope"},
 		"unknown command":        {"frobnicate"},
+		"unknown subcommand":     {"task", "frobnicate"},
+		"unknown admin command":  {"admin", "outbox", "frobnicate"},
 	} {
 		if code, _, _ := c.run(args...); code != exitUsage {
 			t.Errorf("%s: exit %d, want %d", name, code, exitUsage)
