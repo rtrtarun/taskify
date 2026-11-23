@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/rtrtarun/taskify/contract"
 	"github.com/rtrtarun/taskify/internal/agentpulse"
 	"github.com/rtrtarun/taskify/internal/domain"
 	"github.com/rtrtarun/taskify/internal/worker"
@@ -526,5 +527,43 @@ func TestGetTaskConditional(t *testing.T) {
 	}
 	if r := e.do(req{method: "GET", path: "/api/v1/tasks/" + uuid.NewString(), headers: map[string]string{"If-None-Match": tag}}); r.status != 404 {
 		t.Errorf("unknown task: %d", r.status)
+	}
+}
+
+// Every response carries the contract's version, in one place: the embedded
+// openapi.yaml.
+func TestAPIVersionHeader(t *testing.T) {
+	e := newEnv(t, func(d *Deps) { d.CORSAllowedOrigins = []string{"https://app.example"} })
+	want := contract.APIVersion()
+	if want == "" {
+		t.Fatal("no contract version")
+	}
+	for name, rq := range map[string]req{
+		"ok":            {method: "GET", path: "/api/v1/me"},
+		"not found":     {method: "GET", path: "/api/v1/tasks/" + uuid.NewString()},
+		"unauthorized":  {method: "GET", path: "/api/v1/me", as: "none"},
+		"no such route": {method: "GET", path: "/api/v1/nope"},
+		"bad method":    {method: "DELETE", path: "/api/v1/me"},
+		"healthz":       {method: "GET", path: "/healthz", as: "none"},
+		"readyz":        {method: "GET", path: "/readyz", as: "none"},
+		"not modified":  {method: "GET", path: "/api/v1/workspaces", headers: map[string]string{"If-None-Match": "*"}},
+	} {
+		if r := e.do(rq); r.header.Get("X-Taskify-API-Version") != want {
+			t.Errorf("%s (%d): X-Taskify-API-Version = %q, want %q", name, r.status, r.header.Get("X-Taskify-API-Version"), want)
+		}
+	}
+	// A preflight is not in the contract, so it goes straight to the handler.
+	pre := httptest.NewRequest("OPTIONS", "/api/v1/tasks", nil)
+	pre.Header.Set("Origin", "https://app.example")
+	pre.Header.Set("Access-Control-Request-Method", "GET")
+	rec := httptest.NewRecorder()
+	e.handler.ServeHTTP(rec, pre)
+	if rec.Code != 204 || rec.Header().Get("X-Taskify-API-Version") != want {
+		t.Errorf("preflight: %d %q", rec.Code, rec.Header().Get("X-Taskify-API-Version"))
+	}
+	// A browser on another origin may read it.
+	r := e.do(req{method: "GET", path: "/api/v1/me", headers: map[string]string{"Origin": "https://app.example"}})
+	if !strings.Contains(r.header.Get("Access-Control-Expose-Headers"), "X-Taskify-API-Version") {
+		t.Errorf("not exposed to browsers: %q", r.header.Get("Access-Control-Expose-Headers"))
 	}
 }

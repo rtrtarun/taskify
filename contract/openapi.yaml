@@ -27,6 +27,13 @@ info:
       `error.details.current_version`.
     - Every response carries `X-Request-ID`, echoing a well-formed incoming
       one or a new UUID.
+    - Every response carries `X-Taskify-API-Version`, the `info.version` of
+      this document: three numbers, `major.minor.patch`. A change that only
+      adds (an endpoint, a field, an optional parameter) raises the minor
+      number; a fix to this document raises the patch; a change that breaks a
+      client raises the major. A client generated from an older version still
+      works against a newer server of the same major version, and may tell
+      its user that a newer one exists.
     - A path or method not listed here answers `404 not_found` or
       `405 invalid_request`, with the `Error` body.
     - The task routes are also served without the `/api/v1` prefix (`/tasks`,

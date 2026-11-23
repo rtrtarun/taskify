@@ -18,11 +18,16 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/time/rate"
 
+	"github.com/rtrtarun/taskify/contract"
 	"github.com/rtrtarun/taskify/internal/observability"
 )
 
 // HeaderRequestID carries the request ID in both directions.
 const HeaderRequestID = "X-Request-ID"
+
+// HeaderAPIVersion carries the contract's version, info.version of
+// contract/openapi.yaml, on every response.
+const HeaderAPIVersion = "X-Taskify-API-Version"
 
 // logFields collects values that inner handlers learn (the caller's tenant)
 // for the access log written by the outer middleware.
@@ -52,6 +57,7 @@ func requestContext(logger *slog.Logger, metrics *observability.Metrics) func(ht
 				id = uuid.NewString()
 			}
 			w.Header().Set(HeaderRequestID, id)
+			w.Header().Set(HeaderAPIVersion, contract.APIVersion())
 			f := &logFields{requestID: id}
 			ctx := context.WithValue(r.Context(), fieldsKey{}, f)
 

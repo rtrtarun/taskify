@@ -50,7 +50,7 @@ func corsMiddleware(allowed []string) func(http.Handler) http.Handler {
 				if ok {
 					h := w.Header()
 					h.Set("Access-Control-Allow-Origin", origin)
-					h.Set("Access-Control-Expose-Headers", "ETag, Location, Retry-After, X-Request-ID")
+					h.Set("Access-Control-Expose-Headers", "ETag, Location, Retry-After, X-Request-ID, X-Taskify-API-Version")
 				}
 				next.ServeHTTP(w, r)
 			}
