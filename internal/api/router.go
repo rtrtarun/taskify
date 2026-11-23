@@ -28,12 +28,14 @@ type Deps struct {
 	Outbox   *service.OutboxService
 	Learning LearningClient
 
-	Auth          AuthConfig
-	WebhookSecret string
-	RateLimit     RateLimitConfig
-	Version       string
-	Logger        *slog.Logger
-	Now           func() time.Time
+	// CORSAllowedOrigins lets a frontend on another origin call the API.
+	CORSAllowedOrigins []string
+	Auth               AuthConfig
+	WebhookSecret      string
+	RateLimit          RateLimitConfig
+	Version            string
+	Logger             *slog.Logger
+	Now                func() time.Time
 	// Metrics may be nil; /metrics is then not served.
 	Metrics *observability.Metrics
 	// Ready reports whether the service can do its work (the database
@@ -97,7 +99,7 @@ func newMux(d Deps) (*chi.Mux, error) {
 	}
 
 	r := chi.NewRouter()
-	r.Use(requestContext(d.Logger, d.Metrics), recoverer(d.Logger))
+	r.Use(requestContext(d.Logger, d.Metrics), recoverer(d.Logger), corsMiddleware(d.CORSAllowedOrigins))
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, newError(http.StatusNotFound, CodeNotFound, "no such route"))
 	})

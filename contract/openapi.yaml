@@ -153,6 +153,17 @@ paths:
       description: |
         The caller's tenant's tasks, most recently updated first, a page at a
         time. Archived tasks are listed only with `status=archived`.
+
+        Polling (the web client reads this every 15 to 30 seconds). The
+        response carries an `ETag` derived from the number of matching tasks
+        and the latest `updated_at` among them, for this tenant and these
+        query parameters, read with one small query. A request whose
+        `If-None-Match` equals it answers `304` with no body.
+
+        `updated_since` returns only the tasks updated after that time (a
+        delta, still newest first), and adds `archived_ids`: the IDs of tasks
+        archived after that time, which a delta cannot otherwise show. A task
+        archived and then restored is a task, not an archived ID.
       parameters:
         - name: assignee_id
           in: query
@@ -177,15 +188,26 @@ paths:
             type: string
             minLength: 1
             maxLength: 36
+        - name: updated_since
+          in: query
+          description: RFC 3339. Only tasks updated after this time; adds `archived_ids` to the response.
+          schema:
+            $ref: "#/components/schemas/Timestamp"
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/IfNoneMatch"
       responses:
         "200":
           description: One page.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ListETag"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/TaskList"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -619,13 +641,19 @@ paths:
             $ref: "#/components/schemas/AgentType"
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/IfNoneMatch"
       responses:
         "200":
-          description: One page.
+          description: One page. Its `ETag` is a hash of the body, so a repeated poll can answer `304`.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ListETag"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/AgentJobList"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1043,13 +1071,19 @@ paths:
             $ref: "#/components/schemas/OutboxStatus"
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/IfNoneMatch"
       responses:
         "200":
-          description: One page.
+          description: One page. Its `ETag` is a hash of the body, so a repeated poll can answer `304`.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ListETag"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/OutboxList"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1204,6 +1238,12 @@ components:
       description: The `next_cursor` of the previous page. Opaque.
       schema:
         type: string
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      description: The `ETag` of the last response to this same request. Answers `304` when it still matches.
+      schema:
+        type: string
     IfMatch:
       name: If-Match
       in: header
@@ -1214,6 +1254,12 @@ components:
   headers:
     ETag:
       description: The task's version, as a strong validator, such as `"3"`.
+      schema:
+        type: string
+    ListETag:
+      description: |
+        A weak validator of the list as requested (`W/"..."`). Send it back
+        as `If-None-Match`.
       schema:
         type: string
     Location:
@@ -1326,6 +1372,11 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    NotModified:
+      description: The list is unchanged since the `ETag` in `If-None-Match`. No body.
+      headers:
+        ETag:
+          $ref: "#/components/headers/ListETag"
     BadGateway:
       description: "AgentPulse did not complete the request. Code `upstream_error`."
       content:
@@ -1544,6 +1595,11 @@ components:
           type: string
           nullable: true
           description: Pass as `cursor` for the next page; null on the last page.
+        archived_ids:
+          type: array
+          description: "Only with `updated_since`, the tasks archived after that time."
+          items:
+            $ref: "#/components/schemas/Uuid"
     TaskCreate:
       type: object
       required: [workspace_id, title]

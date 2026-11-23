@@ -408,22 +408,47 @@ func (s *TaskService) ListTasks(ctx context.Context, f repository.TaskFilter) (r
 	case f.Limit > MaxListLimit:
 		f.Limit = MaxListLimit
 	}
-	if f.Status != "" && !f.Status.Valid() {
-		return repository.TaskPage{}, fmt.Errorf("%w: unknown status %q", domain.ErrValidation, f.Status)
-	}
-	if f.Priority != "" && !f.Priority.Valid() {
-		return repository.TaskPage{}, fmt.Errorf("%w: unknown priority %q", domain.ErrValidation, f.Priority)
-	}
-	if f.IDPrefix != "" {
-		if _, _, err := domain.IDPrefixRange(f.IDPrefix); err != nil {
-			return repository.TaskPage{}, err
-		}
+	if err := validateTaskFilter(f); err != nil {
+		return repository.TaskPage{}, err
 	}
 	page, err := s.deps.Tasks.List(ctx, f)
 	if page.Tasks == nil {
 		page.Tasks = []*domain.Task{}
 	}
 	return page, err
+}
+
+func validateTaskFilter(f repository.TaskFilter) error {
+	if f.Status != "" && !f.Status.Valid() {
+		return fmt.Errorf("%w: unknown status %q", domain.ErrValidation, f.Status)
+	}
+	if f.Priority != "" && !f.Priority.Valid() {
+		return fmt.Errorf("%w: unknown priority %q", domain.ErrValidation, f.Priority)
+	}
+	if f.IDPrefix != "" {
+		if _, _, err := domain.IDPrefixRange(f.IDPrefix); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// TaskListState returns what the list f matches, summarised for its ETag: a
+// count and the latest update, read without loading the tasks (M14-02).
+func (s *TaskService) TaskListState(ctx context.Context, f repository.TaskFilter) (repository.ListState, error) {
+	if err := validateTaskFilter(f); err != nil {
+		return repository.ListState{}, err
+	}
+	return s.deps.Tasks.ListState(ctx, f)
+}
+
+// ArchivedSince returns the IDs of tasks archived after f.UpdatedSince, for
+// a delta list, which cannot show an archived task by listing it.
+func (s *TaskService) ArchivedSince(ctx context.Context, f repository.TaskFilter) ([]uuid.UUID, error) {
+	if err := validateTaskFilter(f); err != nil {
+		return nil, err
+	}
+	return s.deps.Tasks.ArchivedSince(ctx, f)
 }
 
 // emit writes the outbox rows for events, after the load gatekeeper has

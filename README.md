@@ -210,6 +210,7 @@ All settings are environment variables. In development, a `.env` file is also re
 | `JWT_ALGORITHM` | `HS256` | `HS256` or `RS256` |
 | `JWT_SECRET` / `JWT_PUBLIC_KEY` | required in production | Token verification key (PEM for RS256) |
 | `TRUSTED_GATEWAY_CIDRS` | empty | Address ranges allowed to send identity headers instead of a token, judged by the TCP peer address |
+| `CORS_ALLOWED_ORIGINS` | empty | Browser origins allowed to call the API when the web frontend is served from another origin, such as `https://app.example.com`. A comma-separated list, no `*` |
 | `OUTBOX_WORKERS` | `8` | Concurrent sends per replica |
 | `OUTBOX_BATCH_SIZE` | `100` | Rows claimed at a time |
 | `OUTBOX_POLL_INTERVAL` | `200ms` | Relay poll period |

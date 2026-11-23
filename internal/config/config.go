@@ -54,6 +54,11 @@ type Config struct {
 
 	TrustedGatewayCIDRs []netip.Prefix
 
+	// CORSAllowedOrigins are the browser origins that may call the API when
+	// the web frontend is served from another origin (M14-02), each as
+	// scheme://host[:port].
+	CORSAllowedOrigins []string
+
 	RateLimitRPS   float64
 	RateLimitBurst int
 
@@ -130,6 +135,7 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 		JWTPublicKey: r.optional("JWT_PUBLIC_KEY"),
 
 		TrustedGatewayCIDRs: r.cidrs("TRUSTED_GATEWAY_CIDRS"),
+		CORSAllowedOrigins:  r.origins("CORS_ALLOWED_ORIGINS"),
 
 		RateLimitRPS:   r.positiveFloat("RATE_LIMIT_RPS", 20),
 		RateLimitBurst: r.intRange("RATE_LIMIT_BURST", 40, 1, 1_000_000),
@@ -290,6 +296,31 @@ func (r *reader) duration(name string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+// origins reads a comma-separated list of browser origins. Each is
+// scheme://host[:port] with no path, query, or trailing slash, and is kept
+// as written, since browsers send an origin in exactly that form.
+func (r *reader) origins(name string) []string {
+	v := r.optional(name)
+	if v == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		u, err := url.Parse(part)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Path != "" ||
+			u.RawQuery != "" || u.Fragment != "" || u.User != nil || part != u.Scheme+"://"+u.Host {
+			r.fail(name, "must be a comma-separated list of origins such as https://app.example.com (no path, no trailing slash, no *)")
+			return nil
+		}
+		out = append(out, part)
+	}
+	return out
 }
 
 func (r *reader) cidrs(name string) []netip.Prefix {

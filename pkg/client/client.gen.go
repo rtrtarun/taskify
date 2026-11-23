@@ -592,6 +592,9 @@ type TaskDetailBlockedReason string
 
 // TaskList defines model for TaskList.
 type TaskList struct {
+	// ArchivedIds Only with `updated_since`, the tasks archived after that time.
+	ArchivedIds *[]Uuid `json:"archived_ids,omitempty"`
+
 	// NextCursor Pass as `cursor` for the next page; null on the last page.
 	NextCursor *string `json:"next_cursor"`
 	Tasks      []Task  `json:"tasks"`
@@ -673,6 +676,9 @@ type Cursor = string
 // IfMatch defines model for IfMatch.
 type IfMatch = string
 
+// IfNoneMatch defines model for IfNoneMatch.
+type IfNoneMatch = string
+
 // JobID defines model for JobID.
 type JobID = Uuid
 
@@ -742,6 +748,9 @@ type ListOutboxParams struct {
 
 	// Cursor The `next_cursor` of the previous page. Opaque.
 	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// IfNoneMatch The `ETag` of the last response to this same request. Answers `304` when it still matches.
+	IfNoneMatch *IfNoneMatch `json:"If-None-Match,omitempty"`
 }
 
 // ListAgentJobsParams defines parameters for ListAgentJobs.
@@ -755,6 +764,9 @@ type ListAgentJobsParams struct {
 
 	// Cursor The `next_cursor` of the previous page. Opaque.
 	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// IfNoneMatch The `ETag` of the last response to this same request. Answers `304` when it still matches.
+	IfNoneMatch *IfNoneMatch `json:"If-None-Match,omitempty"`
 }
 
 // ListTasksParams defines parameters for ListTasks.
@@ -769,11 +781,17 @@ type ListTasksParams struct {
 	// Lets a client accept a short ID.
 	IdPrefix *string `form:"id_prefix,omitempty" json:"id_prefix,omitempty"`
 
+	// UpdatedSince RFC 3339. Only tasks updated after this time; adds `archived_ids` to the response.
+	UpdatedSince *Timestamp `form:"updated_since,omitempty" json:"updated_since,omitempty"`
+
 	// Limit Page size, 1 to 200. Default 50.
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 
 	// Cursor The `next_cursor` of the previous page. Opaque.
 	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// IfNoneMatch The `ETag` of the last response to this same request. Answers `304` when it still matches.
+	IfNoneMatch *IfNoneMatch `json:"If-None-Match,omitempty"`
 }
 
 // DeleteTaskParams defines parameters for DeleteTask.
@@ -1679,6 +1697,21 @@ func NewListOutboxRequest(server string, params *ListOutboxParams) (*http.Reques
 		return nil, err
 	}
 
+	if params != nil {
+
+		if params.IfNoneMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "If-None-Match", runtime.ParamLocationHeader, *params.IfNoneMatch)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-None-Match", headerParam0)
+		}
+
+	}
+
 	return req, nil
 }
 
@@ -1824,6 +1857,21 @@ func NewListAgentJobsRequest(server string, params *ListAgentJobsParams) (*http.
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+
+		if params.IfNoneMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "If-None-Match", runtime.ParamLocationHeader, *params.IfNoneMatch)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-None-Match", headerParam0)
+		}
+
 	}
 
 	return req, nil
@@ -2138,6 +2186,22 @@ func NewListTasksRequest(server string, params *ListTasksParams) (*http.Request,
 
 		}
 
+		if params.UpdatedSince != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "updated_since", runtime.ParamLocationQuery, *params.UpdatedSince); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
 		if params.Limit != nil {
 
 			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "limit", runtime.ParamLocationQuery, *params.Limit); err != nil {
@@ -2176,6 +2240,21 @@ func NewListTasksRequest(server string, params *ListTasksParams) (*http.Request,
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+
+		if params.IfNoneMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "If-None-Match", runtime.ParamLocationHeader, *params.IfNoneMatch)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-None-Match", headerParam0)
+		}
+
 	}
 
 	return req, nil

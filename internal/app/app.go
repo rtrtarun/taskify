@@ -138,12 +138,13 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 			PublicKey:           cfg.JWTPublicKey,
 			TrustedGatewayCIDRs: cfg.TrustedGatewayCIDRs,
 		},
-		WebhookSecret: cfg.AgentPulseWebhookSecret,
-		RateLimit:     api.RateLimitConfig{RPS: cfg.RateLimitRPS, Burst: cfg.RateLimitBurst},
-		Version:       version,
-		Logger:        logger,
-		Metrics:       metrics,
-		Ready:         db.Ping,
+		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
+		WebhookSecret:      cfg.AgentPulseWebhookSecret,
+		RateLimit:          api.RateLimitConfig{RPS: cfg.RateLimitRPS, Burst: cfg.RateLimitBurst},
+		Version:            version,
+		Logger:             logger,
+		Metrics:            metrics,
+		Ready:              db.Ping,
 	})
 	if err != nil {
 		return nil, err

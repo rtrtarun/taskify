@@ -278,3 +278,72 @@ func containsEntry(entries []domain.OutboxEntry, id uuid.UUID) bool {
 	}
 	return false
 }
+
+// TestTaskListStateAndDelta covers what the polling client needs (M14-02):
+// the count and latest update of a list, updated_since, and the tasks
+// archived since a time.
+func TestTaskListStateAndDelta(t *testing.T) {
+	each(t, func(t *testing.T, b Backend) {
+		seedWorkspace(t, b, tenant)
+		seedWorkspace(t, b, "tenant_other")
+		at := func(m int) time.Time { return t0.Add(time.Duration(m) * time.Minute) }
+		mk := func(tenantID string, minutes int, mutate func(*domain.Task)) *domain.Task {
+			task := newTask(t, tenantID, nil)
+			task.CreatedAt, task.UpdatedAt = at(minutes), at(minutes)
+			if mutate != nil {
+				mutate(task)
+			}
+			create(t, b, task)
+			return task
+		}
+		mk(tenant, 1, nil)
+		mk(tenant, 5, nil)
+		archivedEarly := mk(tenant, 2, func(x *domain.Task) {
+			x.Status, x.ArchivedAt = domain.StatusArchived, ptr(at(2))
+		})
+		archivedLate := mk(tenant, 8, func(x *domain.Task) {
+			x.Status, x.ArchivedAt, x.AssigneeID = domain.StatusArchived, ptr(at(8)), "usr_carol"
+		})
+		mk("tenant_other", 9, nil)
+
+		f := repository.TaskFilter{TenantID: tenant, Limit: 1}
+		st, err := b.Tasks.ListState(ctx, f)
+		if err != nil || st.Count != 2 || !st.Latest.Equal(at(5)) || st.ArchivedSince != 0 {
+			t.Fatalf("ListState = %+v, %v (the limit must not matter, archived tasks are not counted)", st, err)
+		}
+		if st, err = b.Tasks.ListState(ctx, repository.TaskFilter{TenantID: "tenant_none"}); err != nil || st.Count != 0 || !st.Latest.IsZero() {
+			t.Errorf("empty ListState = %+v, %v", st, err)
+		}
+
+		since := at(3)
+		f.UpdatedSince = &since
+		st, err = b.Tasks.ListState(ctx, f)
+		if err != nil || st.Count != 1 || !st.Latest.Equal(at(5)) || st.ArchivedSince != 1 {
+			t.Fatalf("delta ListState = %+v, %v", st, err)
+		}
+		page, err := b.Tasks.List(ctx, repository.TaskFilter{TenantID: tenant, UpdatedSince: &since, Limit: 10})
+		if err != nil || len(page.Tasks) != 1 || !page.Tasks[0].UpdatedAt.Equal(at(5)) {
+			t.Fatalf("delta List = %d tasks, %v", len(page.Tasks), err)
+		}
+
+		ids, err := b.Tasks.ArchivedSince(ctx, f)
+		if err != nil || len(ids) != 1 || ids[0] != archivedLate.ID {
+			t.Fatalf("ArchivedSince = %v, %v", ids, err)
+		}
+		older := at(0)
+		ids, _ = b.Tasks.ArchivedSince(ctx, repository.TaskFilter{TenantID: tenant, UpdatedSince: &older})
+		if len(ids) != 2 || ids[0] != archivedEarly.ID || ids[1] != archivedLate.ID {
+			t.Errorf("ArchivedSince from the start = %v (oldest first)", ids)
+		}
+		ids, _ = b.Tasks.ArchivedSince(ctx, repository.TaskFilter{TenantID: tenant, UpdatedSince: &older, AssigneeID: "usr_carol"})
+		if len(ids) != 1 || ids[0] != archivedLate.ID {
+			t.Errorf("ArchivedSince for one assignee = %v", ids)
+		}
+		if ids, err = b.Tasks.ArchivedSince(ctx, repository.TaskFilter{TenantID: "tenant_other", UpdatedSince: &older}); err != nil || ids == nil || len(ids) != 0 {
+			t.Errorf("another tenant's ArchivedSince = %v, %v", ids, err)
+		}
+		if ids, err = b.Tasks.ArchivedSince(ctx, repository.TaskFilter{TenantID: tenant}); err != nil || ids == nil || len(ids) != 0 {
+			t.Errorf("ArchivedSince without a time = %v, %v", ids, err)
+		}
+	})
+}

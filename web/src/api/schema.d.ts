@@ -72,6 +72,17 @@ export interface paths {
          * List tasks
          * @description The caller's tenant's tasks, most recently updated first, a page at a
          *     time. Archived tasks are listed only with `status=archived`.
+         *
+         *     Polling (the web client reads this every 15 to 30 seconds). The
+         *     response carries an `ETag` derived from the number of matching tasks
+         *     and the latest `updated_at` among them, for this tenant and these
+         *     query parameters, read with one small query. A request whose
+         *     `If-None-Match` equals it answers `304` with no body.
+         *
+         *     `updated_since` returns only the tasks updated after that time (a
+         *     delta, still newest first), and adds `archived_ids`: the IDs of tasks
+         *     archived after that time, which a delta cannot otherwise show. A task
+         *     archived and then restored is a task, not an archived ID.
          */
         get: operations["listTasks"];
         put?: never;
@@ -783,6 +794,8 @@ export interface components {
             tasks: components["schemas"]["Task"][];
             /** @description Pass as `cursor` for the next page; null on the last page. */
             next_cursor: string | null;
+            /** @description Only with `updated_since`, the tasks archived after that time. */
+            archived_ids?: components["schemas"]["Uuid"][];
         };
         TaskCreate: {
             workspace_id: string;
@@ -1232,6 +1245,14 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description The list is unchanged since the `ETag` in `If-None-Match`. No body. */
+        NotModified: {
+            headers: {
+                ETag: components["headers"]["ListETag"];
+                [name: string]: unknown;
+            };
+            content?: never;
+        };
         /** @description AgentPulse did not complete the request. Code `upstream_error`. */
         BadGateway: {
             headers: {
@@ -1261,6 +1282,8 @@ export interface components {
         Limit: number;
         /** @description The `next_cursor` of the previous page. Opaque. */
         Cursor: string;
+        /** @description The `ETag` of the last response to this same request. Answers `304` when it still matches. */
+        IfNoneMatch: string;
         /** @description The task's expected version, as `"3"`, `W/"3"`, or `3`. */
         IfMatch: string;
     };
@@ -1268,6 +1291,11 @@ export interface components {
     headers: {
         /** @description The task's version, as a strong validator, such as `"3"`. */
         ETag: string;
+        /**
+         * @description A weak validator of the list as requested (`W/"..."`). Send it back
+         *     as `If-None-Match`.
+         */
+        ListETag: string;
         /** @description The created resource. */
         Location: string;
         /** @description Seconds to wait. */
@@ -1362,12 +1390,17 @@ export interface operations {
                  *     Lets a client accept a short ID.
                  */
                 id_prefix?: string;
+                /** @description RFC 3339. Only tasks updated after this time; adds `archived_ids` to the response. */
+                updated_since?: components["schemas"]["Timestamp"];
                 /** @description Page size, 1 to 200. Default 50. */
                 limit?: components["parameters"]["Limit"];
                 /** @description The `next_cursor` of the previous page. Opaque. */
                 cursor?: components["parameters"]["Cursor"];
             };
-            header?: never;
+            header?: {
+                /** @description The `ETag` of the last response to this same request. Answers `304` when it still matches. */
+                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -1376,12 +1409,14 @@ export interface operations {
             /** @description One page. */
             200: {
                 headers: {
+                    ETag: components["headers"]["ListETag"];
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["TaskList"];
                 };
             };
+            304: components["responses"]["NotModified"];
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             422: components["responses"]["Unprocessable"];
@@ -1771,21 +1806,26 @@ export interface operations {
                 /** @description The `next_cursor` of the previous page. Opaque. */
                 cursor?: components["parameters"]["Cursor"];
             };
-            header?: never;
+            header?: {
+                /** @description The `ETag` of the last response to this same request. Answers `304` when it still matches. */
+                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+            };
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description One page. */
+            /** @description One page. Its `ETag` is a hash of the body, so a repeated poll can answer `304`. */
             200: {
                 headers: {
+                    ETag: components["headers"]["ListETag"];
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["AgentJobList"];
                 };
             };
+            304: components["responses"]["NotModified"];
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             422: components["responses"]["Unprocessable"];
@@ -2132,21 +2172,26 @@ export interface operations {
                 /** @description The `next_cursor` of the previous page. Opaque. */
                 cursor?: components["parameters"]["Cursor"];
             };
-            header?: never;
+            header?: {
+                /** @description The `ETag` of the last response to this same request. Answers `304` when it still matches. */
+                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+            };
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description One page. */
+            /** @description One page. Its `ETag` is a hash of the body, so a repeated poll can answer `304`. */
             200: {
                 headers: {
+                    ETag: components["headers"]["ListETag"];
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["OutboxList"];
                 };
             };
+            304: components["responses"]["NotModified"];
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];

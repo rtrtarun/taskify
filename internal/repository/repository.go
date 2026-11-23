@@ -45,9 +45,27 @@ type TaskFilter struct {
 	// IDPrefix, when set, keeps tasks whose ID starts with it; it must pass
 	// domain.IDPrefixRange.
 	IDPrefix string
-	Limit    int // must be positive
-	After    *Cursor
+	// UpdatedSince, when set, keeps tasks updated after it.
+	UpdatedSince *time.Time
+	Limit        int // must be positive
+	After        *Cursor
 }
+
+// ListState summarises the tasks a filter matches, for the list's ETag. The
+// filter's Limit and After are ignored.
+type ListState struct {
+	// Count and Latest are the number of matching tasks and the latest
+	// updated_at among them (zero when there are none).
+	Count  int
+	Latest time.Time
+	// ArchivedSince counts tasks archived after UpdatedSince, which leave
+	// the list without changing Count or Latest of what is left. Zero when
+	// UpdatedSince is unset.
+	ArchivedSince int
+}
+
+// MaxArchivedIDs caps the archived IDs a delta list reports.
+const MaxArchivedIDs = 1000
 
 // ListCursor marks a position in a list ordered by (created_at, id)
 // descending: agent jobs and outbox rows.
@@ -74,6 +92,13 @@ type TaskRepository interface {
 	// ErrVersionConflict otherwise. Watchers are replaced.
 	Update(ctx context.Context, t *domain.Task, expectedVersion int) error
 	List(ctx context.Context, f TaskFilter) (TaskPage, error)
+	// ListState returns the count and latest update of the tasks f matches,
+	// without loading them.
+	ListState(ctx context.Context, f TaskFilter) (ListState, error)
+	// ArchivedSince returns the IDs of tasks archived after f.UpdatedSince
+	// that match f's assignee, priority, and ID prefix (not its status),
+	// oldest first, at most MaxArchivedIDs.
+	ArchivedSince(ctx context.Context, f TaskFilter) ([]uuid.UUID, error)
 	// ListChildren returns the tasks whose parent is parentID, in the tenant,
 	// oldest first, archived ones included.
 	ListChildren(ctx context.Context, tenantID string, parentID uuid.UUID) ([]*domain.Task, error)
