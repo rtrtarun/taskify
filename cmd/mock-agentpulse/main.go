@@ -67,6 +67,12 @@ func main() {
 			return
 		}
 		mock.SeedFeed(in.TenantID, in.UserID, in.Items...)
+		// Feedback must name a notification AgentPulse holds, so each item is one.
+		for _, it := range in.Items {
+			if id, _ := it["id"].(string); id != "" {
+				mock.SeedNotification(id, map[string]any{"tenantId": in.TenantID, "userId": in.UserID})
+			}
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /_mock/reset", func(w http.ResponseWriter, _ *http.Request) {

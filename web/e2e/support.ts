@@ -61,7 +61,7 @@ export async function signIn(page: Page, tok: string, path = "/tasks"): Promise<
   await page.goto(path);
   await page.getByLabel("Development token").fill(tok);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByRole("link", { name: "Tasks" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Main" })).toBeVisible();
 }
 
 // The mock AgentPulse's control endpoints (cmd/mock-agentpulse).

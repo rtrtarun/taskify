@@ -73,11 +73,32 @@ jobs:
   web:
     name: Web
     runs-on: ubuntu-latest
+    # The browser tests start the server and mock AgentPulse from this
+    # checkout (web/e2e/global-setup.ts), each run in a throwaway database.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: taskify
+          POSTGRES_PASSWORD: taskify
+          POSTGRES_DB: taskify
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U taskify -d taskify"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      E2E_DATABASE_URL: postgres://taskify:taskify@localhost:5432/taskify?sslmode=disable
     defaults:
       run:
         working-directory: web
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
       - uses: actions/setup-node@v6
         with:
           node-version: 24

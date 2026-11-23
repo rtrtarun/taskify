@@ -29,3 +29,8 @@ button.link { background: none; border: none; color: #36c; text-decoration: unde
 .comments { list-style: none; padding: 0; }
 .comments li { border-bottom: 1px solid #ddd; padding: 0.5rem 0; }
 .comments .body { white-space: pre-wrap; margin: 0.25rem 0 0; }
+.notifications { list-style: none; padding: 0; }
+.notifications li { border-bottom: 1px solid #ddd; padding: 0.5rem 0; }
+.notifications li.handled { opacity: 0.6; }
+.notifications h2 { font-size: 1rem; margin: 0; }
+.notifications .body { white-space: pre-wrap; margin: 0.25rem 0; }
