@@ -58,6 +58,8 @@ type Config struct {
 	// the web frontend is served from another origin (M14-02), each as
 	// scheme://host[:port].
 	CORSAllowedOrigins []string
+	// ServeEmbeddedSPA serves the frontend compiled into the binary at /.
+	ServeEmbeddedSPA bool
 
 	RateLimitRPS   float64
 	RateLimitBurst int
@@ -136,6 +138,7 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 
 		TrustedGatewayCIDRs: r.cidrs("TRUSTED_GATEWAY_CIDRS"),
 		CORSAllowedOrigins:  r.origins("CORS_ALLOWED_ORIGINS"),
+		ServeEmbeddedSPA:    r.boolean("SERVE_EMBEDDED_SPA", false),
 
 		RateLimitRPS:   r.positiveFloat("RATE_LIMIT_RPS", 20),
 		RateLimitBurst: r.intRange("RATE_LIMIT_BURST", 40, 1, 1_000_000),
