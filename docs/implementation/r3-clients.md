@@ -65,7 +65,9 @@ Done. Sign-in is the development path (a pasted token, held in memory); the `Htt
 | M14-06 | **Notification feed backend.** Migration `000010` adding `notification_acks`. `GET /notifications/in-app` proxies AgentPulse with service credentials, taking tenant and user only from the token, and enriches each item with task data and read state; a timeout or open breaker returns `503` with a retry hint. `POST /notifications/{id}/ack` saves the ack locally first, then forwards feedback, retrying through the outbox on failure (G20). | `migrations/000010_notification_acks.{up,down}.sql`, `internal/api/notification_handler.go`, `internal/service/`, tests | Tests: a user cannot read another user's feed by changing the request; one ack yields one feedback call even when the first attempt fails | Careful, M | M12-04, M0-07 |
 | M14-07 | **Notifications panel.** The in-app feed with act, snooze, and dismiss. When the feed is unavailable the panel shows an error and the rest of the app keeps working. The per-user feed is agreed with AgentPulse (R8, slice 40d), so the panel is built against the agreed endpoint and the mock. | `web/src/pages/notifications/` | End-to-end test with AgentPulse unreachable: the task screens still work | Routine, M | M14-06 |
 
-### M14b. Agent screens (needs M6, M8, M10)
+### M14b. Agent screens (needs M6, M8, M10) (done)
+
+Done. Departures D81 to D84 are in [README.md](README.md). The owner follow-ups of 2026-11-23 (workspace list, conditional task detail, API version header, D72 confirmation, `go.mod` ignore) are D77 to D80 and D72. M14 stays in progress until M14c.
 
 | ID | Task | Files | Done when | Level, size | After |
 | --- | --- | --- | --- | --- | --- |

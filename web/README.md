@@ -14,7 +14,7 @@ Task and comment text is always rendered as text; the lint rules ban `innerHTML`
 
 ## Browser tests
 
-`npm run e2e` starts everything from this checkout (`e2e/global-setup.ts`): a throwaway migrated database made by `tools/e2edb` on `E2E_DATABASE_URL` (default: the compose Postgres on `localhost:5433`; the role needs CREATEDB), the mock AgentPulse on `E2E_MOCK_PORT` (9190), and the Taskify server on `E2E_API_PORT` (8091), with the app served by `vite preview` on `E2E_WEB_PORT` (4173) proxying `/api` to the server. The database and processes are removed when the run ends. Each test uses a tenant of its own.
+`npm run e2e` starts everything from this checkout (`e2e/global-setup.ts`): a throwaway migrated database made by `tools/e2edb` on `E2E_DATABASE_URL` (default: the compose Postgres on `localhost:5433`; the role needs CREATEDB), the mock AgentPulse on `E2E_MOCK_PORT` (9190), the mock model on `E2E_LLM_PORT` (9191, agents are on in the server but off in every workspace until a test turns them on), and the Taskify server on `E2E_API_PORT` (8091), with the app served by `vite preview` on `E2E_WEB_PORT` (4173) proxying `/api` to the server. The database and processes are removed when the run ends. Each test uses a tenant of its own.
 
 ## Sign-in
 
