@@ -71,3 +71,28 @@ export async function updateTask(id: string, version: number, body: Schemas["Tas
     }),
   );
 }
+
+export type Comment = Schemas["Comment"];
+
+export async function getTask(id: string): Promise<TaskDetail> {
+  return unwrap(await api.GET("/api/v1/tasks/{id}", { params: { path: { id } }, cache: "no-store" }));
+}
+
+const ifMatch = (version: number) => ({ "If-Match": `"${version}"` });
+
+export async function completeTask(id: string, version: number): Promise<Task> {
+  return unwrap(await api.POST("/api/v1/tasks/{id}/complete", { params: { path: { id }, header: ifMatch(version) }, body: {} }));
+}
+
+export async function archiveTask(id: string, version: number): Promise<Task> {
+  const result = await api.DELETE("/api/v1/tasks/{id}", { params: { path: { id }, header: ifMatch(version) } });
+  return unwrap(result as { data?: Task; error?: unknown; response: Response });
+}
+
+export async function restoreTask(id: string, version: number): Promise<Task> {
+  return unwrap(await api.POST("/api/v1/tasks/{id}/restore", { params: { path: { id }, header: ifMatch(version) } }));
+}
+
+export async function addComment(id: string, body: string): Promise<Comment> {
+  return unwrap(await api.POST("/api/v1/tasks/{id}/comments", { params: { path: { id } }, body: { body } }));
+}
