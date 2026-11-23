@@ -11,6 +11,7 @@ export default function Layout() {
         <strong>Taskify</strong>
         <nav aria-label="Main">
           <NavLink to="/tasks">Tasks</NavLink>
+          <NavLink to="/approvals">Approvals</NavLink>
           <NavLink to="/notifications">Notifications</NavLink>
           {isAdmin && <NavLink to="/admin">Admin</NavLink>}
         </nav>

@@ -2,7 +2,7 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { API_PORT, JWT_SECRET, MOCK_PORT, WEB_PORT } from "./ports";
+import { API_PORT, JWT_SECRET, LLM_PORT, MOCK_PORT, WEB_PORT } from "./ports";
 
 // Starts what the browser tests need, from this checkout: a throwaway
 // migrated database, the mock AgentPulse, and the Taskify server. Everything
@@ -47,9 +47,13 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   try {
     run(["build", "-o", path.join(dir, `taskify${exe}`), "./cmd/taskify"]);
     run(["build", "-o", path.join(dir, `mock-agentpulse${exe}`), "./cmd/mock-agentpulse"]);
+    run(["build", "-o", path.join(dir, `mock-llm${exe}`), "./cmd/mock-llm"]);
 
     const mock = spawn(path.join(dir, `mock-agentpulse${exe}`), [], { env: { ...process.env, PORT: String(MOCK_PORT) }, stdio: "ignore" });
     children.push(mock);
+    // The model the agents talk to. Each test scripts it for its own tasks; a workspace has agents off until a test turns them on.
+    const llm = spawn(path.join(dir, `mock-llm${exe}`), [], { env: { ...process.env, PORT: String(LLM_PORT) }, stdio: "ignore" });
+    children.push(llm);
     const server = spawn(path.join(dir, `taskify${exe}`), [], {
       stdio: "ignore",
       env: {
@@ -63,6 +67,10 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
         AGENTPULSE_API_KEY: "e2e-key",
         AGENTPULSE_WEBHOOK_SECRET: "e2e-webhook-secret",
         JWT_SECRET,
+        AGENTS_ENABLED: "true",
+        LLM_BASE_URL: `http://127.0.0.1:${LLM_PORT}/v1`,
+        LLM_MODEL: "mock",
+        LLM_TIMEOUT: "5s",
         RATE_LIMIT_RPS: "1000",
         RATE_LIMIT_BURST: "1000",
         OUTBOX_POLL_INTERVAL: "50ms",

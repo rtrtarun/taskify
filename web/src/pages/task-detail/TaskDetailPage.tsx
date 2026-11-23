@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { ApiError, type Schemas } from "../../api/client";
 import { PRIORITIES, PRIORITY_LABEL, STATUSES, STATUS_LABEL, type Priority, type TaskDetail, type TaskStatus } from "../../api/tasks";
 import ErrorMessage from "../../components/ErrorMessage";
+import AgentActivity from "./AgentActivity";
 import Subtasks from "./Subtasks";
 import {
   useAddComment,
@@ -230,6 +231,7 @@ function Loaded({ task }: { task: TaskDetail }) {
       </form>
 
       <Subtasks taskId={task.id} taskStatus={task.status} />
+      <AgentActivity taskId={task.id} />
 
       <section aria-labelledby="comments-h">
         <h2 id="comments-h">Comments</h2>
