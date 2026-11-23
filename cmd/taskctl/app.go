@@ -88,7 +88,7 @@ func (a *app) newRoot() *cobra.Command {
 	f.StringVar(&a.profileFlag, "profile", "", "profile to use (env TASKIFY_PROFILE)")
 	f.StringVar(&a.serverFlag, "server", "", "server URL (env TASKIFY_SERVER)")
 	f.BoolVar(&a.verbose, "verbose", false, "trace requests on stderr (method, URL, status; never credentials)")
-	root.AddCommand(a.newLoginCmd(), a.newConfigCmd(), a.newTaskCmd())
+	root.AddCommand(a.newLoginCmd(), a.newConfigCmd(), a.newTaskCmd(), a.newJobCmd(), a.newAdminCmd())
 	return root
 }
 
