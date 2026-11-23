@@ -30,7 +30,7 @@ From this milestone on, rule 10 in [README.md](README.md) applies: contract firs
 
 ---
 
-## M13. CLI `taskctl`
+## M13. CLI `taskctl` (done)
 
 Goal: everything a user or operator does often can be done from a terminal (feature C3). Design in section 9.5.
 

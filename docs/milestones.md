@@ -13,7 +13,8 @@ Each milestone is broken into individual tasks, with a delegation level and acce
 | M8 to M10, AP | Done; AP aligns Taskify with the AgentPulse `/v1/` contract ([blockers.md](blockers.md)) |
 | M11 (**R2 complete**) | Done. Every M5 to M11 exit criterion has a passing test. Final sign-off of M10, M11, and the other AgentPulse parts waits on M0-07 (owner action O1) |
 | M12 (**R3**) | Done: the OpenAPI contract, the conformance suite, and the list endpoints the clients need |
-| M13 to M15 (**R3**) | Not started |
+| M13 (**R3**) | Done: `taskctl` with the generated Go client, profiles, keychain credentials, task, job, and admin commands, and release builds for Windows, macOS, and Linux |
+| M14 and M15 (**R3**) | Not started |
 
 Task-level progress and every departure from the plan are in [implementation/README.md](implementation/README.md). The work began from a `main.go` that printed a greeting and an uncompilable router stub.
 
