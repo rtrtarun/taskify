@@ -147,6 +147,37 @@ type agentJobRunsJSON struct {
 	Runs []agentRunJSON `json:"runs"`
 }
 
+func toAgentJobRunsJSON(j service.JobRuns) agentJobRunsJSON {
+	runs := make([]agentRunJSON, 0, len(j.Runs))
+	for _, run := range j.Runs {
+		a := agentRunJSON{Turn: run.Turn, Model: run.Model, ToolArgs: rawOrNull(run.ToolArgs), ToolResult: rawOrNull(run.ToolResult),
+			Outcome: run.Outcome, PromptTokens: run.PromptTokens, CompletionTokens: run.CompletionTokens,
+			LatencyMS: run.LatencyMS, CreatedAt: rfc3339(run.CreatedAt)}
+		if run.ToolName != "" {
+			name := run.ToolName
+			a.ToolName = &name
+		}
+		runs = append(runs, a)
+	}
+	return agentJobRunsJSON{Job: toAgentJobJSON(j.Job), Runs: runs}
+}
+
+// getAgentJobRuns serves GET /admin/agent-jobs/{id}/runs: one job of the
+// tenant with its run history.
+func (h *handlers) getAgentJobRuns(w http.ResponseWriter, r *http.Request) {
+	id, err := taskID(r)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	j, err := h.agentJobs.RunsForJob(r.Context(), identity(r).TenantID, id)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toAgentJobRunsJSON(j))
+}
+
 // listAgentRuns serves GET /tasks/{id}/agent-runs: the task's agent jobs
 // with their run history.
 func (h *handlers) listAgentRuns(w http.ResponseWriter, r *http.Request) {
@@ -162,18 +193,7 @@ func (h *handlers) listAgentRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]agentJobRunsJSON, 0, len(jobs))
 	for _, j := range jobs {
-		runs := make([]agentRunJSON, 0, len(j.Runs))
-		for _, run := range j.Runs {
-			a := agentRunJSON{Turn: run.Turn, Model: run.Model, ToolArgs: rawOrNull(run.ToolArgs), ToolResult: rawOrNull(run.ToolResult),
-				Outcome: run.Outcome, PromptTokens: run.PromptTokens, CompletionTokens: run.CompletionTokens,
-				LatencyMS: run.LatencyMS, CreatedAt: rfc3339(run.CreatedAt)}
-			if run.ToolName != "" {
-				name := run.ToolName
-				a.ToolName = &name
-			}
-			runs = append(runs, a)
-		}
-		out = append(out, agentJobRunsJSON{Job: toAgentJobJSON(j.Job), Runs: runs})
+		out = append(out, toAgentJobRunsJSON(j))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agent_runs": out})
 }

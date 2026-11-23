@@ -621,6 +621,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/agent-jobs/{id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The agent job's ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * One agent job with its run history (admin)
+         * @description The job and its model turns, oldest first, each with the tokens it
+         *     used: the admin job list shows the run history and the job's token
+         *     use from this. A job of another tenant, or one that does not exist,
+         *     is `404`.
+         */
+        get: operations["getAgentJobRuns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/outbox": {
         parameters: {
             query?: never;
@@ -2370,6 +2396,34 @@ export interface operations {
             500: components["responses"]["InternalError"];
             502: components["responses"]["BadGateway"];
             503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getAgentJobRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The agent job's ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The job and its runs. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentJobRuns"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["InternalError"];
         };
     };
     listOutbox: {

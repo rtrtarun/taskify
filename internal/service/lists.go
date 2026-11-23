@@ -103,6 +103,23 @@ func (s *AgentJobService) RunsForTask(ctx context.Context, tenantID string, task
 	return out, nil
 }
 
+// RunsForJob returns one job of the tenant with its run history. An unknown
+// job, or one of another tenant, is ErrNotFound.
+func (s *AgentJobService) RunsForJob(ctx context.Context, tenantID string, id uuid.UUID) (JobRuns, error) {
+	job, err := s.jobs.Get(ctx, tenantID, id)
+	if err != nil {
+		return JobRuns{}, err
+	}
+	runs, err := s.jobs.ListRuns(ctx, job.ID)
+	if err != nil {
+		return JobRuns{}, err
+	}
+	if runs == nil {
+		runs = []domain.AgentRun{}
+	}
+	return JobRuns{Job: job, Runs: runs}, nil
+}
+
 // OutboxService serves the admin's view of the outbox: listing rows and
 // returning dead-letter rows to delivery.
 type OutboxService struct {

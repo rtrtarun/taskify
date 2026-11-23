@@ -30,6 +30,9 @@ func (h *handlers) adminRoutes(r chi.Router) {
 	r.Post("/workspaces/{id}/bootstrap-rules", h.bootstrapRules)
 	r.Get("/admin/learning/suggestions", h.listSuggestions)
 	r.Post("/admin/learning/suggestions/{id}/decision", h.decideSuggestion)
+	if h.agentJobs != nil {
+		r.Get("/admin/agent-jobs/{id}/runs", h.getAgentJobRuns)
+	}
 	if h.outbox != nil {
 		r.Get("/admin/outbox", h.listOutbox)
 		r.Post("/admin/outbox/{id}/replay", h.replayOutbox)
