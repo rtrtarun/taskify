@@ -42,6 +42,11 @@ jobs:
           version: v2.15.0
       - name: Build
         run: go build ./...
+      # taskctl builds for Windows, macOS, and Linux (M13-06).
+      - name: Cross-compile taskctl
+        run: |
+          make build-cli-all
+          test "$(ls bin/taskctl-* | wc -l)" -eq 3
       # contract/openapi.yaml must be valid and match the router, and the
       # response validator must refuse what the contract does not describe.
       # The handler and end-to-end tests in the next step validate every
