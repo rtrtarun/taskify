@@ -34,8 +34,8 @@ func TestSchemasCompile(t *testing.T) {
 		}
 	}
 	events := EventTypes()
-	if len(events) != 18 {
-		t.Errorf("events = %v, want 16 notification types, contact.update, and learning.suggestion", events)
+	if len(events) != 19 {
+		t.Errorf("events = %v, want 16 notification types, contact.update, learning.suggestion, and feedback.forward", events)
 	}
 	for _, typ := range events {
 		raw, err := EventSchema(typ)

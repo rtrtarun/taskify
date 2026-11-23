@@ -651,6 +651,67 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/notifications/in-app": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The caller's in-app notification feed
+         * @description The caller's own in-app notifications, newest first, proxied from
+         *     AgentPulse with Taskify's service credentials. The tenant and user
+         *     come only from the caller's credentials: the request has no way to
+         *     name another person, and anything it sends to try is ignored. Each
+         *     item is enriched with the task it is about (when that task is in the
+         *     caller's tenant) and the caller's own read state. The browser never
+         *     talks to AgentPulse.
+         *
+         *     When AgentPulse does not answer in time, its circuit breaker is open,
+         *     or it answers with a server error, this is `503` with a `Retry-After`
+         *     header; nothing else in the API is affected. Any other failure from
+         *     AgentPulse is `502`.
+         */
+        get: operations["listInAppNotifications"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notifications/{id}/ack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description AgentPulse's notification ID, from the feed. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Act on, snooze, or dismiss a notification
+         * @description Records the caller's reaction to one of their notifications. The ack
+         *     is saved in Taskify's database first, in the same transaction as an
+         *     outbox row that forwards the matching feedback signal to AgentPulse;
+         *     the relay sends it and retries it if AgentPulse is down, so the click
+         *     never fails because of AgentPulse, and a signal is sent once per
+         *     change however many attempts it takes. Repeating the same reaction
+         *     changes nothing and forwards nothing; a different reaction replaces
+         *     the first and forwards its own signal.
+         */
+        post: operations["ackNotification"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/webhooks/agentpulse": {
         parameters: {
             query?: never;
@@ -1110,6 +1171,61 @@ export interface components {
             entries: components["schemas"]["OutboxEntry"][];
             next_cursor: string | null;
         };
+        NotificationFeed: {
+            notifications: components["schemas"]["InAppNotification"][];
+            /** @description Pass as `cursor` for the next page; null on the last page. */
+            next_cursor: string | null;
+        };
+        /**
+         * @description One notification. `title` and `body` are text written by Taskify or
+         *     by an agent, never HTML; clients render them as text.
+         */
+        InAppNotification: {
+            /** @description AgentPulse's notification ID. Send it to `ackNotification`. */
+            id: string;
+            event_type: string;
+            title: string;
+            body: string;
+            created_at: components["schemas"]["Timestamp"];
+            /**
+             * Format: uuid
+             * @description The task the notification is about, when it names one.
+             */
+            task_id: string | null;
+            /**
+             * Format: uuid
+             * @description The agent job it is about, when it names one.
+             */
+            job_id: string | null;
+            /** @description The task, when it exists in the caller's tenant. Null otherwise. */
+            task: components["schemas"]["NotificationTask"] | null;
+            /** @description True once the caller has reacted to it. */
+            read: boolean;
+            /** @description The caller's reaction, or null if there is none. */
+            signal: components["schemas"]["AckSignal"] | null;
+            snoozed_until: components["schemas"]["NullableTimestamp"];
+        };
+        NotificationTask: {
+            id: components["schemas"]["Uuid"];
+            title: string;
+            status: components["schemas"]["TaskStatus"];
+            priority: components["schemas"]["Priority"];
+            assignee_id: string | null;
+            labels: string[];
+        };
+        /** @enum {string} */
+        AckSignal: "acted" | "dismissed" | "snoozed";
+        NotificationAckRequest: {
+            signal: components["schemas"]["AckSignal"];
+            /** @description Required for `snoozed` (such as `2h`, at most `168h`), refused otherwise. */
+            duration?: string;
+        };
+        NotificationAck: {
+            notification_id: string;
+            signal: components["schemas"]["AckSignal"];
+            snoozed_until: components["schemas"]["NullableTimestamp"];
+            acked_at: components["schemas"]["Timestamp"];
+        };
     };
     responses: {
         /** @description The task after the change. */
@@ -1252,6 +1368,16 @@ export interface components {
                 [name: string]: unknown;
             };
             content?: never;
+        };
+        /** @description AgentPulse did not answer the feed in time, its circuit breaker is open, or it answered with a server error. Code `upstream_unavailable`; `Retry-After` says how many seconds to wait. */
+        FeedUnavailable: {
+            headers: {
+                "Retry-After": components["headers"]["RetryAfter"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
         };
         /** @description AgentPulse did not complete the request. Code `upstream_error`. */
         BadGateway: {
@@ -2225,6 +2351,70 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listInAppNotifications: {
+        parameters: {
+            query?: {
+                /** @description Page size, 1 to 100. Default 20. */
+                limit?: number;
+                /** @description The `next_cursor` of the previous page. Opaque. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationFeed"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["InternalError"];
+            502: components["responses"]["BadGateway"];
+            503: components["responses"]["FeedUnavailable"];
+        };
+    };
+    ackNotification: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description AgentPulse's notification ID, from the feed. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotificationAckRequest"];
+            };
+        };
+        responses: {
+            /** @description The caller's reaction as saved. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationAck"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["Unprocessable"];
             429: components["responses"]["TooManyRequests"];
             500: components["responses"]["InternalError"];
         };

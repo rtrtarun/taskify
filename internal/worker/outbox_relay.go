@@ -32,6 +32,8 @@ type Notifier interface {
 	// SubmitLearningSuggestion submits a learning suggestion
 	// (learning.suggestion rows).
 	SubmitLearningSuggestion(ctx context.Context, s agentpulse.LearningSuggestion) (string, error)
+	// RecordFeedback forwards a feedback signal (feedback.forward rows).
+	RecordFeedback(ctx context.Context, fb agentpulse.Feedback) error
 }
 
 // RelayConfig tunes the relay. Zero values take the documented defaults.
@@ -251,8 +253,8 @@ func (r *Relay) dispatch(ctx context.Context, e domain.OutboxEntry) {
 }
 
 // send delivers one row: a contact.update replaces the person's contact, a
-// learning.suggestion submits a learning suggestion, and every other row is
-// a /v1/notify body.
+// learning.suggestion submits a learning suggestion, a feedback.forward sends
+// a feedback signal, and every other row is a /v1/notify body.
 func (r *Relay) send(ctx context.Context, e domain.OutboxEntry) error {
 	switch e.EventType {
 	case domain.EventContactUpdate:
@@ -271,6 +273,14 @@ func (r *Relay) send(ctx context.Context, e domain.OutboxEntry) error {
 		}
 		_, err := r.notifier.SubmitLearningSuggestion(ctx, s)
 		return err
+	case domain.EventFeedbackForward:
+		// The tenant is the row's, never the payload's.
+		var f domain.FeedbackForward
+		if err := json.Unmarshal(e.Payload, &f); err != nil || f.UserID == "" || f.NotificationID == "" || f.Signal == "" {
+			return errMalformedRow
+		}
+		return r.notifier.RecordFeedback(ctx, agentpulse.Feedback{
+			NotificationID: f.NotificationID, TenantID: e.TenantID, UserID: f.UserID, Signal: f.Signal, SnoozeDuration: f.SnoozeDuration})
 	default:
 		return r.notifier.Notify(ctx, e.Payload)
 	}

@@ -1099,8 +1099,8 @@ All routes are under `/api/v1`, except the operations routes. Legacy unprefixed 
 | `GET /tasks/{id}/agent-runs` | Agent activity for a task, oldest first, from `agent_jobs` and `agent_run_history` | none | R3 (M12) |
 | `GET /admin/outbox` | List the tenant's outbox rows, newest first (admin); filter `status` (such as `dead_letter`), `limit`, `cursor`. Dispatched rows are kept 7 days. | none | R3 (M12) |
 | `POST /admin/outbox/{id}/replay` | Return a dead-letter row to `pending` (admin) | Row is retried | R3 (M12) |
-| `GET /notifications/in-app` | Current user's in-app feed, proxied from AgentPulse and enriched with task data. Not built. | none | R3 (M14-06) |
-| `POST /notifications/{id}/ack` | Mark a notification read or dismissed. Not built. | Local ack plus AgentPulse feedback | R3 (M14-06) |
+| `GET /notifications/in-app` | Current user's in-app feed, proxied from AgentPulse and enriched with task data and read state; `503` with `Retry-After` when AgentPulse cannot answer | none | R3 (M14-06) |
+| `POST /notifications/{id}/ack` | Act on, snooze, or dismiss a notification | Local ack plus a `feedback.forward` outbox row for AgentPulse `/feedback` | R3 (M14-06) |
 | `GET /me` | Current user, tenant, and role | none | R3 (M12) |
 | `GET /me/brief` | The caller's newest morning brief; `404` when there is none | none | R2 (M10) |
 | `GET /me/contact`, `PUT /me/contact` | The caller's own contact for AgentPulse: `email`, `slack_user_id`, `phone` (section 5.5) | `contact.update` outbox row | R2 (AP-05) |

@@ -399,3 +399,17 @@ type OutboxRepository interface {
 	// domain.ErrNotDeadLetter and is left alone.
 	Replay(ctx context.Context, tenantID string, id uuid.UUID, now time.Time) (domain.OutboxEntry, error)
 }
+
+// NotificationAckRepository stores each person's reaction to in-app
+// notifications (M14-06), one row per tenant, user, and notification.
+type NotificationAckRepository interface {
+	// Save records the reaction and reports whether it changed anything: a
+	// first reaction, or one that differs from the stored signal or snooze
+	// duration, replaces the row and returns true; the same reaction again
+	// leaves the row (and its time) alone and returns false. Concurrent saves
+	// of one reaction report true to exactly one of them.
+	Save(ctx context.Context, a domain.NotificationAck) (changed bool, err error)
+	// ListFor returns the person's reactions to the named notifications,
+	// keyed by notification ID. Other people's reactions are never returned.
+	ListFor(ctx context.Context, tenantID, userID string, notificationIDs []string) (map[string]domain.NotificationAck, error)
+}

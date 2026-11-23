@@ -56,6 +56,19 @@ func main() {
 		mock.FailNext(in.Method, in.Path, in.Status, in.Count)
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("POST /_mock/feed", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			TenantID string                    `json:"tenant_id"`
+			UserID   string                    `json:"user_id"`
+			Items    []mockagentpulse.FeedItem `json:"items"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.TenantID == "" || in.UserID == "" {
+			http.Error(w, "need tenant_id, user_id, items", http.StatusBadRequest)
+			return
+		}
+		mock.SeedFeed(in.TenantID, in.UserID, in.Items...)
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("POST /_mock/reset", func(w http.ResponseWriter, _ *http.Request) {
 		mock.Reset()
 		w.WriteHeader(http.StatusNoContent)

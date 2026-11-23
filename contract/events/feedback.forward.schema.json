@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "feedback.forward",
+  "description": "A user's reaction to an in-app notification, which the outbox relay sends to AgentPulse's POST /v1/feedback (M14-06, G20). The tenant is the outbox row's. snoozeDuration is present only for snoozed.",
+  "type": "object",
+  "properties": {
+    "userId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "notificationId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "signal": {"enum": ["acted", "dismissed", "snoozed"]},
+    "snoozeDuration": {"type": "string", "minLength": 2, "maxLength": 16}
+  },
+  "required": ["userId", "notificationId", "signal"],
+  "additionalProperties": false
+}
