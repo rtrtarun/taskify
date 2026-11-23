@@ -53,7 +53,8 @@ const authMiddleware: Middleware = {
 };
 
 /** The typed client. Paths already carry the /api/v1 prefix. */
-export const api = createClient<paths>({ baseUrl: "" });
+// The fetch is looked up on each call so tests can replace it.
+export const api = createClient<paths>({ baseUrl: globalThis.location?.origin ?? "http://localhost", fetch: (request) => globalThis.fetch(request) });
 api.use(authMiddleware);
 
 /**

@@ -1,0 +1,10 @@
+body { font-family: system-ui, sans-serif; margin: 0; color: #1a1a1a; background: #fafafa; }
+main { padding: 1rem; max-width: 72rem; margin: 0 auto; }
+.topbar { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; padding: 0.5rem 1rem; background: #fff; border-bottom: 1px solid #ddd; }
+.topbar nav { display: flex; gap: 0.75rem; }
+.topbar .who { margin-left: auto; color: #555; font-size: 0.9rem; }
+.topbar a.active { font-weight: 600; }
+.signin { max-width: 32rem; }
+.signin textarea { width: 100%; box-sizing: border-box; font-family: monospace; }
+.hint { color: #555; font-size: 0.9rem; }
+[role="alert"] { color: #a40000; }
