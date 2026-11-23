@@ -433,6 +433,23 @@ func TestListWorkspaces(t *testing.T) {
 		t.Errorf("other tenant sees %v", got)
 	}
 
+	// A member reads only id and name; an admin reads the full workspace.
+	for _, w := range r.json["workspaces"].([]any) {
+		if m := w.(map[string]any); len(m) != 2 || m["name"] == nil {
+			t.Errorf("member item has %v", m)
+		}
+	}
+	ar := e.do(req{method: "GET", path: "/api/v1/workspaces", as: "admin"})
+	for _, w := range ar.json["workspaces"].([]any) {
+		m := w.(map[string]any)
+		if m["agent_settings"] == nil || m["created_at"] == nil || m["updated_at"] == nil {
+			t.Errorf("admin item is not the full workspace: %v", m)
+		}
+	}
+	if strings.Join(ids(ar), ",") != "ws_a,ws_b,ws_c,ws_core" {
+		t.Errorf("admin list: %s", ar.raw)
+	}
+
 	// Pages.
 	r = e.do(req{method: "GET", path: "/api/v1/workspaces?limit=3"})
 	if strings.Join(ids(r), ",") != "ws_a,ws_b,ws_c" || r.json["next_cursor"] == nil {

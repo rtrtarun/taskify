@@ -34,7 +34,11 @@ func (a *app) workspaceList() *cobra.Command {
 		ids := make([]string, len(list))
 		rows := make([][]string, len(list))
 		for i, w := range list {
-			ids[i], rows[i] = w.Id, []string{w.Id, w.Name, fmtTime(w.CreatedAt)}
+			created := "" // members read no timestamps
+			if w.CreatedAt != nil {
+				created = fmtTime(*w.CreatedAt)
+			}
+			ids[i], rows[i] = w.Id, []string{w.Id, w.Name, created}
 		}
 		if err := a.print(result{raw: resp.Body, ids: ids, table: func(w io.Writer) {
 			tabular(w, []string{"ID", "NAME", "CREATED"}, rows)

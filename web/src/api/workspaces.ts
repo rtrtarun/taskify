@@ -1,6 +1,6 @@
 import { api, unwrap, type Schemas } from "./client";
 
-export type Workspace = Schemas["Workspace"];
+export type Workspace = Schemas["WorkspaceListItem"];
 
 /** Most pages followed for one list, so a runaway cursor cannot loop forever. */
 const MAX_PAGES = 10;

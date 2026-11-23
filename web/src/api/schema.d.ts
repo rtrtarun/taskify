@@ -509,7 +509,10 @@ export interface paths {
          * The caller's tenant's workspaces
          * @description Any member may list the workspaces of their own tenant, in ID order,
          *     a page at a time; another tenant's workspaces are never listed. The
-         *     quick-add form reads this to offer a workspace picker.
+         *     quick-add form reads this to offer a workspace picker. A member gets
+         *     only `id` and `name` of each workspace; an admin gets the full
+         *     workspace, agent settings and timestamps included (a member reads
+         *     none of those, as `GET /workspaces/{id}/settings` is admin only).
          */
         get: operations["listWorkspaces"];
         put?: never;
@@ -1034,8 +1037,19 @@ export interface components {
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
         };
+        /**
+         * @description A workspace as the list shows it. A member's item has `id` and `name`
+         *     only; an admin's item is the full `Workspace`.
+         */
+        WorkspaceListItem: {
+            id: string;
+            name: string;
+            agent_settings?: components["schemas"]["AgentSettings"];
+            created_at?: components["schemas"]["Timestamp"];
+            updated_at?: components["schemas"]["Timestamp"];
+        };
         WorkspaceList: {
-            workspaces: components["schemas"]["Workspace"][];
+            workspaces: components["schemas"]["WorkspaceListItem"][];
             next_cursor: string | null;
         };
         WorkspaceCreate: {

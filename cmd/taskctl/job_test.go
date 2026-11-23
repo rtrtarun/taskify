@@ -163,3 +163,14 @@ func TestWorkspaceList(t *testing.T) {
 		t.Errorf("--json: %v %+v", err, body)
 	}
 }
+
+// An admin's list carries timestamps; a member's (above) has none, and the
+// table still prints.
+func TestWorkspaceListAdmin(t *testing.T) {
+	c, srv := local(t)
+	c.env["TASKIFY_TOKEN"] = srv.Token(t, "usr_root", "admin")
+	out := c.ok("workspace", "list")
+	if !strings.Contains(out, localserver.Workspace) || !strings.Contains(out, "Z") {
+		t.Errorf("admin workspace list: %s", out)
+	}
+}

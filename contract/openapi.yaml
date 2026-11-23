@@ -874,7 +874,10 @@ paths:
       description: |
         Any member may list the workspaces of their own tenant, in ID order,
         a page at a time; another tenant's workspaces are never listed. The
-        quick-add form reads this to offer a workspace picker.
+        quick-add form reads this to offer a workspace picker. A member gets
+        only `id` and `name` of each workspace; an admin gets the full
+        workspace, agent settings and timestamps included (a member reads
+        none of those, as `GET /workspaces/{id}/settings` is admin only).
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
@@ -2117,6 +2120,23 @@ components:
           $ref: "#/components/schemas/Timestamp"
         updated_at:
           $ref: "#/components/schemas/Timestamp"
+    WorkspaceListItem:
+      description: |
+        A workspace as the list shows it. A member's item has `id` and `name`
+        only; an admin's item is the full `Workspace`.
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        agent_settings:
+          $ref: "#/components/schemas/AgentSettings"
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
     WorkspaceList:
       type: object
       required: [workspaces, next_cursor]
@@ -2124,7 +2144,7 @@ components:
         workspaces:
           type: array
           items:
-            $ref: "#/components/schemas/Workspace"
+            $ref: "#/components/schemas/WorkspaceListItem"
         next_cursor:
           type: string
           nullable: true

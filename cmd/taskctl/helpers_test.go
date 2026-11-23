@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -55,7 +57,7 @@ func newCLI(t *testing.T) *cli {
 		env: map[string]string{"TASKIFY_CONFIG": filepath.Join(dir, "config.yaml")}}
 }
 
-func (c *cli) app(stdout, stderr *bytes.Buffer) *app {
+func (c *cli) app(stdout, stderr io.Writer) *app {
 	a := newApp(strings.NewReader(c.stdin), stdout, stderr, func(k string) string { return c.env[k] })
 	a.keychain = c.keychain
 	return a
@@ -83,3 +85,21 @@ func serve(t *testing.T, status int, body string, check func(*http.Request)) str
 }
 
 const meBody = `{"tenant_id":"tenant_acme","user_id":"usr_ann","role":"member"}`
+
+// syncBuffer is a buffer a test may read while a command still writes to it.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}

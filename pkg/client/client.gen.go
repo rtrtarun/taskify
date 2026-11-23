@@ -743,8 +743,22 @@ type WorkspaceCreated struct {
 
 // WorkspaceList defines model for WorkspaceList.
 type WorkspaceList struct {
-	NextCursor *string     `json:"next_cursor"`
-	Workspaces []Workspace `json:"workspaces"`
+	NextCursor *string             `json:"next_cursor"`
+	Workspaces []WorkspaceListItem `json:"workspaces"`
+}
+
+// WorkspaceListItem A workspace as the list shows it. A member's item has `id` and `name`
+// only; an admin's item is the full `Workspace`.
+type WorkspaceListItem struct {
+	AgentSettings *AgentSettings `json:"agent_settings,omitempty"`
+
+	// CreatedAt RFC 3339 in UTC.
+	CreatedAt *Timestamp `json:"created_at,omitempty"`
+	Id        string     `json:"id"`
+	Name      string     `json:"name"`
+
+	// UpdatedAt RFC 3339 in UTC.
+	UpdatedAt *Timestamp `json:"updated_at,omitempty"`
 }
 
 // WorkspaceUpdate defines model for WorkspaceUpdate.

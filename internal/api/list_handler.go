@@ -254,13 +254,21 @@ func (h *handlers) replayOutbox(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toOutboxEntryJSON(e))
 }
 
+// workspaceSummaryJSON is what a member reads of a workspace: its ID and name.
+type workspaceSummaryJSON struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 type workspaceListJSON struct {
-	Workspaces []workspaceJSON `json:"workspaces"`
-	NextCursor *string         `json:"next_cursor"`
+	Workspaces []any   `json:"workspaces"`
+	NextCursor *string `json:"next_cursor"`
 }
 
 // listWorkspaces serves GET /workspaces: the caller's tenant's workspaces, for
-// any member. The cursor is the last workspace ID of the page, encoded.
+// any member, who reads only each one's ID and name; an admin reads the full
+// workspace, agent settings included. The cursor is the last workspace ID of
+// the page, encoded.
 func (h *handlers) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	limit := 0
 	if v := r.URL.Query().Get("limit"); v != "" {
@@ -285,9 +293,14 @@ func (h *handlers) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	out := workspaceListJSON{Workspaces: make([]workspaceJSON, 0, len(page.Workspaces))}
+	admin := identity(r).IsAdmin()
+	out := workspaceListJSON{Workspaces: make([]any, 0, len(page.Workspaces))}
 	for _, ws := range page.Workspaces {
-		out.Workspaces = append(out.Workspaces, toWorkspaceJSON(ws))
+		if admin {
+			out.Workspaces = append(out.Workspaces, toWorkspaceJSON(ws))
+		} else {
+			out.Workspaces = append(out.Workspaces, workspaceSummaryJSON{ID: ws.ID, Name: ws.Name})
+		}
 	}
 	if page.Next != "" {
 		c := base64.RawURLEncoding.EncodeToString([]byte(page.Next))
