@@ -4,9 +4,10 @@
 BIN          := bin
 DATABASE_URL ?= postgres://taskify:taskify@localhost:5433/taskify?sslmode=disable
 JWT_SECRET   ?= dev-secret
+OAPI_CODEGEN := go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.5.1
 MIGRATE      := go run -tags postgres github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.3
 
-.PHONY: build test lint migrate-up migrate-down run dev-token conformance
+.PHONY: build test lint migrate-up migrate-down run dev-token conformance generate
 
 build:
 	go build -o $(BIN)/taskify ./cmd/taskify
@@ -39,3 +40,9 @@ dev-token:
 # Usage: make conformance TARGET_URL=http://127.0.0.1:8091
 conformance:
 	TARGET_URL=$(TARGET_URL) go test -count=1 -v ./tests/conformance/...
+
+# Regenerates pkg/client from contract/openapi.yaml (G19). CI runs this and
+# fails when it changes a file, so a contract change needs the regenerated
+# client in the same commit. Never edit the generated file by hand.
+generate:
+	$(OAPI_CODEGEN) -config pkg/client/oapi-codegen.yaml contract/openapi.yaml
