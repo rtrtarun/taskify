@@ -67,6 +67,37 @@ jobs:
       - name: Coverage gate (90% for domain, service, worker, api)
         run: scripts/coverage-gate.sh test-output.txt 90
 
+  # The web frontend (M14). Its API types are generated from the contract
+  # (G19): a contract change without regenerated types leaves a difference
+  # and fails here.
+  web:
+    name: Web
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Generated types are current
+        run: |
+          npm run generate
+          git diff --exit-code -- src/api/schema.d.ts
+      - run: npm run lint
+      - run: npm run typecheck
+      - name: Component tests
+        run: npm test
+      - run: npm run build
+      - name: Install the browser
+        run: npx playwright install --with-deps chromium
+      - name: Browser tests
+        run: npm run e2e
+
   # Every merge to main is versioned and released once the tests pass.
   # See docs/releasing.md.
   release:
