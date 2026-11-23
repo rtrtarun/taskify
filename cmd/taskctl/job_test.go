@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -143,5 +144,22 @@ func TestAdminCommands(t *testing.T) {
 	}
 	if out := c.ok("admin", "suggestions", "decide", sg, "--approve"); !strings.Contains(out, "is now APPROVED") {
 		t.Errorf("decide: %s", out)
+	}
+}
+
+func TestWorkspaceList(t *testing.T) {
+	c, _ := local(t)
+	out := c.ok("workspace", "list")
+	if !strings.Contains(out, localserver.Workspace) || !strings.Contains(out, "ID") {
+		t.Errorf("workspace list: %s", out)
+	}
+	if q := strings.TrimSpace(c.ok("--quiet", "workspace", "list")); q != localserver.Workspace {
+		t.Errorf("--quiet: %q", q)
+	}
+	var body struct {
+		Workspaces []struct{ ID string } `json:"workspaces"`
+	}
+	if err := json.Unmarshal([]byte(c.ok("--json", "workspace", "list")), &body); err != nil || len(body.Workspaces) != 1 {
+		t.Errorf("--json: %v %+v", err, body)
 	}
 }

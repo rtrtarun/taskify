@@ -137,6 +137,23 @@ func (r *WorkspaceRepo) Update(ctx context.Context, w domain.Workspace) error {
 	})
 }
 
+func (r *WorkspaceRepo) List(ctx context.Context, tenantID, after string, limit int) (out []domain.Workspace, err error) {
+	err = r.st.do(ctx, func(s *state) error {
+		for k, w := range s.workspaces {
+			if k.tenant == tenantID && (after == "" || k.id > after) {
+				w.AgentSettings = cloneSettings(w.AgentSettings)
+				out = append(out, w)
+			}
+		}
+		slices.SortFunc(out, func(a, b domain.Workspace) int { return strings.Compare(a.ID, b.ID) })
+		if len(out) > limit {
+			out = out[:limit]
+		}
+		return nil
+	})
+	return out, err
+}
+
 // --- workspace rules and webhook deliveries --------------------------------
 
 func (r *RuleRepo) List(ctx context.Context, tenantID, workspaceID string) (out []domain.WorkspaceRule, err error) {

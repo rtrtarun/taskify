@@ -129,6 +129,7 @@ func newMux(d Deps) (*chi.Mux, error) {
 		r.Group(func(r chi.Router) {
 			authenticated(r)
 			r.Get("/me", h.getMe)
+			r.Get("/workspaces", h.listWorkspaces)
 			r.Route("/tasks", h.taskRoutes)
 			if h.agentJobs != nil {
 				r.Route("/agent-jobs", h.agentJobRoutes)

@@ -131,6 +131,25 @@ describe("quick add", () => {
     expect(screen.getByLabelText("Title")).toHaveValue("");
   });
 
+  test("offers the tenant's workspaces in a picker and sends the chosen one", async () => {
+    const ws = (id: string, name: string) => ({
+      id, name, created_at: "2026-11-20T10:00:00Z", updated_at: "2026-11-20T10:00:00Z",
+      agent_settings: { agents_enabled: false, disabled_agents: [], require_hitl_for_all: true, max_subtasks_per_decomposition: 5 },
+    });
+    const { api } = await setup("/tasks", (c) => {
+      if (c.method === "GET" && c.path === "/api/v1/workspaces") return json(200, { workspaces: [ws("ws_a", "Alpha"), ws("ws_core", "Core")], next_cursor: null });
+      if (c.method === "POST") return json(201, task({ workspace_id: "ws_core" }));
+      return isList(c) ? list([]) : undefined;
+    });
+    await screen.findByText(/No tasks yet/);
+    const picker = await screen.findByRole("combobox", { name: "Workspace" });
+    expect(picker).toHaveValue("ws_a");
+    await userEvent.selectOptions(picker, "ws_core");
+    await userEvent.type(screen.getByLabelText("Title"), "Picked");
+    await userEvent.click(screen.getByRole("button", { name: "Add task" }));
+    await waitFor(() => expect(api.calls.find((c) => c.method === "POST")?.body).toEqual({ workspace_id: "ws_core", title: "Picked" }));
+  });
+
   test("shows the server's message when the task is refused", async () => {
     await setup("/tasks", (c) => {
       if (c.method === "POST") return json(422, { error: { code: "validation_failed", message: "workspace ws_x does not exist" } });

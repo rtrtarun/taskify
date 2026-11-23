@@ -101,7 +101,7 @@ func (a *app) newRoot() *cobra.Command {
 		}
 		return nil
 	}
-	root.AddCommand(a.newVersionCmd(), a.newLoginCmd(), a.newConfigCmd(), a.newTaskCmd(), a.newJobCmd(), a.newAdminCmd())
+	root.AddCommand(a.newVersionCmd(), a.newLoginCmd(), a.newConfigCmd(), a.newTaskCmd(), a.newJobCmd(), a.newWorkspaceCmd(), a.newAdminCmd())
 	return root
 }
 

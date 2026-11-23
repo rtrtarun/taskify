@@ -2,6 +2,7 @@ package repotest
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -344,6 +345,43 @@ func TestTaskListStateAndDelta(t *testing.T) {
 		}
 		if ids, err = b.Tasks.ArchivedSince(ctx, repository.TaskFilter{TenantID: tenant}); err != nil || ids == nil || len(ids) != 0 {
 			t.Errorf("ArchivedSince without a time = %v, %v", ids, err)
+		}
+	})
+}
+
+func TestWorkspaceList(t *testing.T) {
+	each(t, func(t *testing.T, b Backend) {
+		for _, c := range []struct{ tenant, id string }{
+			{tenant, "ws_b"}, {tenant, "ws_a"}, {tenant, "ws_C"}, {"tenant_other", "ws_x"},
+		} {
+			w, err := domain.NewWorkspace(c.tenant, c.id, c.id, t0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := b.Workspaces.Create(ctx, w); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ids := func(after string, limit int) []string {
+			got, err := b.Workspaces.List(ctx, tenant, after, limit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out []string
+			for _, w := range got {
+				out = append(out, w.ID)
+			}
+			return out
+		}
+		// Byte order: upper case sorts before lower case, on both stores.
+		if got := ids("", 10); !slices.Equal(got, []string{"ws_C", "ws_a", "ws_b"}) {
+			t.Errorf("all = %v", got)
+		}
+		if got := ids("", 2); !slices.Equal(got, []string{"ws_C", "ws_a"}) {
+			t.Errorf("limit = %v", got)
+		}
+		if got := ids("ws_a", 10); !slices.Equal(got, []string{"ws_b"}) {
+			t.Errorf("after = %v", got)
 		}
 	})
 }

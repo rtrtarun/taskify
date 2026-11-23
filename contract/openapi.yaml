@@ -844,6 +844,38 @@ paths:
           $ref: "#/components/responses/InternalError"
 
   /api/v1/workspaces:
+    get:
+      tags: [workspaces]
+      operationId: listWorkspaces
+      summary: The caller's tenant's workspaces
+      description: |
+        Any member may list the workspaces of their own tenant, in ID order,
+        a page at a time; another tenant's workspaces are never listed. The
+        quick-add form reads this to offer a workspace picker.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: One page. Its `ETag` is a hash of the body, so a repeated poll can answer `304`.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ListETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceList"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
     post:
       tags: [workspaces, admin]
       operationId: createWorkspace
@@ -2055,6 +2087,17 @@ components:
           $ref: "#/components/schemas/Timestamp"
         updated_at:
           $ref: "#/components/schemas/Timestamp"
+    WorkspaceList:
+      type: object
+      required: [workspaces, next_cursor]
+      properties:
+        workspaces:
+          type: array
+          items:
+            $ref: "#/components/schemas/Workspace"
+        next_cursor:
+          type: string
+          nullable: true
     WorkspaceCreate:
       type: object
       required: [id, name]

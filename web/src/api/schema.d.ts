@@ -497,7 +497,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * The caller's tenant's workspaces
+         * @description Any member may list the workspaces of their own tenant, in ID order,
+         *     a page at a time; another tenant's workspaces are never listed. The
+         *     quick-add form reads this to offer a workspace picker.
+         */
+        get: operations["listWorkspaces"];
         put?: never;
         /**
          * Create a workspace (admin)
@@ -1019,6 +1025,10 @@ export interface components {
             agent_settings: components["schemas"]["AgentSettings"];
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
+        };
+        WorkspaceList: {
+            workspaces: components["schemas"]["Workspace"][];
+            next_cursor: string | null;
         };
         WorkspaceCreate: {
             id: string;
@@ -2110,6 +2120,40 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             413: components["responses"]["PayloadTooLarge"];
             422: components["responses"]["Unprocessable"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listWorkspaces: {
+        parameters: {
+            query?: {
+                /** @description Page size, 1 to 200. Default 50. */
+                limit?: components["parameters"]["Limit"];
+                /** @description The `next_cursor` of the previous page. Opaque. */
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: {
+                /** @description The `ETag` of the last response to this same request. Answers `304` when it still matches. */
+                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page. Its `ETag` is a hash of the body, so a repeated poll can answer `304`. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ListETag"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceList"];
+                };
+            };
+            304: components["responses"]["NotModified"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
             429: components["responses"]["TooManyRequests"];
             500: components["responses"]["InternalError"];
         };

@@ -401,3 +401,71 @@ func TestAgentJobVisibility(t *testing.T) {
 		}
 	}
 }
+
+func TestListWorkspaces(t *testing.T) {
+	e := newEnv(t)
+	for _, id := range []string{"ws_b", "ws_a", "ws_c"} {
+		if r := e.do(req{method: "POST", path: "/api/v1/workspaces", as: "admin", body: map[string]any{"id": id, "name": id}}); r.status != 201 {
+			t.Fatalf("create %s: %d %s", id, r.status, r.raw)
+		}
+	}
+	// Another tenant has workspaces of its own, one with a colliding ID.
+	for _, id := range []string{"ws_core", "ws_secret"} {
+		if r := e.do(req{method: "POST", path: "/api/v1/workspaces", as: "other-tenant", body: map[string]any{"id": id, "name": "theirs"}}); r.status != 201 {
+			t.Fatalf("create other %s: %d %s", id, r.status, r.raw)
+		}
+	}
+
+	ids := func(r resp) []string {
+		var out []string
+		for _, w := range r.json["workspaces"].([]any) {
+			out = append(out, w.(map[string]any)["id"].(string))
+		}
+		return out
+	}
+	// A plain member lists their own tenant's workspaces, in ID order.
+	r := e.do(req{method: "GET", path: "/api/v1/workspaces"})
+	if r.status != 200 || strings.Join(ids(r), ",") != "ws_a,ws_b,ws_c,ws_core" || r.json["next_cursor"] != nil {
+		t.Fatalf("member list: %d %s", r.status, r.raw)
+	}
+	if got := ids(e.do(req{method: "GET", path: "/api/v1/workspaces", as: "other-tenant"})); strings.Join(got, ",") != "ws_core,ws_secret" {
+		t.Errorf("other tenant sees %v", got)
+	}
+
+	// Pages.
+	r = e.do(req{method: "GET", path: "/api/v1/workspaces?limit=3"})
+	if strings.Join(ids(r), ",") != "ws_a,ws_b,ws_c" || r.json["next_cursor"] == nil {
+		t.Fatalf("first page: %s", r.raw)
+	}
+	r = e.do(req{method: "GET", path: "/api/v1/workspaces?limit=3&cursor=" + r.json["next_cursor"].(string)})
+	if strings.Join(ids(r), ",") != "ws_core" || r.json["next_cursor"] != nil {
+		t.Fatalf("second page: %s", r.raw)
+	}
+	for _, bad := range []string{"limit=0", "limit=201", "limit=x", "cursor=***"} {
+		if r := e.do(req{method: "GET", path: "/api/v1/workspaces?" + bad}); r.status != 400 {
+			t.Errorf("%s: %d", bad, r.status)
+		}
+	}
+	if r := e.do(req{method: "GET", path: "/api/v1/workspaces", as: "none"}); r.status != 401 {
+		t.Errorf("no credentials: %d", r.status)
+	}
+
+	// Conditional polling: an unchanged list is 304; a new workspace changes
+	// it; another tenant's change does not leak through the tag.
+	first := e.do(req{method: "GET", path: "/api/v1/workspaces"})
+	tag := first.header.Get("ETag")
+	if tag == "" {
+		t.Fatal("no ETag")
+	}
+	if r := e.do(req{method: "GET", path: "/api/v1/workspaces", headers: map[string]string{"If-None-Match": tag}}); r.status != 304 || len(r.raw) != 0 {
+		t.Errorf("unchanged: %d %s", r.status, r.raw)
+	}
+	e.do(req{method: "POST", path: "/api/v1/workspaces", as: "other-tenant", body: map[string]any{"id": "ws_more", "name": "x"}})
+	if r := e.do(req{method: "GET", path: "/api/v1/workspaces", headers: map[string]string{"If-None-Match": tag}}); r.status != 304 {
+		t.Errorf("after another tenant's change: %d", r.status)
+	}
+	e.do(req{method: "POST", path: "/api/v1/workspaces", as: "admin", body: map[string]any{"id": "ws_d", "name": "d"}})
+	if r := e.do(req{method: "GET", path: "/api/v1/workspaces", headers: map[string]string{"If-None-Match": tag}}); r.status != 200 {
+		t.Errorf("after a change: %d", r.status)
+	}
+}

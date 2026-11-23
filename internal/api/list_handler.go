@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -251,4 +252,46 @@ func (h *handlers) replayOutbox(w http.ResponseWriter, r *http.Request) {
 	}
 	h.logger.InfoContext(r.Context(), "outbox row replayed", "outbox_id", id, "by", identity(r).UserID)
 	writeJSON(w, http.StatusOK, toOutboxEntryJSON(e))
+}
+
+type workspaceListJSON struct {
+	Workspaces []workspaceJSON `json:"workspaces"`
+	NextCursor *string         `json:"next_cursor"`
+}
+
+// listWorkspaces serves GET /workspaces: the caller's tenant's workspaces, for
+// any member. The cursor is the last workspace ID of the page, encoded.
+func (h *handlers) listWorkspaces(w http.ResponseWriter, r *http.Request) {
+	limit := 0
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > service.MaxListLimit {
+			h.fail(w, r, badRequest("limit must be an integer from 1 to 200"))
+			return
+		}
+		limit = n
+	}
+	after := ""
+	if v := r.URL.Query().Get("cursor"); v != "" {
+		raw, err := base64.RawURLEncoding.DecodeString(v)
+		if err != nil || len(raw) == 0 {
+			h.fail(w, r, badRequest("cursor is not valid"))
+			return
+		}
+		after = string(raw)
+	}
+	page, err := h.workspaces.List(r.Context(), identity(r).TenantID, after, limit)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	out := workspaceListJSON{Workspaces: make([]workspaceJSON, 0, len(page.Workspaces))}
+	for _, ws := range page.Workspaces {
+		out.Workspaces = append(out.Workspaces, toWorkspaceJSON(ws))
+	}
+	if page.Next != "" {
+		c := base64.RawURLEncoding.EncodeToString([]byte(page.Next))
+		out.NextCursor = &c
+	}
+	writeConditionalJSON(w, r, out)
 }
