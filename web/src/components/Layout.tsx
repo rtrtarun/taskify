@@ -12,6 +12,7 @@ export default function Layout() {
         <nav aria-label="Main">
           <NavLink to="/tasks">Tasks</NavLink>
           <NavLink to="/approvals">Approvals</NavLink>
+          <NavLink to="/brief">Brief</NavLink>
           <NavLink to="/notifications">Notifications</NavLink>
           {isAdmin && <NavLink to="/admin">Admin</NavLink>}
         </nav>

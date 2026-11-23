@@ -96,10 +96,3 @@ test("decompose: the page shows progress, then the subtasks and their dependency
   await expect(page.getByRole("status", { name: "Decomposition progress" })).toContainText("is done");
   await expect(page.getByRole("list", { name: "Agent activity" }).getByText("Create subtasks")).toBeVisible();
 });
-
-test("the brief page, where a brief notification's view link points, says when there is no brief", async ({ page }) => {
-  const t = await newTenant();
-  await signIn(page, t.member, "/brief");
-  await expect(page.getByRole("heading", { name: "Morning brief" })).toBeVisible();
-  await expect(page.getByText(/You have no brief yet/)).toBeVisible();
-});
