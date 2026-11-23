@@ -23,8 +23,16 @@ function detail(over: Partial<TaskDetail> = {}): TaskDetail {
 const isGet = (c: Call) => c.method === "GET" && c.path === `/api/v1/tasks/${ID}`;
 const isPatch = (c: Call) => c.method === "PATCH" && c.path === `/api/v1/tasks/${ID}`;
 
+// The subtasks and agent sections load their own data; these tests are about the rest.
+const quietAgentPanels: Parameters<typeof mockApi>[0] = (c) => {
+  if (c.path === `/api/v1/tasks/${ID}/subtasks`) return json(200, { subtasks: [] });
+  if (c.path === `/api/v1/tasks/${ID}/agent-runs`) return json(200, { agent_runs: [] });
+  if (c.path === "/api/v1/agent-jobs") return json(200, { agent_jobs: [], next_cursor: null });
+  return undefined;
+};
+
 async function setup(pollMs: number | undefined, ...handlers: Parameters<typeof mockApi>) {
-  const api = mockApi(meHandler("member"), ...handlers);
+  const api = mockApi(meHandler("member"), ...handlers, quietAgentPanels);
   const store = new SessionStore();
   await signInAs(store);
   const utils = renderWithProviders(

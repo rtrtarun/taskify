@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { ApiError, type Schemas } from "../../api/client";
 import { PRIORITIES, PRIORITY_LABEL, STATUSES, STATUS_LABEL, type Priority, type TaskDetail, type TaskStatus } from "../../api/tasks";
 import ErrorMessage from "../../components/ErrorMessage";
+import Subtasks from "./Subtasks";
 import {
   useAddComment,
   useArchiveTask,
@@ -227,6 +228,8 @@ function Loaded({ task }: { task: TaskDetail }) {
           {update.isPending ? "Saving..." : "Save changes"}
         </button>
       </form>
+
+      <Subtasks taskId={task.id} taskStatus={task.status} />
 
       <section aria-labelledby="comments-h">
         <h2 id="comments-h">Comments</h2>
