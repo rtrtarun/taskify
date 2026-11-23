@@ -20,7 +20,7 @@
     },
     {
       "request": {"method": "GET", "path": "/api/v1/tasks/{{task}}"},
-      "expect": {"status": 200, "headers": {"ETag": "\"1\""}, "body": {"id": "{{task}}", "comments": []}}
+      "expect": {"status": 200, "body": {"id": "{{task}}", "comments": [], "version": 1}}
     }
   ]
 }

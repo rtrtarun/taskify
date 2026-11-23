@@ -1,16 +1,32 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, type Schemas } from "../api/client";
-import { addComment, archiveTask, completeTask, getTask, restoreTask, updateTask, type Task, type TaskDetail } from "../api/tasks";
+import { addComment, archiveTask, completeTask, pollTask, restoreTask, updateTask, type Task, type TaskDetail } from "../api/tasks";
 
 export const DETAIL_POLL_MS = 30_000;
 
 const detailKey = (id: string) => ["tasks", "detail", id] as const;
 
-export function useTaskDetail(id: string) {
+// The ETag of the detail the cache holds, kept beside it: the cached value is
+// a plain TaskDetail that edits update in place.
+const etagKey = (id: string) => ["tasks", "detail-etag", id] as const;
+
+/**
+ * useTaskDetail reads a task and polls it with If-None-Match: an unchanged
+ * task answers 304 and the cached detail stays.
+ */
+export function useTaskDetail(id: string, pollMs: number = DETAIL_POLL_MS) {
+  const qc = useQueryClient();
   return useQuery({
     queryKey: detailKey(id),
-    queryFn: () => getTask(id),
-    refetchInterval: DETAIL_POLL_MS,
+    queryFn: async (): Promise<TaskDetail> => {
+      const prev = qc.getQueryData<TaskDetail>(detailKey(id));
+      const tag = prev ? (qc.getQueryData<string | null>(etagKey(id)) ?? null) : null;
+      const next = await pollTask(id, tag);
+      if (!next) return prev!; // 304: nothing changed (a tag is only sent with a cached detail)
+      qc.setQueryData(etagKey(id), next.etag);
+      return next.data;
+    },
+    refetchInterval: pollMs,
     // A missing or foreign task will not appear by asking again.
     retry: (n, err) => !(err instanceof ApiError && err.status < 500) && n < 2,
   });

@@ -469,3 +469,62 @@ func TestListWorkspaces(t *testing.T) {
 		t.Errorf("after a change: %d", r.status)
 	}
 }
+
+// GET /tasks/{id} answers 304 to a matching If-None-Match, and its tag
+// changes with anything the detail holds, comments included.
+func TestGetTaskConditional(t *testing.T) {
+	e := newEnv(t)
+	task := e.createTask(nil)
+	id := task["id"].(string)
+	path := "/api/v1/tasks/" + id
+	get := func(tag string) resp {
+		h := map[string]string{}
+		if tag != "" {
+			h["If-None-Match"] = tag
+		}
+		return e.do(req{method: "GET", path: path, headers: h})
+	}
+
+	first := get("")
+	tag := first.header.Get("ETag")
+	if first.status != 200 || tag == "" {
+		t.Fatalf("first: %d %s", first.status, tag)
+	}
+	if r := get(tag); r.status != 304 || len(r.raw) != 0 || r.header.Get("ETag") != tag {
+		t.Errorf("unchanged: %d %q %s", r.status, r.header.Get("ETag"), r.raw)
+	}
+	if r := get("W/" + tag); r.status != 304 {
+		t.Errorf("weak form of the tag: %d", r.status)
+	}
+	if r := get(`"1.000000000000"`); r.status != 200 {
+		t.Errorf("a tag that is not the task's: %d", r.status)
+	}
+
+	// A comment does not change the version, but does change the tag.
+	e.do(req{method: "POST", path: path + "/comments", body: map[string]any{"body": "hello"}})
+	afterComment := get(tag)
+	if afterComment.status != 200 || afterComment.header.Get("ETag") == tag || len(afterComment.json["comments"].([]any)) != 1 {
+		t.Fatalf("after a comment: %d %s", afterComment.status, afterComment.raw)
+	}
+	tag = afterComment.header.Get("ETag")
+	if r := get(tag); r.status != 304 {
+		t.Errorf("unchanged after the comment: %d", r.status)
+	}
+
+	// An edit changes it too, and the tag still works as If-Match.
+	patched := e.do(req{method: "PATCH", path: path, headers: map[string]string{"If-Match": tag}, body: map[string]any{"title": "Renamed"}})
+	if patched.status != 200 {
+		t.Fatalf("If-Match with a detail tag: %d %s", patched.status, patched.raw)
+	}
+	if r := get(tag); r.status != 200 || r.json["title"] != "Renamed" {
+		t.Errorf("after an edit: %d", r.status)
+	}
+
+	// Another tenant never learns whether the tag matches.
+	if r := e.do(req{method: "GET", path: path, as: "other-tenant", headers: map[string]string{"If-None-Match": tag}}); r.status != 404 {
+		t.Errorf("other tenant: %d", r.status)
+	}
+	if r := e.do(req{method: "GET", path: "/api/v1/tasks/" + uuid.NewString(), headers: map[string]string{"If-None-Match": tag}}); r.status != 404 {
+		t.Errorf("unknown task: %d", r.status)
+	}
+}

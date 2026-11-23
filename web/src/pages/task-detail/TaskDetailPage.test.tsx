@@ -23,13 +23,13 @@ function detail(over: Partial<TaskDetail> = {}): TaskDetail {
 const isGet = (c: Call) => c.method === "GET" && c.path === `/api/v1/tasks/${ID}`;
 const isPatch = (c: Call) => c.method === "PATCH" && c.path === `/api/v1/tasks/${ID}`;
 
-async function setup(...handlers: Parameters<typeof mockApi>) {
+async function setup(pollMs: number | undefined, ...handlers: Parameters<typeof mockApi>) {
   const api = mockApi(meHandler("member"), ...handlers);
   const store = new SessionStore();
   await signInAs(store);
   const utils = renderWithProviders(
     <Routes>
-      <Route path="/tasks/:id" element={<TaskDetailPage />} />
+      <Route path="/tasks/:id" element={<TaskDetailPage pollMs={pollMs} />} />
     </Routes>,
     { route: `/tasks/${ID}`, store },
   );
@@ -37,8 +37,27 @@ async function setup(...handlers: Parameters<typeof mockApi>) {
 }
 
 describe("task detail", () => {
+  test("polls with If-None-Match: a 304 keeps the page, a changed tag brings the new comment", async () => {
+    let n = 0;
+    const comment = { id: "c1", task_id: ID, author_id: "usr_carol", body: "Looking now", mentions: [], created_at: "2026-11-20T11:00:00Z" };
+    const { api } = await setup(50, (c) => {
+      if (!isGet(c)) return undefined;
+      n++;
+      if (n === 1) return json(200, detail(), { ETag: '"1.aaa"' });
+      if (c.headers.get("If-None-Match") === '"1.aaa"' && n < 4) return json(304, undefined, { ETag: '"1.aaa"' });
+      return json(200, detail({ comments: [comment] }), { ETag: '"1.bbb"' });
+    });
+    expect(await screen.findByRole("heading", { name: "Fix checkout" })).toBeInTheDocument();
+    expect(await screen.findByText("Looking now")).toBeInTheDocument();
+    const gets = api.calls.filter(isGet);
+    expect(gets[0].headers.get("If-None-Match")).toBeNull();
+    expect(gets[1].headers.get("If-None-Match")).toBe('"1.aaa"');
+    expect(gets[2].headers.get("If-None-Match")).toBe('"1.aaa"');
+    expect(screen.getByRole("heading", { name: "Fix checkout" })).toBeInTheDocument();
+  });
+
   test("shows the task and its comments as text", async () => {
-    await setup((c) =>
+    await setup(undefined, (c) =>
       isGet(c)
         ? json(200, detail({
             title: "<b>bold</b> title",
@@ -53,13 +72,13 @@ describe("task detail", () => {
   });
 
   test("a task that is not there, or is another tenant's, is not shown", async () => {
-    await setup((c) => (isGet(c) ? json(404, { error: { code: "not_found", message: "not found" } }) : undefined));
+    await setup(undefined, (c) => (isGet(c) ? json(404, { error: { code: "not_found", message: "not found" } }) : undefined));
     expect(await screen.findByRole("alert")).toHaveTextContent("does not exist, or you cannot see it");
   });
 
   test("an error offers a retry", async () => {
     let fail = true;
-    await setup((c) => (isGet(c) ? (fail ? json(500, { error: { code: "internal_error", message: "internal error" } }) : json(200, detail())) : undefined));
+    await setup(undefined, (c) => (isGet(c) ? (fail ? json(500, { error: { code: "internal_error", message: "internal error" } }) : json(200, detail())) : undefined));
     await screen.findByRole("alert", undefined, { timeout: 4000 });
     fail = false;
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
@@ -68,7 +87,7 @@ describe("task detail", () => {
 
   test("a priority change shows at once and is sent with the version seen", async () => {
     let release: (r: Response) => void = () => {};
-    const { api } = await setup((c) => {
+    const { api } = await setup(undefined, (c) => {
       if (isGet(c)) return json(200, detail());
       if (isPatch(c)) return new Promise<Response>((r) => (release = r)) as unknown as Response;
       return undefined;
@@ -85,7 +104,7 @@ describe("task detail", () => {
   });
 
   test("saving the form sends only what changed", async () => {
-    const { api } = await setup((c) => (isGet(c) ? json(200, detail()) : isPatch(c) ? json(200, detail({ title: "Fix it", version: 2 })) : undefined));
+    const { api } = await setup(undefined, (c) => (isGet(c) ? json(200, detail()) : isPatch(c) ? json(200, detail({ title: "Fix it", version: 2 })) : undefined));
     const title = await screen.findByLabelText("Title");
     expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
     await userEvent.clear(title);
@@ -98,7 +117,7 @@ describe("task detail", () => {
 
   test("a conflict rolls back, reloads, says the change was not saved, and keeps what the user typed visible", async () => {
     let served = 0;
-    const { api } = await setup((c) => {
+    const { api } = await setup(undefined, (c) => {
       if (isGet(c)) return json(200, served++ === 0 ? detail() : detail({ priority: "p4_low", version: 2, title: "Changed by someone" }));
       if (isPatch(c)) return json(409, { error: { code: "version_conflict", message: "stale", details: { current_version: 2 } } });
       return undefined;
@@ -116,7 +135,7 @@ describe("task detail", () => {
   });
 
   test("a refused change is rolled back with the server's message", async () => {
-    await setup((c) => {
+    await setup(undefined, (c) => {
       if (isGet(c)) return json(200, detail());
       if (isPatch(c)) return json(422, { error: { code: "invalid_transition", message: "cannot go from todo to completed this way" } });
       return undefined;
@@ -129,7 +148,7 @@ describe("task detail", () => {
 
   test("adds a comment and clears the box", async () => {
     let posted = false;
-    const { api } = await setup((c) => {
+    const { api } = await setup(undefined, (c) => {
       if (c.method === "POST" && c.path === `/api/v1/tasks/${ID}/comments`) {
         posted = true;
         return json(201, { id: "c9", task_id: ID, author_id: "usr_bob", body: "Looking now", mentions: [], created_at: "2026-11-20T12:00:00Z" });
@@ -149,7 +168,7 @@ describe("task detail", () => {
 
   test("complete, archive, and restore send the seen version", async () => {
     let task = detail();
-    const { api } = await setup((c) => {
+    const { api } = await setup(undefined, (c) => {
       if (isGet(c)) return json(200, task);
       if (c.method === "POST" && c.path.endsWith("/complete")) return json(200, (task = detail({ status: "completed", version: 2 })));
       if (c.method === "DELETE") return json(200, (task = detail({ status: "archived", version: 3 })));

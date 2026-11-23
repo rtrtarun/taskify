@@ -74,8 +74,19 @@ export async function updateTask(id: string, version: number, body: Schemas["Tas
 
 export type Comment = Schemas["Comment"];
 
-export async function getTask(id: string): Promise<TaskDetail> {
-  return unwrap(await api.GET("/api/v1/tasks/{id}", { params: { path: { id } }, cache: "no-store" }));
+/**
+ * pollTask reads a task with the ETag of the last answer, as If-None-Match.
+ * A 304 returns null and the caller keeps what it has. The ETag covers the
+ * comments as well as the version. cache: no-store keeps the browser's own
+ * cache from hiding the 304.
+ */
+export async function pollTask(id: string, etag: string | null): Promise<{ data: TaskDetail; etag: string | null } | null> {
+  const result = await api.GET("/api/v1/tasks/{id}", {
+    params: { path: { id }, header: etag ? { "If-None-Match": etag } : {} },
+    cache: "no-store",
+  });
+  if (result.response.status === 304) return null;
+  return { data: unwrap(result), etag: result.response.headers.get("ETag") };
 }
 
 const ifMatch = (version: number) => ({ "If-Match": `"${version}"` });

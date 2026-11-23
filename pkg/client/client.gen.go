@@ -900,6 +900,12 @@ type DeleteTaskParams struct {
 // DeleteTaskParamsPermanent defines parameters for DeleteTask.
 type DeleteTaskParamsPermanent string
 
+// GetTaskParams defines parameters for GetTask.
+type GetTaskParams struct {
+	// IfNoneMatch The `ETag` of the last response to this same request. Answers `304` when it still matches.
+	IfNoneMatch *IfNoneMatch `json:"If-None-Match,omitempty"`
+}
+
 // UpdateTaskParams defines parameters for UpdateTask.
 type UpdateTaskParams struct {
 	// IfMatch The task's expected version, as `"3"`, `W/"3"`, or `3`.
@@ -1109,7 +1115,7 @@ type ClientInterface interface {
 	DeleteTask(ctx context.Context, id TaskID, params *DeleteTaskParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetTask request
-	GetTask(ctx context.Context, id TaskID, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetTask(ctx context.Context, id TaskID, params *GetTaskParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// UpdateTaskWithBody request with any body
 	UpdateTaskWithBody(ctx context.Context, id TaskID, params *UpdateTaskParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1426,8 +1432,8 @@ func (c *Client) DeleteTask(ctx context.Context, id TaskID, params *DeleteTaskPa
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetTask(ctx context.Context, id TaskID, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetTaskRequest(c.Server, id)
+func (c *Client) GetTask(ctx context.Context, id TaskID, params *GetTaskParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetTaskRequest(c.Server, id, params)
 	if err != nil {
 		return nil, err
 	}
@@ -2653,7 +2659,7 @@ func NewDeleteTaskRequest(server string, id TaskID, params *DeleteTaskParams) (*
 }
 
 // NewGetTaskRequest generates requests for GetTask
-func NewGetTaskRequest(server string, id TaskID) (*http.Request, error) {
+func NewGetTaskRequest(server string, id TaskID, params *GetTaskParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -2681,6 +2687,21 @@ func NewGetTaskRequest(server string, id TaskID) (*http.Request, error) {
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+
+		if params.IfNoneMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "If-None-Match", runtime.ParamLocationHeader, *params.IfNoneMatch)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-None-Match", headerParam0)
+		}
+
 	}
 
 	return req, nil
@@ -3563,7 +3584,7 @@ type ClientWithResponsesInterface interface {
 	DeleteTaskWithResponse(ctx context.Context, id TaskID, params *DeleteTaskParams, reqEditors ...RequestEditorFn) (*DeleteTaskResponse, error)
 
 	// GetTaskWithResponse request
-	GetTaskWithResponse(ctx context.Context, id TaskID, reqEditors ...RequestEditorFn) (*GetTaskResponse, error)
+	GetTaskWithResponse(ctx context.Context, id TaskID, params *GetTaskParams, reqEditors ...RequestEditorFn) (*GetTaskResponse, error)
 
 	// UpdateTaskWithBodyWithResponse request with any body
 	UpdateTaskWithBodyWithResponse(ctx context.Context, id TaskID, params *UpdateTaskParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateTaskResponse, error)
@@ -4766,8 +4787,8 @@ func (c *ClientWithResponses) DeleteTaskWithResponse(ctx context.Context, id Tas
 }
 
 // GetTaskWithResponse request returning *GetTaskResponse
-func (c *ClientWithResponses) GetTaskWithResponse(ctx context.Context, id TaskID, reqEditors ...RequestEditorFn) (*GetTaskResponse, error) {
-	rsp, err := c.GetTask(ctx, id, reqEditors...)
+func (c *ClientWithResponses) GetTaskWithResponse(ctx context.Context, id TaskID, params *GetTaskParams, reqEditors ...RequestEditorFn) (*GetTaskResponse, error) {
+	rsp, err := c.GetTask(ctx, id, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}

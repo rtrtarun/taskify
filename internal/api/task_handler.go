@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -145,8 +146,20 @@ func (h *handlers) getTask(w http.ResponseWriter, r *http.Request) {
 	for _, c := range d.Comments {
 		out.Comments = append(out.Comments, toCommentJSON(c))
 	}
-	w.Header().Set("ETag", etag(d.Task.Version))
-	writeJSON(w, http.StatusOK, out)
+	// The detail holds more than the version covers (comments, and a
+	// reminder a snooze moves), so its tag also hashes the body; a client
+	// that polls with If-None-Match is told when any of it changes.
+	body, err := json.Marshal(out)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	if notModified(w, r, detailETag(d.Task.Version, body)) {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(append(body, '\n'))
 }
 
 func (h *handlers) updateTask(w http.ResponseWriter, r *http.Request) {

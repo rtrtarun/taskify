@@ -27,7 +27,7 @@ The rules a schema cannot express. [openapi.yaml](openapi.yaml) is normative for
 | Rule | Detail | Fixtures |
 | --- | --- | --- |
 | R3.1 Version | A task starts at version 1, and every change that alters it adds 1. A change that alters nothing keeps the version. Reminders, priority recommendations, and agent run records do not change it. | `transitions/*.json` |
-| R3.2 ETag | Responses carrying one task send `ETag: "{version}"`. | `tasks/create.json` |
+| R3.2 ETag | Responses carrying one task send `ETag: "{version}"`, except `GET /tasks/{id}`, whose `ETag` is `"{version}.{hash}"` (a hash of the body, which also covers comments and reminders) and which answers `304` to a matching `If-None-Match`. `If-Match` reads the version before the dot. | `tasks/create.json` |
 | R3.3 Expected version | `PUT` and `PATCH` need the expected version in `If-Match` (`"3"`, `W/"3"`, or `3`) or in the body's `version`; both, if sent, must agree (`400`). Without either: `428 version_required`. Complete, restore, and archive take an optional `If-Match`. | `tasks/update-needs-version.json` |
 | R3.4 Conflict | A stale version is `409 version_conflict` with `error.details.current_version`. Clients reload; they never retry blindly. | `tasks/stale-version.json` |
 | R3.5 Patch semantics | Only fields present change. `null` clears a nullable field and empties a list; it is refused for `title`, `description`, `status`, and `priority` (`422`). `PUT` behaves as `PATCH`. | `tasks/update-clears-fields.json` |

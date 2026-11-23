@@ -227,17 +227,33 @@ paths:
       tags: [tasks]
       operationId: getTask
       summary: Get a task with its recent comments
-      description: An archived task is still returned, so it can be restored. Another tenant's task is `404`.
+      description: |
+        An archived task is still returned, so it can be restored. Another
+        tenant's task is `404`.
+
+        The `ETag` names the whole detail, not only the version: it is the
+        version, a dot, and a hash of the body (`"3.9f2c4a1b7d03"`), so a new
+        comment or a moved reminder changes it. Send it back as
+        `If-None-Match` to poll cheaply: an unchanged task answers `304`
+        with no body. It also works as `If-Match`, which reads the version
+        before the dot.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
       responses:
         "200":
           description: The task.
           headers:
             ETag:
-              $ref: "#/components/headers/ETag"
+              $ref: "#/components/headers/DetailETag"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/TaskDetail"
+        "304":
+          description: The task is unchanged since the `ETag` in `If-None-Match`. No body.
+          headers:
+            ETag:
+              $ref: "#/components/headers/DetailETag"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1388,6 +1404,13 @@ components:
   headers:
     ETag:
       description: The task's version, as a strong validator, such as `"3"`.
+      schema:
+        type: string
+    DetailETag:
+      description: |
+        The validator of a task detail: the task's version, a dot, and a hash
+        of the body, such as `"3.9f2c4a1b7d03"`. Send it back as
+        `If-None-Match`.
       schema:
         type: string
     ListETag:

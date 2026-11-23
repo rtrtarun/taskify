@@ -1,7 +1,9 @@
 package api
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -241,10 +243,19 @@ func decodeCursor(s string) (*repository.Cursor, error) {
 // etag is the strong validator for a task: its version.
 func etag(version int) string { return `"` + strconv.Itoa(version) + `"` }
 
-// parseIfMatch accepts "3", W/"3", and 3.
+// detailETag is the validator of a task detail: the version, a dot, and a
+// hash of the body, such as "3.9f2c4a1b7d03". The version leads so that a
+// client that sends this tag back as If-Match still names its version.
+func detailETag(version int, body []byte) string {
+	sum := sha256.Sum256(body)
+	return `"` + strconv.Itoa(version) + "." + hex.EncodeToString(sum[:6]) + `"`
+}
+
+// parseIfMatch accepts "3", W/"3", 3, and the tag of a task detail, "3.9f2c4a1b7d03".
 func parseIfMatch(h string) (int, error) {
 	v := strings.TrimPrefix(strings.TrimSpace(h), "W/")
 	v = strings.Trim(v, `"`)
+	v, _, _ = strings.Cut(v, ".")
 	n, err := strconv.Atoi(v)
 	if err != nil || n < 1 {
 		return 0, badRequest("If-Match must hold the task version, such as \"3\"")

@@ -381,8 +381,8 @@ func TestGetTask(t *testing.T) {
 	e.do(req{method: "POST", path: "/api/v1/tasks/" + id + "/comments", body: map[string]any{"body": "first"}})
 
 	r := e.do(req{method: "GET", path: "/api/v1/tasks/" + id})
-	if r.status != 200 || r.header.Get("ETag") != `"1"` {
-		t.Fatalf("get: %d %s", r.status, r.raw)
+	if tag := r.header.Get("ETag"); r.status != 200 || !strings.HasPrefix(tag, `"1.`) {
+		t.Fatalf("get: %d %s %s", r.status, tag, r.raw)
 	}
 	comments := r.json["comments"].([]any)
 	if len(comments) != 1 || comments[0].(map[string]any)["body"] != "first" || r.json["title"] != "Fix checkout crash" {

@@ -48,9 +48,9 @@ function changesFrom(t: TaskDetail, d: Draft): Schemas["TaskUpdate"] {
   return c;
 }
 
-export default function TaskDetailPage() {
+export default function TaskDetailPage({ pollMs }: { pollMs?: number }) {
   const { id = "" } = useParams();
-  const detail = useTaskDetail(id);
+  const detail = useTaskDetail(id, pollMs);
 
   if (detail.isPending) {
     return (

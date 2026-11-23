@@ -228,7 +228,7 @@ func (a *app) taskShow() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		resp, err := c.GetTaskWithResponse(ctx, id)
+		resp, err := c.GetTaskWithResponse(ctx, id, nil)
 		if err := s.check(resp, err, http.StatusOK); err != nil {
 			return err
 		}
@@ -298,7 +298,7 @@ func (a *app) taskShow() *cobra.Command {
 // version it read in If-Match. A 409 is reported with the current version and
 // is not retried: the person decides whether the change still makes sense.
 func (s *session) patchTask(ctx context.Context, c *client.ClientWithResponses, id uuid.UUID, change map[string]any, precheck func(*client.TaskDetail) error) ([]byte, *client.Task, error) {
-	cur, err := c.GetTaskWithResponse(ctx, id)
+	cur, err := c.GetTaskWithResponse(ctx, id, nil)
 	if err := s.check(cur, err, http.StatusOK); err != nil {
 		return nil, nil, err
 	}
