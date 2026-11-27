@@ -65,7 +65,7 @@ type meJSON struct {
 // getMe serves GET /me: who the server takes the caller to be.
 func (h *handlers) getMe(w http.ResponseWriter, r *http.Request) {
 	id := identity(r)
-	writeJSON(w, http.StatusOK, meJSON{TenantID: id.TenantID, UserID: id.UserID, Role: id.Role})
+	writeJSON(w, http.StatusOK, meJSON(id))
 }
 
 type agentJobListJSON struct {
