@@ -28,7 +28,8 @@ func IDPrefixRange(prefix string) (lo, hi uuid.UUID, err error) {
 			}
 			continue
 		}
-		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f') {
+		isHex := '0' <= c && c <= '9' || 'a' <= c && c <= 'f'
+		if !isHex {
 			return uuid.Nil, uuid.Nil, invalid("id_prefix must be the start of a UUID such as 0193a1b2-c3d4")
 		}
 	}

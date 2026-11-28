@@ -42,6 +42,11 @@ jobs:
           version: v2.15.0
       - name: Build
         run: go build ./...
+      # taskctl builds for Windows, macOS, and Linux (M13-06).
+      - name: Cross-compile taskctl
+        run: |
+          make build-cli-all
+          test "$(ls bin/taskctl-* | wc -l)" -eq 3
       # contract/openapi.yaml must be valid and match the router, and the
       # response validator must refuse what the contract does not describe.
       # The handler and end-to-end tests in the next step validate every
@@ -49,6 +54,13 @@ jobs:
       # fails CI (M12-05).
       - name: Contract
         run: go test ./contract/... ./internal/api/ -run 'TestOpenAPILint|TestSchemas|TestValidator|TestRoutesMatchContract'
+      # pkg/client is generated from the contract (M13-01). A contract change
+      # without the regenerated client leaves a difference and fails here.
+      - name: Generated client is current
+        run: |
+          make generate
+          git diff --exit-code -- pkg/client
+          test -z "$(git status --porcelain -- pkg/client)"
       - name: Test
         shell: bash # with pipefail, so a test failure is not hidden by tee
         run: go test -race -cover ./... | tee test-output.txt

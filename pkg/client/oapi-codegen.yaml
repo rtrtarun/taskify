@@ -1,0 +1,13 @@
+# Configuration for oapi-codegen (G19). Run `make generate`; CI regenerates
+# and fails on a difference. The output is never edited by hand.
+package: client
+output: pkg/client/client.gen.go
+generate:
+  client: true
+  models: true
+output-options:
+  # Only the operations a person or script calls; the AgentPulse callback and
+  # the operations endpoints are not part of the client.
+  exclude-operation-ids:
+    - agentPulseCallback
+    - getMetrics

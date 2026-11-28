@@ -26,8 +26,25 @@ builds:
     # Reproducible: the same commit gives byte-identical binaries.
     mod_timestamp: "{{ .CommitTimestamp }}"
 
+  # The command-line client (M13): the same three systems and two
+  # architectures, one static binary each.
+  - id: taskctl
+    main: ./cmd/taskctl
+    binary: taskctl
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
 archives:
-  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: taskify
+    ids: [taskify]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
     format_overrides:
       - goos: windows
@@ -37,6 +54,17 @@ archives:
       - README.md
       - LICENSE
       - migrations/*.sql
+
+  - id: taskctl
+    ids: [taskctl]
+    name_template: "taskctl_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
 
 checksum:
   name_template: checksums.txt
