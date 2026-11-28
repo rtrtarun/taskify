@@ -213,7 +213,7 @@ func classifyFeedError(ctx context.Context, err error) error {
 		return ctx.Err()
 	}
 	if isUpstreamServerFailure(err) {
-		return fmt.Errorf("%w: %v", ErrFeedUnavailable, err)
+		return fmt.Errorf("%w: %w", ErrFeedUnavailable, err)
 	}
 	return err
 }
