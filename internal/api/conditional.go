@@ -29,7 +29,7 @@ import (
 // the count, and for a delta list it changes ArchivedSince as well.
 func listETag(tenantID string, query string, st repository.ListState) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s\x00%s\x00%d\x00%d\x00%d", tenantID, query, st.Count, st.Latest.UnixMicro(), st.ArchivedSince)
+	_, _ = fmt.Fprintf(h, "%s\x00%s\x00%d\x00%d\x00%d", tenantID, query, st.Count, st.Latest.UnixMicro(), st.ArchivedSince)
 	return weakTag(h.Sum(nil))
 }
 
