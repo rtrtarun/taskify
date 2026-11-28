@@ -99,6 +99,16 @@ func TestListAgentJobsAndRuns(t *testing.T) {
 		if _, err := f.jobs.RunsForTask(ctx, "tenant_other", task.ID); !errors.Is(err, domain.ErrNotFound) {
 			t.Errorf("another tenant: %v", err)
 		}
+		one, err := f.jobs.RunsForJob(ctx, tenant, job.ID)
+		if err != nil || one.Job.ID != job.ID || len(one.Runs) != 1 {
+			t.Errorf("RunsForJob = %+v, %v", one, err)
+		}
+		if _, err := f.jobs.RunsForJob(ctx, "tenant_other", job.ID); !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("RunsForJob, another tenant: %v", err)
+		}
+		if _, err := f.jobs.RunsForJob(ctx, tenant, uuid.New()); !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("RunsForJob, unknown job: %v", err)
+		}
 	})
 }
 
@@ -202,6 +212,39 @@ func TestJobVisibility(t *testing.T) {
 		}
 		if _, err := f.jobs.List(ctx, repository.AgentJobFilter{TenantID: tenant}, Decider{}); !errors.Is(err, domain.ErrValidation) {
 			t.Errorf("a list without a viewer: %v", err)
+		}
+	})
+}
+
+func TestWorkspaceListPagesAndTaskListState(t *testing.T) {
+	each(t, func(t *testing.T, f *fixture) {
+		ws := NewWorkspaceService(f.b.Tx, f.b.Workspaces, f.b.Rules, nil, func() time.Time { return t0 })
+		for _, id := range []string{"ws_a", "ws_b"} {
+			w, err := domain.NewWorkspace(tenant, id, id, t0)
+			if err == nil {
+				err = f.b.Workspaces.Create(ctx, w)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		first, err := ws.List(ctx, tenant, "", 2)
+		if err != nil || len(first.Workspaces) != 2 || first.Next == "" {
+			t.Fatalf("first page = %+v, %v", first, err)
+		}
+		rest, err := ws.List(ctx, tenant, first.Next, 2)
+		if err != nil || len(rest.Workspaces) != 1 || rest.Next != "" {
+			t.Fatalf("second page = %+v, %v", rest, err)
+		}
+
+		f.create(t, nil)
+		state, err := f.svc.TaskListState(ctx, repository.TaskFilter{TenantID: tenant})
+		if err != nil || state.Count != 1 {
+			t.Errorf("TaskListState = %+v, %v", state, err)
+		}
+		since := t0.Add(-time.Hour)
+		if ids, err := f.svc.ArchivedSince(ctx, repository.TaskFilter{TenantID: tenant, UpdatedSince: &since}); err != nil || len(ids) != 0 {
+			t.Errorf("ArchivedSince = %v, %v", ids, err)
 		}
 	})
 }

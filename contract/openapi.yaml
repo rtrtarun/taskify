@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Taskify API
-  version: 1.0.0
+  version: 1.1.0
   description: |
     Taskify's REST API: tasks, comments, agent jobs, workspaces, and the
     callbacks AgentPulse sends. This document is normative for paths,
@@ -874,7 +874,10 @@ paths:
       description: |
         Any member may list the workspaces of their own tenant, in ID order,
         a page at a time; another tenant's workspaces are never listed. The
-        quick-add form reads this to offer a workspace picker.
+        quick-add form reads this to offer a workspace picker. A member gets
+        only `id` and `name` of each workspace; an admin gets the full
+        workspace, agent settings and timestamps included (a member reads
+        none of those, as `GET /workspaces/{id}/settings` is admin only).
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
@@ -1109,6 +1112,42 @@ paths:
           $ref: "#/components/responses/BadGateway"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/admin/agent-jobs/{id}/runs:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The agent job's ID.
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [admin, agent-jobs]
+      operationId: getAgentJobRuns
+      summary: One agent job with its run history (admin)
+      description: |
+        The job and its model turns, oldest first, each with the tokens it
+        used: the admin job list shows the run history and the job's token
+        use from this. A job of another tenant, or one that does not exist,
+        is `404`.
+      responses:
+        "200":
+          description: The job and its runs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentJobRuns"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /api/v1/admin/outbox:
     get:
@@ -2117,6 +2156,23 @@ components:
           $ref: "#/components/schemas/Timestamp"
         updated_at:
           $ref: "#/components/schemas/Timestamp"
+    WorkspaceListItem:
+      description: |
+        A workspace as the list shows it. A member's item has `id` and `name`
+        only; an admin's item is the full `Workspace`.
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        agent_settings:
+          $ref: "#/components/schemas/AgentSettings"
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        updated_at:
+          $ref: "#/components/schemas/Timestamp"
     WorkspaceList:
       type: object
       required: [workspaces, next_cursor]
@@ -2124,7 +2180,7 @@ components:
         workspaces:
           type: array
           items:
-            $ref: "#/components/schemas/Workspace"
+            $ref: "#/components/schemas/WorkspaceListItem"
         next_cursor:
           type: string
           nullable: true

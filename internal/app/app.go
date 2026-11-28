@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/rtrtarun/taskify/internal/repository/postgres"
 	"github.com/rtrtarun/taskify/internal/service"
 	"github.com/rtrtarun/taskify/internal/worker"
+	"github.com/rtrtarun/taskify/web"
 )
 
 const shutdownTimeout = 15 * time.Second
@@ -122,7 +124,16 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 	}
 	agentJobs := service.NewAgentJobService(db, postgres.NewAgentJobRepo(db), tasks, registry, metrics, nil)
 
+	var spa fs.FS
+	if cfg.ServeEmbeddedSPA {
+		var ok bool
+		if spa, ok = web.Dist(); !ok {
+			return nil, errors.New("SERVE_EMBEDDED_SPA is true, but this binary was built without the frontend (build web/ and use -tags webembed)")
+		}
+	}
+
 	handler, err := api.NewRouter(api.Deps{
+		SPA:        spa,
 		Tasks:      taskSvc,
 		Workspaces: service.NewWorkspaceService(db, postgres.NewWorkspaceRepo(db), postgres.NewRuleRepo(db), client, nil),
 		Feedback:   feedback,

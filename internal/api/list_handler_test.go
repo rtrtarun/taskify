@@ -433,6 +433,23 @@ func TestListWorkspaces(t *testing.T) {
 		t.Errorf("other tenant sees %v", got)
 	}
 
+	// A member reads only id and name; an admin reads the full workspace.
+	for _, w := range r.json["workspaces"].([]any) {
+		if m := w.(map[string]any); len(m) != 2 || m["name"] == nil {
+			t.Errorf("member item has %v", m)
+		}
+	}
+	ar := e.do(req{method: "GET", path: "/api/v1/workspaces", as: "admin"})
+	for _, w := range ar.json["workspaces"].([]any) {
+		m := w.(map[string]any)
+		if m["agent_settings"] == nil || m["created_at"] == nil || m["updated_at"] == nil {
+			t.Errorf("admin item is not the full workspace: %v", m)
+		}
+	}
+	if strings.Join(ids(ar), ",") != "ws_a,ws_b,ws_c,ws_core" {
+		t.Errorf("admin list: %s", ar.raw)
+	}
+
 	// Pages.
 	r = e.do(req{method: "GET", path: "/api/v1/workspaces?limit=3"})
 	if strings.Join(ids(r), ",") != "ws_a,ws_b,ws_c" || r.json["next_cursor"] == nil {
@@ -565,5 +582,36 @@ func TestAPIVersionHeader(t *testing.T) {
 	r := e.do(req{method: "GET", path: "/api/v1/me", headers: map[string]string{"Origin": "https://app.example"}})
 	if !strings.Contains(r.header.Get("Access-Control-Expose-Headers"), "X-Taskify-API-Version") {
 		t.Errorf("not exposed to browsers: %q", r.header.Get("Access-Control-Expose-Headers"))
+	}
+}
+
+func TestAdminAgentJobRuns(t *testing.T) {
+	e := newEnv(t)
+	job := e.insertJob(nil, domain.AgentDigest, e.now)
+	run := domain.AgentRun{ID: uuid.New(), JobID: job.ID, Turn: 1, Model: "m", Outcome: "final",
+		PromptTokens: 7, CompletionTokens: 3, CreatedAt: e.now}
+	if err := e.b.AgentJobs.InsertRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/admin/agent-jobs/" + job.ID.String() + "/runs"
+	r := e.do(req{method: "GET", path: path, as: "admin"})
+	runs, _ := r.json["runs"].([]any)
+	if r.status != 200 || len(runs) != 1 || r.json["job"].(map[string]any)["id"] != job.ID.String() ||
+		runs[0].(map[string]any)["prompt_tokens"] != 7.0 {
+		t.Fatalf("runs: %d %s", r.status, r.raw)
+	}
+	for name, rq := range map[string]req{
+		"member":       {method: "GET", path: path},
+		"other tenant": {method: "GET", path: path, as: "other-tenant"},
+		"unknown":      {method: "GET", path: "/api/v1/admin/agent-jobs/" + uuid.NewString() + "/runs", as: "admin"},
+		"malformed":    {method: "GET", path: "/api/v1/admin/agent-jobs/nope/runs", as: "admin"},
+	} {
+		want := 404
+		if name == "member" {
+			want = 403
+		}
+		if r := e.do(rq); r.status != want {
+			t.Errorf("%s: %d", name, r.status)
+		}
 	}
 }

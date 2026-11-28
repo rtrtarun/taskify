@@ -1097,6 +1097,7 @@ All routes are under `/api/v1`, except the operations routes. Legacy unprefixed 
 | `POST /workspaces` | Create a workspace (admin). Tasks can only be created in an existing workspace. | Registers the default AgentPulse rules | R1 |
 | `GET /workspaces/{id}/settings`, `PATCH /workspaces/{id}/settings` | Read and change workspace settings, including `agent_settings` (admin) | none | R1; agent fields from R2 |
 | `GET /tasks/{id}/agent-runs` | Agent activity for a task, oldest first, from `agent_jobs` and `agent_run_history` | none | R3 (M12) |
+| `GET /admin/agent-jobs/{id}/runs` | One job of the tenant with its run history and tokens (admin; another tenant's job is `404`) | admin | R3 (M14-11) |
 | `GET /admin/outbox` | List the tenant's outbox rows, newest first (admin); filter `status` (such as `dead_letter`), `limit`, `cursor`. Dispatched rows are kept 7 days. | none | R3 (M12) |
 | `POST /admin/outbox/{id}/replay` | Return a dead-letter row to `pending` (admin) | Row is retried | R3 (M12) |
 | `GET /notifications/in-app` | Current user's in-app feed, proxied from AgentPulse and enriched with task data and read state; `503` with `Retry-After` when AgentPulse cannot answer | none | R3 (M14-06) |
@@ -1323,7 +1324,7 @@ Read once at start-up by `internal/config`, which refuses to start on a missing 
 | `RATE_LIMIT_RPS` | `20` | Requests per second per tenant and user, in memory per replica |
 | `RATE_LIMIT_BURST` | `40` | Token bucket size |
 | `CORS_ALLOWED_ORIGINS` | empty | Frontend origins, when the frontend is deployed separately (M14-02). Comma-separated `scheme://host[:port]`, no `*` |
-| `SERVE_EMBEDDED_SPA` | `false` | Not built. Serve the embedded frontend at `/` (M14) |
+| `SERVE_EMBEDDED_SPA` | `false` | Serve the frontend compiled into the binary at `/` (M14-12). Needs a binary built with `-tags webembed` (`make build-embedded`); the server refuses to start otherwise. Client-side routes fall back to `index.html`; paths under `/api/` never do |
 | `AGENTS_ENABLED` | `false` | Process-level switch for the agent runtime. Per-workspace control is in `agent_settings`. |
 | `AGENT_WORKERS` | `4` | Agent job concurrency |
 | `AGENT_MAX_TURNS` | `6` | Model turns per run |

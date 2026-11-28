@@ -27,7 +27,7 @@ export default function AppRoutes() {
         <Route path="/brief" element={<BriefPage />} />
         <Route path="/notifications" element={<NotificationsPage />} />
         <Route
-          path="/admin"
+          path="/admin/*"
           element={
             <RequireAdmin>
               <AdminPage />

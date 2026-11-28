@@ -743,8 +743,22 @@ type WorkspaceCreated struct {
 
 // WorkspaceList defines model for WorkspaceList.
 type WorkspaceList struct {
-	NextCursor *string     `json:"next_cursor"`
-	Workspaces []Workspace `json:"workspaces"`
+	NextCursor *string             `json:"next_cursor"`
+	Workspaces []WorkspaceListItem `json:"workspaces"`
+}
+
+// WorkspaceListItem A workspace as the list shows it. A member's item has `id` and `name`
+// only; an admin's item is the full `Workspace`.
+type WorkspaceListItem struct {
+	AgentSettings *AgentSettings `json:"agent_settings,omitempty"`
+
+	// CreatedAt RFC 3339 in UTC.
+	CreatedAt *Timestamp `json:"created_at,omitempty"`
+	Id        string     `json:"id"`
+	Name      string     `json:"name"`
+
+	// UpdatedAt RFC 3339 in UTC.
+	UpdatedAt *Timestamp `json:"updated_at,omitempty"`
 }
 
 // WorkspaceUpdate defines model for WorkspaceUpdate.
@@ -1055,6 +1069,9 @@ func WithRequestEditorFn(fn RequestEditorFn) ClientOption {
 
 // The interface specification for the client above.
 type ClientInterface interface {
+	// GetAgentJobRuns request
+	GetAgentJobRuns(ctx context.Context, id openapi_types.UUID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListLearningSuggestions request
 	ListLearningSuggestions(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -1178,6 +1195,18 @@ type ClientInterface interface {
 
 	// GetReadiness request
 	GetReadiness(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+}
+
+func (c *Client) GetAgentJobRuns(ctx context.Context, id openapi_types.UUID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetAgentJobRunsRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
 }
 
 func (c *Client) ListLearningSuggestions(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -1718,6 +1747,40 @@ func (c *Client) GetReadiness(ctx context.Context, reqEditors ...RequestEditorFn
 		return nil, err
 	}
 	return c.Client.Do(req)
+}
+
+// NewGetAgentJobRunsRequest generates requests for GetAgentJobRuns
+func NewGetAgentJobRunsRequest(server string, id openapi_types.UUID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/admin/agent-jobs/%s/runs", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
 }
 
 // NewListLearningSuggestionsRequest generates requests for ListLearningSuggestions
@@ -3524,6 +3587,9 @@ func WithBaseURL(baseURL string) ClientOption {
 
 // ClientWithResponsesInterface is the interface specification for the client with responses above.
 type ClientWithResponsesInterface interface {
+	// GetAgentJobRunsWithResponse request
+	GetAgentJobRunsWithResponse(ctx context.Context, id openapi_types.UUID, reqEditors ...RequestEditorFn) (*GetAgentJobRunsResponse, error)
+
 	// ListLearningSuggestionsWithResponse request
 	ListLearningSuggestionsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListLearningSuggestionsResponse, error)
 
@@ -3647,6 +3713,33 @@ type ClientWithResponsesInterface interface {
 
 	// GetReadinessWithResponse request
 	GetReadinessWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetReadinessResponse, error)
+}
+
+type GetAgentJobRunsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *AgentJobRuns
+	JSON401      *Unauthorized
+	JSON403      *Forbidden
+	JSON404      *NotFound
+	JSON429      *TooManyRequests
+	JSON500      *InternalError
+}
+
+// Status returns HTTPResponse.Status
+func (r GetAgentJobRunsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetAgentJobRunsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
 }
 
 type ListLearningSuggestionsResponse struct {
@@ -4601,6 +4694,15 @@ func (r GetReadinessResponse) StatusCode() int {
 	return 0
 }
 
+// GetAgentJobRunsWithResponse request returning *GetAgentJobRunsResponse
+func (c *ClientWithResponses) GetAgentJobRunsWithResponse(ctx context.Context, id openapi_types.UUID, reqEditors ...RequestEditorFn) (*GetAgentJobRunsResponse, error) {
+	rsp, err := c.GetAgentJobRuns(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetAgentJobRunsResponse(rsp)
+}
+
 // ListLearningSuggestionsWithResponse request returning *ListLearningSuggestionsResponse
 func (c *ClientWithResponses) ListLearningSuggestionsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListLearningSuggestionsResponse, error) {
 	rsp, err := c.ListLearningSuggestions(ctx, reqEditors...)
@@ -4993,6 +5095,67 @@ func (c *ClientWithResponses) GetReadinessWithResponse(ctx context.Context, reqE
 		return nil, err
 	}
 	return ParseGetReadinessResponse(rsp)
+}
+
+// ParseGetAgentJobRunsResponse parses an HTTP response from a GetAgentJobRunsWithResponse call
+func ParseGetAgentJobRunsResponse(rsp *http.Response) (*GetAgentJobRunsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetAgentJobRunsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AgentJobRuns
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
 }
 
 // ParseListLearningSuggestionsResponse parses an HTTP response from a ListLearningSuggestionsWithResponse call

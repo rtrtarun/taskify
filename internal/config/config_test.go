@@ -63,6 +63,9 @@ func TestDefaults(t *testing.T) {
 	if len(c.TrustedGatewayCIDRs) != 0 {
 		t.Errorf("TrustedGatewayCIDRs = %v, want empty", c.TrustedGatewayCIDRs)
 	}
+	if c.ServeEmbeddedSPA {
+		t.Error("ServeEmbeddedSPA is on by default")
+	}
 }
 
 func TestOverrides(t *testing.T) {
@@ -73,13 +76,14 @@ func TestOverrides(t *testing.T) {
 	env["TRUSTED_GATEWAY_CIDRS"] = "10.0.0.0/8, 192.168.1.7/24"
 	env["RATE_LIMIT_RPS"] = "2.5"
 	env["OUTBOX_RETRY_MAX_DELAY"] = "100ms"
+	env["SERVE_EMBEDDED_SPA"] = "true"
 
 	c, err := FromLookup(lookupFrom(env))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !c.IsDevelopment() || c.Port != 9000 || c.OutboxPollInterval != time.Second || c.RateLimitRPS != 2.5 ||
-		c.OutboxRetryMaxDelay != 100*time.Millisecond {
+		c.OutboxRetryMaxDelay != 100*time.Millisecond || !c.ServeEmbeddedSPA {
 		t.Errorf("overrides not applied: %+v", c)
 	}
 	if len(c.TrustedGatewayCIDRs) != 2 || c.TrustedGatewayCIDRs[1].String() != "192.168.1.0/24" {

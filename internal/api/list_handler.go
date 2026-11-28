@@ -147,6 +147,37 @@ type agentJobRunsJSON struct {
 	Runs []agentRunJSON `json:"runs"`
 }
 
+func toAgentJobRunsJSON(j service.JobRuns) agentJobRunsJSON {
+	runs := make([]agentRunJSON, 0, len(j.Runs))
+	for _, run := range j.Runs {
+		a := agentRunJSON{Turn: run.Turn, Model: run.Model, ToolArgs: rawOrNull(run.ToolArgs), ToolResult: rawOrNull(run.ToolResult),
+			Outcome: run.Outcome, PromptTokens: run.PromptTokens, CompletionTokens: run.CompletionTokens,
+			LatencyMS: run.LatencyMS, CreatedAt: rfc3339(run.CreatedAt)}
+		if run.ToolName != "" {
+			name := run.ToolName
+			a.ToolName = &name
+		}
+		runs = append(runs, a)
+	}
+	return agentJobRunsJSON{Job: toAgentJobJSON(j.Job), Runs: runs}
+}
+
+// getAgentJobRuns serves GET /admin/agent-jobs/{id}/runs: one job of the
+// tenant with its run history.
+func (h *handlers) getAgentJobRuns(w http.ResponseWriter, r *http.Request) {
+	id, err := taskID(r)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	j, err := h.agentJobs.RunsForJob(r.Context(), identity(r).TenantID, id)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toAgentJobRunsJSON(j))
+}
+
 // listAgentRuns serves GET /tasks/{id}/agent-runs: the task's agent jobs
 // with their run history.
 func (h *handlers) listAgentRuns(w http.ResponseWriter, r *http.Request) {
@@ -162,18 +193,7 @@ func (h *handlers) listAgentRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]agentJobRunsJSON, 0, len(jobs))
 	for _, j := range jobs {
-		runs := make([]agentRunJSON, 0, len(j.Runs))
-		for _, run := range j.Runs {
-			a := agentRunJSON{Turn: run.Turn, Model: run.Model, ToolArgs: rawOrNull(run.ToolArgs), ToolResult: rawOrNull(run.ToolResult),
-				Outcome: run.Outcome, PromptTokens: run.PromptTokens, CompletionTokens: run.CompletionTokens,
-				LatencyMS: run.LatencyMS, CreatedAt: rfc3339(run.CreatedAt)}
-			if run.ToolName != "" {
-				name := run.ToolName
-				a.ToolName = &name
-			}
-			runs = append(runs, a)
-		}
-		out = append(out, agentJobRunsJSON{Job: toAgentJobJSON(j.Job), Runs: runs})
+		out = append(out, toAgentJobRunsJSON(j))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agent_runs": out})
 }
@@ -254,13 +274,21 @@ func (h *handlers) replayOutbox(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toOutboxEntryJSON(e))
 }
 
+// workspaceSummaryJSON is what a member reads of a workspace: its ID and name.
+type workspaceSummaryJSON struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 type workspaceListJSON struct {
-	Workspaces []workspaceJSON `json:"workspaces"`
-	NextCursor *string         `json:"next_cursor"`
+	Workspaces []any   `json:"workspaces"`
+	NextCursor *string `json:"next_cursor"`
 }
 
 // listWorkspaces serves GET /workspaces: the caller's tenant's workspaces, for
-// any member. The cursor is the last workspace ID of the page, encoded.
+// any member, who reads only each one's ID and name; an admin reads the full
+// workspace, agent settings included. The cursor is the last workspace ID of
+// the page, encoded.
 func (h *handlers) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	limit := 0
 	if v := r.URL.Query().Get("limit"); v != "" {
@@ -285,9 +313,14 @@ func (h *handlers) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	out := workspaceListJSON{Workspaces: make([]workspaceJSON, 0, len(page.Workspaces))}
+	admin := identity(r).IsAdmin()
+	out := workspaceListJSON{Workspaces: make([]any, 0, len(page.Workspaces))}
 	for _, ws := range page.Workspaces {
-		out.Workspaces = append(out.Workspaces, toWorkspaceJSON(ws))
+		if admin {
+			out.Workspaces = append(out.Workspaces, toWorkspaceJSON(ws))
+		} else {
+			out.Workspaces = append(out.Workspaces, workspaceSummaryJSON{ID: ws.ID, Name: ws.Name})
+		}
 	}
 	if page.Next != "" {
 		c := base64.RawURLEncoding.EncodeToString([]byte(page.Next))

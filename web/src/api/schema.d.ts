@@ -509,7 +509,10 @@ export interface paths {
          * The caller's tenant's workspaces
          * @description Any member may list the workspaces of their own tenant, in ID order,
          *     a page at a time; another tenant's workspaces are never listed. The
-         *     quick-add form reads this to offer a workspace picker.
+         *     quick-add form reads this to offer a workspace picker. A member gets
+         *     only `id` and `name` of each workspace; an admin gets the full
+         *     workspace, agent settings and timestamps included (a member reads
+         *     none of those, as `GET /workspaces/{id}/settings` is admin only).
          */
         get: operations["listWorkspaces"];
         put?: never;
@@ -612,6 +615,32 @@ export interface paths {
          *     response is the decided suggestion, in snake_case.
          */
         post: operations["decideLearningSuggestion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/agent-jobs/{id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The agent job's ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * One agent job with its run history (admin)
+         * @description The job and its model turns, oldest first, each with the tokens it
+         *     used: the admin job list shows the run history and the job's token
+         *     use from this. A job of another tenant, or one that does not exist,
+         *     is `404`.
+         */
+        get: operations["getAgentJobRuns"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1034,8 +1063,19 @@ export interface components {
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
         };
+        /**
+         * @description A workspace as the list shows it. A member's item has `id` and `name`
+         *     only; an admin's item is the full `Workspace`.
+         */
+        WorkspaceListItem: {
+            id: string;
+            name: string;
+            agent_settings?: components["schemas"]["AgentSettings"];
+            created_at?: components["schemas"]["Timestamp"];
+            updated_at?: components["schemas"]["Timestamp"];
+        };
         WorkspaceList: {
-            workspaces: components["schemas"]["Workspace"][];
+            workspaces: components["schemas"]["WorkspaceListItem"][];
             next_cursor: string | null;
         };
         WorkspaceCreate: {
@@ -2356,6 +2396,34 @@ export interface operations {
             500: components["responses"]["InternalError"];
             502: components["responses"]["BadGateway"];
             503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getAgentJobRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The agent job's ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The job and its runs. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentJobRuns"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["InternalError"];
         };
     };
     listOutbox: {

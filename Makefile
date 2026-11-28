@@ -7,7 +7,7 @@ JWT_SECRET   ?= dev-secret
 OAPI_CODEGEN := go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.5.1
 MIGRATE      := go run -tags postgres github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.3
 
-.PHONY: build build-cli-all test lint migrate-up migrate-down run dev-token conformance generate
+.PHONY: build build-embedded build-cli-all test lint migrate-up migrate-down run dev-token conformance generate
 
 build:
 	go build -o $(BIN)/taskify ./cmd/taskify
@@ -15,6 +15,12 @@ build:
 	go build -o $(BIN)/mock-llm ./cmd/mock-llm
 	go build -o $(BIN)/devtoken ./cmd/devtoken
 	go build -o $(BIN)/taskctl ./cmd/taskctl
+
+# The server with the web app compiled in (M14-12): serve it with
+# SERVE_EMBEDDED_SPA=true. Plain `build` needs no Node toolchain.
+build-embedded:
+	cd web && npm ci && npm run build
+	go build -tags webembed -o $(BIN)/taskify ./cmd/taskify
 
 # taskctl for Windows, macOS, and Linux, as static binaries (M13-06). The
 # release builds these, and more, through goreleaser; this is the quick check

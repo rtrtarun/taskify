@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"time"
@@ -29,6 +30,9 @@ type Deps struct {
 	// Notifications serves /notifications. Nil leaves those routes out.
 	Notifications *service.NotificationService
 	Learning      LearningClient
+	// SPA is the built frontend, served at / when set (SERVE_EMBEDDED_SPA).
+	// It never answers a path under /api/.
+	SPA fs.FS
 
 	// CORSAllowedOrigins lets a frontend on another origin call the API.
 	CORSAllowedOrigins []string
@@ -76,7 +80,11 @@ func NewRouter(d Deps) (http.Handler, error) {
 	// The OpenTelemetry handler is outermost: it continues an incoming W3C
 	// trace or starts one, so every log line and outbox row below can carry
 	// the trace ID.
-	return otelhttp.NewHandler(r, "http.request", otelhttp.WithPropagators(observability.Propagator)), nil
+	var root http.Handler = r
+	if d.SPA != nil {
+		root = withSPA(r, d.SPA)
+	}
+	return otelhttp.NewHandler(root, "http.request", otelhttp.WithPropagators(observability.Propagator)), nil
 }
 
 // newMux builds the routes. contract/openapi.yaml documents each of them

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"slices"
@@ -117,15 +118,41 @@ func TestJobWatchAndDecomposeWait(t *testing.T) {
 	}
 
 	// show --watch follows a queued job to the point it waits for approval.
+	// The job moves on only after the watch has printed the state it is
+	// leaving, so a slow machine cannot make the watch miss one: each step
+	// waits for the watch's own output, not for the clock.
 	id := c.add("Watched")
 	job := strings.TrimSpace(c.ok("-q", "task", "decompose", id))
+	var wout, werr syncBuffer
+	wa := c.app(&wout, &werr)
+	wa.pollEvery = 5 * time.Millisecond
+	stepper := make(chan error, 1)
 	go func() {
-		time.Sleep(60 * time.Millisecond)
-		_ = srv.Advance(uuid.MustParse(job), domain.JobRunning, "")
-		time.Sleep(60 * time.Millisecond)
-		_ = srv.Advance(uuid.MustParse(job), domain.JobAwaitingApproval, "")
+		steps := []struct {
+			seen string
+			to   domain.JobStatus
+		}{{"-- pending --", domain.JobRunning}, {"-- running --", domain.JobAwaitingApproval}}
+		for _, st := range steps {
+			deadline := time.Now().Add(20 * time.Second)
+			for !strings.Contains(wout.String(), st.seen) {
+				if time.Now().After(deadline) {
+					stepper <- fmt.Errorf("the watch never printed %q", st.seen)
+					return
+				}
+				time.Sleep(2 * time.Millisecond)
+			}
+			if err := srv.Advance(uuid.MustParse(job), st.to, ""); err != nil {
+				stepper <- err
+				return
+			}
+		}
+		stepper <- nil
 	}()
-	code, out, errb := runWith("job", "show", "--watch", job)
+	code := wa.run([]string{"job", "show", "--watch", job})
+	out, errb := wout.String(), werr.String()
+	if err := <-stepper; err != nil {
+		t.Fatal(err)
+	}
 	if code != 0 {
 		t.Fatalf("watch: exit %d: %s", code, errb)
 	}
