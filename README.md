@@ -13,7 +13,7 @@
 
 > **Tasks change all day. People should hear about the ones that matter.** Taskify is a multi-tenant task service that hands every notification decision to **AgentPulse**, and runs optional AI agents that tidy tasks while a person stays in control.
 
-Status: **v0.5.0** (2026-11-21). Release R1, the attention-aware task service, is complete (milestones M0 to M4). Of R2, the agentic plane, the agent runtime, human approval, and the triage agent are built (M5 to M7); the decomposer, blocker, digest, and learning agents come next. The CLI, web frontend, and Python SDK (R3) have not started. The AgentPulse contract has so far been checked only against a mock: [what is verified and what is not](#roadmap-and-known-issues) is written down, not hidden.
+Status (2026-11-23): release R1, the attention-aware task service (M0 to M4), and R2, the agentic plane (M5 to M11, plus the AgentPulse alignment), are complete, with all five agents built. M12, the OpenAPI contract and black-box conformance suite, is done. The CLI, web frontend, and Python SDK (M13 to M15) have not started. The AgentPulse contract is agreed with AgentPulse but has so far run only against a mock: [what is verified and what is not](#roadmap-and-known-issues) is written down, not hidden.
 
 ---
 
@@ -43,7 +43,7 @@ Status: **v0.5.0** (2026-11-21). Release R1, the attention-aware task service, i
 
 Taskify records what happens to a task; AgentPulse decides who is told, when, and on which channel, so people get one alert for what matters instead of twenty for everything. Task changes are written with their notifications in a single PostgreSQL transaction (a transactional outbox), and a background relay delivers them. The API never waits on AgentPulse, and an AgentPulse outage delays notifications without losing them.
 
-Optional AI agents work on tasks in the background. The triage agent labels, describes, estimates, and links new tasks, and proposes priority changes for a person to approve.
+Optional AI agents work on tasks in the background. Five of them exist: triage labels, describes, estimates, and links new tasks; the decomposer splits a task into subtasks; the blocker chases stalled work; the digest agent writes each person's morning brief; and the learning agent proposes notification score changes. Anything consequential waits for a person to approve it.
 
 ```mermaid
 flowchart LR
@@ -78,12 +78,14 @@ Most task managers notify everyone about everything, and people learn to ignore 
 **Tasks**
 - Tenant-scoped tasks with status, priority, assignee, watchers, labels, comments with `@mentions`, due and reminder times, and optimistic concurrency through `version` and `ETag`
 - Dependencies between tasks with cycle checks; a dependency-blocked task is released when its last blocker is completed or archived
-- Soft archive and restore, and a permanent delete that also removes pending notifications
+- Subtasks, listed with their dependency links
+- Soft archive and restore, and a permanent delete that also removes pending notifications and the morning briefs that name the task
 
 **Notify**
 - A transactional outbox: no lost or duplicated notifications, even across crashes and AgentPulse outages
 - Deadline reminders (24 hours and 1 hour before, then overdue) from a scheduler safe to run on every replica
-- Default AgentPulse routing rules per workspace, feedback forwarding (`acted`, `dismissed`, `snoozed`, `muted`), and signed webhooks for "Mark done" and "Snooze"
+- Default AgentPulse routing rules per workspace, feedback forwarding (`acted`, `dismissed`, `snoozed`, `muted`), and signed, deduplicated webhooks for "Mark done", "Snooze", "Unblock", "Approve", and "Reject"
+- A load gatekeeper that holds a non-critical assignment for the assignee's digest when they are overloaded, and a self-service contact (`PUT /me/contact`) that Taskify forwards to AgentPulse
 
 **Agents**
 - A job queue written in the task transaction, deduplicated per task version, with leases, retry backoff, and crash recovery
@@ -91,6 +93,10 @@ Most task managers notify everyone about everything, and people learn to ignore 
 - A tool registry that rejects unknown tools, invalid arguments, and tasks outside the job's scope, using a standard-library JSON Schema validator
 - Human-in-the-loop approval: proposals wait for the assignee, the creator, or an admin, who can approve or reject from the API or the notification itself
 - The **triage agent**: labels from the workspace's vocabulary, descriptions, estimates, dependency links, and priority recommendations
+- The **decomposer**: splits a task into subtasks with dependencies, on request through `POST /tasks/{id}/decompose` or a `/decompose` comment
+- The **blocker agent**: investigates a manually blocked or stale task, drafts a comment, and can propose a reassignment or a new due date; it tells the owners of the open blocking tasks with a `task.escalated` event
+- The **digest agent**: writes each person's morning brief, read through `GET /me/brief` and sent as a `digest.morning_brief` notification
+- The **learning agent**: reads AgentPulse's feedback analytics weekly and proposes a score change for a pattern of dismissed or muted notifications; an admin decides at AgentPulse
 - Off twice over by default: per process (`AGENTS_ENABLED`) and per workspace, with approval required for every action until an admin relaxes it
 
 **Operate**
@@ -124,6 +130,7 @@ Dependencies are deliberately few. Tool argument validation uses only the standa
 ├── cmd/
 │   ├── taskify/              The server
 │   ├── mock-agentpulse/      A recording AgentPulse stand-in for local runs and tests
+│   ├── mock-llm/             A scripted model endpoint for the conformance suite and local runs
 │   └── devtoken/             Prints a signed development JWT
 ├── internal/
 │   ├── domain/               Tasks, events, dependencies, agent jobs: rules with no I/O
@@ -131,15 +138,20 @@ Dependencies are deliberately few. Tool argument validation uses only the standa
 │   ├── repository/           Interfaces, PostgreSQL and in-memory stores, shared conformance tests
 │   ├── api/                  HTTP handlers, auth, webhook, error mapping
 │   ├── worker/               Outbox relay, deadline scheduler, cleanup
-│   ├── agent/                Agent runtime and the triage agent
+│   ├── agent/                Agent runtime and the five agents
 │   │   ├── llm/              Model client and scripted mock
-│   │   └── tools/            Tool registry, schema validator, UpdateTaskAttributes, LinkDependencies
+│   │   └── tools/            Tool registry, schema validator, and the agents' tools
 │   ├── agentpulse/           AgentPulse client and circuit breaker
 │   ├── observability/        Metrics and tracing
 │   ├── config/               Environment configuration
 │   └── app/                  Wiring shared by the server and end-to-end tests
+├── contract/                 The OpenAPI document, event and tool schemas, rules, and conformance fixtures
 ├── migrations/               SQL migrations, shipped with every release
-├── tests/                    End-to-end tests, benchmarks, mock AgentPulse
+├── tests/
+│   ├── conformance/          Black-box runner that plays the fixtures against a server
+│   ├── e2e/                  End-to-end tests
+│   ├── bench/                Benchmarks
+│   └── mockagentpulse/       The mock AgentPulse
 ├── tools/nextversion/        Picks the next version from commit messages
 └── docs/                     Features, architecture, milestones, plans, releasing
 ```
@@ -266,17 +278,21 @@ Outside Docker, point `LLM_BASE_URL` at `http://localhost:11434/v1`. A hosted mo
 | Agent | Runs when | May do at once | Needs approval |
 | --- | --- | --- | --- |
 | Triage | A person creates or edits a task | Labels, description, estimate, dependency links | Priority changes |
+| Decomposer | `POST /tasks/{id}/decompose`, or `/decompose` in a comment | Subtasks and their dependencies, since a person asked | Everything, while the workspace requires approval for all |
+| Blocker | A person blocks a task, or a task is `in_progress` and untouched for 48 hours | A comment with a suggested next step, dependency links, and a `task.escalated` event to the owners of open blockers | Reassigning the task, or shifting its due date |
+| Digest | Each morning from `DIGEST_BRIEF_HOUR_UTC`, per person with work to report | The brief itself; it offers the model no tools | Nothing |
+| Learning | Weekly, per tenant | Submits a suggestion to AgentPulse | An admin decides at AgentPulse, once |
 
 ---
 
 ## API
 
-All routes are under `/api/v1` and need authentication, except the webhook. Field names are snake_case and timestamps are RFC 3339 in UTC.
+All routes are under `/api/v1` and need authentication, except the webhook. [contract/openapi.yaml](contract/openapi.yaml) describes every path, parameter, and response. Field names are snake_case and timestamps are RFC 3339 in UTC.
 
 | Method and path | Purpose |
 | --- | --- |
 | `POST /tasks` | Create a task in an existing workspace |
-| `GET /tasks` | List: `assignee_id`, `status`, `priority`, `limit` (1 to 200), `cursor`. Archived tasks only with `status=archived` |
+| `GET /tasks` | List: `assignee_id`, `status`, `priority`, `id_prefix`, `limit` (1 to 200), `cursor`. Archived tasks only with `status=archived` |
 | `GET /tasks/{id}` | A task with its recent comments |
 | `PATCH /tasks/{id}`, `PUT /tasks/{id}` | Update; needs the version in `If-Match` or the body |
 | `POST /tasks/{id}/complete` | Mark done; optional `{"notification_id": …}` is reported to AgentPulse as acted |
@@ -284,17 +300,24 @@ All routes are under `/api/v1` and need authentication, except the webhook. Fiel
 | `POST /tasks/{id}/restore` | Restore an archived task |
 | `DELETE /tasks/{id}?permanent=true` | Delete for good, with its notifications and the morning briefs that name it (admin) |
 | `POST /tasks/{id}/comments` | Comment; `@username` mentions are notified |
+| `POST /tasks/{id}/decompose` | Ask the decomposer to split a task; `202` with the agent job. `409 agent_disabled` when the agent is off |
+| `GET /tasks/{id}/subtasks` | The task's children, with their dependency links |
+| `GET /tasks/{id}/agent-runs` | Agent jobs about the task, each with its model turns |
 | `POST /tasks/{id}/feedback` | Forward `acted`, `dismissed`, `snoozed` (with `duration`), or `muted` to AgentPulse |
 | `POST /workspaces` | Create a workspace and register its default AgentPulse rules (admin) |
 | `GET`, `PATCH /workspaces/{id}/settings` | Read or change a workspace's name and `agent_settings` (admin) |
 | `POST /workspaces/{id}/bootstrap-rules` | Register missing default rules; safe to repeat (admin) |
-| `GET /admin/learning/suggestions` | AgentPulse scoring suggestions (admin) |
+| `GET /admin/learning/suggestions` | AgentPulse scoring suggestions, in snake_case (admin) |
 | `POST /admin/learning/suggestions/{id}/decision` | `{"decision": "approve" \| "reject"}` (admin) |
-| `GET /agent-jobs/{id}` | An agent job: status, proposed actions, result |
+| `GET /agent-jobs` | The agent jobs you may see, newest first: `status`, `task_id`, `agent_type`, `limit`, `cursor`. `status=awaiting_approval` is the approvals inbox |
+| `GET /agent-jobs/{id}` | An agent job: status, proposed actions, result. A job on a task is visible to any member; a morning brief only to its person and admins; a tenant-wide job only to admins; otherwise `404` |
 | `POST /agent-jobs/{id}/apply` | Approve a job's proposals (the task's assignee, its creator, or an admin). `409` if the task changed since (`stale_version`) or the job was decided the other way |
 | `POST /agent-jobs/{id}/dismiss` | Reject a job's proposals; nothing changes |
-| `GET /me/brief` | The caller's most recent morning brief |
+| `GET /me` | The caller's user, tenant, and role |
+| `GET /me/brief` | The caller's most recent morning brief; `404` when there is none |
 | `GET`, `PUT /me/contact` | The caller's own contact for AgentPulse: `email`, `slack_user_id`, `phone`. An absent field is kept and `null` clears it; each change is forwarded to AgentPulse |
+| `GET /admin/outbox` | The tenant's outbox rows, newest first; `status=dead_letter` lists rows that will not be retried (admin) |
+| `POST /admin/outbox/{id}/replay` | Return a dead-letter row to `pending` (admin) |
 | `POST /webhooks/agentpulse` | AgentPulse callbacks, authenticated by signature |
 
 The original `/tasks/` routes still work and serve the same handlers.
@@ -373,19 +396,21 @@ LLM_BASE_URL=http://localhost:11434/v1 LLM_MODEL=qwen2.5-coder:7b go test ./test
 
 ## Roadmap and known issues
 
-**Next** (details in [milestones.md](docs/milestones.md)):
+**Done:** R1 (M0 to M4), R2 (M5 to M11 and the AgentPulse alignment), and M12 (an OpenAPI document, event and tool schemas, and a black-box conformance suite).
 
-1. **More agents** (M8 to M11): the decomposer splits a task into subtasks on request, the blocker agent chases stalled work, the digest agent writes a morning brief, and the learning agent proposes notification rules from feedback.
-2. **Contract and conformance** (M12): an OpenAPI document, event and tool schemas, and a black-box conformance suite.
-3. **Clients** (M13 to M15): the `taskctl` CLI, a web frontend, and a Python client SDK, all from the same contract.
+**Next** (details in [milestones.md](docs/milestones.md)): the **clients**, all from the same contract.
+
+1. **CLI** (M13): `taskctl`.
+2. **Web frontend** (M14): task screens, the approvals inbox, the notification feed, and the morning brief.
+3. **Python SDK** (M15).
 
 **Known issues**
 
-- **The AgentPulse contract is agreed but not yet run against AgentPulse.** Taskify follows the `/v1/` API that AgentPulse builds in its milestone 40 ([docs/blockers.md](docs/blockers.md)); until it ships, the client has only run against the mock AgentPulse in this repository, which enforces the agreed rules (task M0-07).
+- **The AgentPulse contract is agreed but not yet run against AgentPulse.** Taskify follows the `/v1/` API that AgentPulse builds in its milestone 40 ([docs/blockers.md](docs/blockers.md)); until slices 40a to 40d ship, the client has only run against the mock AgentPulse in this repository, which enforces the agreed rules. Task M0-07 runs it against the real one.
 - **The agents have not run against a real model in CI.** `TestLLMSmoke` exercises one; run it locally before relying on a particular model.
-- There is no endpoint for a person to add a dependency yet; agents and the service can. It arrives with the API contract (M12).
+- There is no endpoint for a person to add a dependency; agents and the service can. The API contract (M12) did not add one.
 - Approving from a notification decides as an ordinary member: AgentPulse does not send a role, so an admin who is neither assignee nor creator must use the API.
-- No identity provider is chosen; development uses locally signed tokens.
+- No identity provider is chosen (deferred by the owner); development uses locally signed tokens from `cmd/devtoken`.
 
 ---
 

@@ -1,6 +1,8 @@
 # R2 Tasks: Agentic Task Plane (M5 to M11)
 
-Read [README.md](README.md) first: it explains the levels (Routine, Careful, Owner), the defaults G1 to G22, and the rules every task follows. Section numbers below refer to [architecture.md](../architecture.md). Exit criteria for each milestone are in [milestones.md](../milestones.md).
+> **Archived.** R2 is complete: M5 to M11 and task group AP (AgentPulse v1 alignment), 45 tasks in all. M5 to M10 were released as v0.4.0 to v0.8.0. Final sign-off of the AgentPulse parts is task **M0-07**, which runs once AgentPulse ships its milestone 40 (slices 40a to 40d); it is tracked under owner action O1 in [implementation/README.md](../implementation/README.md), section 2. The decisions taken during R2 are in section 8 of that file and in [architecture.md](../architecture.md) section 8.1 (decisions 27 to 38).
+
+Read [README.md](../implementation/README.md) first: it explains the levels (Routine, Careful, Owner), the defaults G1 to G22, and the rules every task follows. Section numbers below refer to [architecture.md](../architecture.md). Exit criteria for each milestone are in [milestones.md](../milestones.md).
 
 R2 starts after R1 is released. All R1 tests must keep passing throughout.
 

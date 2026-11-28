@@ -4,15 +4,16 @@ Companion documents: [features.md](features.md) (what and why) and [architecture
 
 Each milestone is broken into individual tasks, with a delegation level and acceptance tests, in [implementation/README.md](implementation/README.md).
 
-## Status (2026-11-22)
+## Status (2026-11-23)
 
 | Milestones | State |
 | --- | --- |
-| M0 to M4 (**R1**) | Done and released as v0.1.0 to v0.3.0, except M0-07, which waits on AgentPulse access (owner action O1) |
+| M0 to M4 (**R1**) | Done and released as v0.1.0 to v0.3.0, except M0-07, which runs the client and webhook tests against a real AgentPulse once AgentPulse slices 40a to 40d ship (owner action O1) |
 | M5 to M7 | Done and released: M5 in v0.4.0, M6 and M7 in v0.5.0 |
 | M8 to M10, AP | Done; AP aligns Taskify with the AgentPulse `/v1/` contract ([blockers.md](blockers.md)) |
 | M11 (**R2 complete**) | Done. Every M5 to M11 exit criterion has a passing test. Final sign-off of M10, M11, and the other AgentPulse parts waits on M0-07 (owner action O1) |
-| M12 to M15 (**R3**) | M12 done; M13 to M15 not started |
+| M12 (**R3**) | Done: the OpenAPI contract, the conformance suite, and the list endpoints the clients need |
+| M13 to M15 (**R3**) | Not started |
 
 Task-level progress and every departure from the plan are in [implementation/README.md](implementation/README.md). The work began from a `main.go` that printed a greeting and an uncompilable router stub.
 
@@ -103,7 +104,7 @@ Specific items to verify, from [architecture.md](architecture.md) section 5.5:
 - The `POST /learning/suggestions` body and the `/decision` path.
 - The in-app feed endpoint, given as `GET /internal/v1/tenants/{tenantId}/users/{userId}/in-app-feed`, and how Taskify authenticates to it (mTLS or shared secret). Needed by the frontend.
 
-Risk: the AgentPulse repository is not in this workspace. The contract details now recorded were supplied by the project owner and have not been read from the code. If they differ, M2, M3, M10, and M11 change. Resolve this first.
+Risk: access is no longer the risk. The AgentPulse repository was read on 2026-11-22, and the contract is agreed with AgentPulse's milestone 40 ([blockers.md](blockers.md)); the mock in `tests/mockagentpulse` is its specification. What remains is M0-07: running Taskify's client and webhook tests against a real AgentPulse once its slices 40a to 40d ship. Until then, M2, M3, M10, and M11 are signed off against the mock only.
 
 ### M1. Domain model and schema
 

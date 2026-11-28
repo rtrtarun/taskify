@@ -12,9 +12,9 @@ This folder breaks the milestones in [milestones.md](../milestones.md) into task
 
 Task lists:
 
-- [r2-agents.md](r2-agents.md): M5 to M11, 33 tasks, plus AP (AgentPulse v1 alignment, 12 tasks) before M11. All are done: R2 is complete, with final sign-off of the AgentPulse parts waiting on M0-07.
 - [r3-clients.md](r3-clients.md): M12 to M15, 32 tasks. M12 is done; M13 to M15 are not started.
 - R1 (M0 to M4, 40 tasks) is complete; its task list is archived in [archive/r1-task-service.md](../archive/r1-task-service.md). Its one open task, M0-07, is owner action O1 below.
+- R2 (M5 to M11, 33 tasks, plus AP, AgentPulse v1 alignment, 12 tasks) is complete; its task list is archived in [archive/r2-agents.md](../archive/r2-agents.md). Final sign-off of its AgentPulse parts is M0-07, under O1 below.
 
 Finished and superseded documents are kept in [docs/archive](../archive/README.md).
 
@@ -52,13 +52,13 @@ These block specific tasks. Everything else can proceed without them.
 
 | # | Action | Blocks | Until then |
 | --- | --- | --- | --- |
-| O1 | Give access to the AgentPulse repository or SDK so its contract can be read (task M0-07) | Final sign-off of M2, M3, M10, M11, M14 notification feed | Work proceeds against the mock AgentPulse built in M0-06. All AgentPulse field names stay inside `internal/agentpulse`, so a correction touches one package. **2026-11-22:** the real contract was read and does not match section 5.5; the owner chose to extend AgentPulse to Taskify's design (option B). The mock is the specification AgentPulse must meet: see [blockers.md](../blockers.md). |
-| O2 | Choose the identity provider that issues JWTs (default G17) | `taskctl login` (M13-02), frontend sign-in (M14-03) | Development uses locally minted HS256 tokens from `make dev-token`. |
+| O1 | Resolved. The real AgentPulse was read on 2026-11-22; its contract did not match section 5.5, and the owner chose to extend AgentPulse to Taskify's design (option B, decision 27). The agreed contract is in [blockers.md](../blockers.md). Remaining: task M0-07 runs the client and webhook tests against a real AgentPulse when AgentPulse slices 40a to 40d ship | Final sign-off of M2, M3, M10, M11, M14 notification feed | Work proceeds against the mock AgentPulse (M0-06), which is the specification AgentPulse must meet. All AgentPulse field names stay inside `internal/agentpulse`, so a correction touches one package. |
+| O2 | Deferred by the owner (decision 38). Choose the identity provider that issues JWTs (default G17) | `taskctl login` (M13-02), frontend sign-in (M14-03) | Development uses locally minted HS256 tokens from `cmd/devtoken`, until one is chosen. |
 | O3 | Reserve `taskify-sdk` on the public Python index (decision 26) | Nothing | Not needed until v1.0. |
 
 ## 3. Defaults chosen where the architecture is silent
 
-[architecture.md](../architecture.md) section 8.2 lists no open questions, and none of the 26 decisions is reopened here. While splitting the work, the points below turned out to have no stated answer. Each has a default so that an implementer does not invent one. **These are proposals by the author of this plan, not owner decisions.** Change the row here if a default is wrong; tasks refer to them by number.
+[architecture.md](../architecture.md) section 8.2 lists no open architecture questions, and none of the 40 decisions in section 8.1 is reopened here. While splitting the work, the points below turned out to have no stated answer. Each has a default so that an implementer does not invent one. **These are proposals by the author of this plan, not owner decisions.** Change the row here if a default is wrong; tasks refer to them by number.
 
 | # | Gap | Default used in the tasks | Worth confirming |
 | --- | --- | --- | --- |
@@ -68,20 +68,20 @@ These block specific tasks. Everything else can proceed without them.
 | G4 | Error mapping says "400 or 422" | Unparseable request: `400`. `ErrValidation` and `ErrInvalidStateTransition`: `422`. Authenticated but not allowed: `403`. | |
 | G5 | Rate limit has no numbers | Token bucket per tenant and user, in memory per replica. `RATE_LIMIT_RPS=20`, `RATE_LIMIT_BURST=40`. | |
 | G6 | Watchers have a table but no endpoint | `watcher_ids` accepted on task create and update. No separate watcher endpoints. | |
-| G7 | Webhook signature layout and action names are not given | Header `X-AgentPulse-Timestamp`; signature is hex HMAC-SHA256 of `{timestamp}.{raw body}`. Actions: `complete`, `snooze`, `unblock`, `approve`, `reject`. Agreed with AgentPulse (2026-11-22), with `callbackId` for retries (AP-06). | Verified in M0-07 |
+| G7 | Webhook signature layout and action names are not given | Header `X-AgentPulse-Timestamp`; signature is hex HMAC-SHA256 of `{timestamp}.{raw body}`. Actions: `complete`, `snooze`, `unblock`, `approve`, `reject`. Agreed with AgentPulse (2026-11-22), with `callbackId` for retries, deduplicated on `(tenantId, callbackId)` (AP-06, D47). | Agreed (decision 32); run against a real AgentPulse in M0-07 |
 | G8 | What "Snooze 2h" changes in Taskify | Sets `remind_at` to now plus the duration and forwards `snoozed` feedback. No task event. | Yes |
 | G9 | `POST /workspaces` registers AgentPulse rules; behaviour when AgentPulse is down is not stated | The workspace is created anyway and the response carries `rules_bootstrapped: false`. `bootstrap-rules` is idempotent and can be re-run. | |
 | G10 | Who may approve or reject a proposal | The task's assignee, its creator, or an admin. Anyone else gets `403`. | Yes |
 | G11 | Agent jobs have no crash recovery or fixed limits | A job `running` with `updated_at` older than 5 minutes returns to `pending` with `attempts + 1`. Maximum 3 attempts, 6 model turns per run (`AGENT_MAX_ATTEMPTS`, `AGENT_MAX_TURNS`). | |
 | G12 | Length of a "stale period" | 48 hours without a comment (given); one investigation per task per calendar day. | |
-| G13 | The blocker escalation notification has no event type | Decided by the owner, see D30: a new event type `task.escalated`, sent to the assignee of each open blocking task (creator if unassigned), once per recipient per job. Was: `task.blocked` with `payload.escalation: true`, key suffix `:escalation:{job_id}`. | Owner decided (D30) |
-| G14 | The digest gatekeeper is listed as an agent, but the notification row is written in the task transaction, before any agent could run | A deterministic count inside the task transaction, with no model call. Threshold 3 (`DIGEST_LOAD_THRESHOLD`), deferring at or above it. Skipped when the `digest` agent is disabled for the workspace or agents are off. See D36. | Confirmed by the owner, 2026-11-22 |
-| G15 | Morning brief time, event type, and the endpoint the frontend reads | 08:00 UTC (`DIGEST_BRIEF_HOUR_UTC`); no per-user time zone. Event type `digest.morning_brief`. Frontend reads `GET /api/v1/me/brief`. See D37 to D41. | Confirmed by the owner, 2026-11-22 |
-| G16 | The learning agent "reads AgentPulse feedback analytics", but no endpoint is named | Resolved by [blockers.md](../blockers.md) R7: `GET /v1/analytics/feedback?tenantId=&since=`. The job runs weekly: one per tenant per ISO week (D55). | Resolved (R7); verified against a real AgentPulse in M0-07 |
-| G17 | No identity provider is named and Taskify has no login endpoint | Owner action O2. Development uses `make dev-token`. | Owner |
+| G13 | The blocker escalation notification has no event type | Decided by the owner, see D30: a new event type `task.escalated`, sent to the assignee of each open blocking task (creator if unassigned), once per recipient per job. Was: `task.blocked` with `payload.escalation: true`, key suffix `:escalation:{job_id}`. | Owner decided (decision 34, D30, D31) |
+| G14 | The digest gatekeeper is listed as an agent, but the notification row is written in the task transaction, before any agent could run | A deterministic count inside the task transaction, with no model call. Threshold 3 (`DIGEST_LOAD_THRESHOLD`), deferring at or above it. Skipped when the `digest` agent is disabled for the workspace or agents are off. See D36. | Confirmed by the owner, 2026-11-22 (decision 35) |
+| G15 | Morning brief time, event type, and the endpoint the frontend reads | 08:00 UTC (`DIGEST_BRIEF_HOUR_UTC`); no per-user time zone. Event type `digest.morning_brief`. Frontend reads `GET /api/v1/me/brief`. See D37 to D41. | Confirmed by the owner, 2026-11-22 (decision 35) |
+| G16 | The learning agent "reads AgentPulse feedback analytics", but no endpoint is named | Resolved by [blockers.md](../blockers.md) R7: `GET /v1/analytics/feedback?tenantId=&since=`. The job runs weekly: one per tenant per ISO week (D55). | Resolved (R7, D54 to D58); run against a real AgentPulse in M0-07 |
+| G17 | No identity provider is named and Taskify has no login endpoint | Owner action O2, deferred (decision 38). Development uses `cmd/devtoken`. | Deferred by the owner |
 | G18 | How triage finds "similar open tasks" | PostgreSQL full-text match on the title, same workspace, open tasks only, top 5. No embeddings. | |
 | G19 | Libraries not named in the architecture | `pgx` v5, `golang-migrate`, `golangci-lint`, `prometheus/client_golang`, `golang-jwt/jwt` v5, `santhosh-tekuri/jsonschema`, `oapi-codegen`, `kin-openapi`, `openapi-typescript`, Playwright. | |
-| G20 | A failed feedback forward after a notification ack is "retried through the outbox", but outbox rows are `/notify` calls | Outbox rows with `event_type = 'feedback.forward'` are sent by the relay to `/feedback`. Not built yet; the relay now dispatches by event type, and `contact.update` rows go to the contact endpoint (D46). | |
+| G20 | A failed feedback forward after a notification ack is "retried through the outbox", but outbox rows are `/notify` calls | Outbox rows with `event_type = 'feedback.forward'` are sent by the relay to `/feedback`. Not built yet (M14-06); the relay already dispatches by event type, and `contact.update` and `learning.suggestion` rows go to their own endpoints (D46, D57). | Planned for M14-06 | |
 | G21 | Status code when decomposition is requested for a disabled agent | `409` with error code `agent_disabled`. | |
 | G22 | The owner's machine is Windows; the plan calls for a `Makefile` | Targets are plain commands that run under Git Bash. | |
 
@@ -91,7 +91,7 @@ The dependency graph is in [milestones.md](../milestones.md). Within a milestone
 
 | Phase | Milestones | Can run in parallel |
 | --- | --- | --- |
-| 1 | M0 | M0-07 runs alongside everything once access exists |
+| 1 | M0 | M0-07 runs when AgentPulse slices 40a to 40d ship; it blocks nothing else |
 | 2 | M1 → M2 → M3 → M4 | Within M2: the Postgres repositories, memory repositories, and AgentPulse client are independent |
 | 3 | M5 → M6 | M12 can start here, since it only needs R1 |
 | 4 | M7, M8, M9 | All three are independent of each other |
@@ -143,7 +143,7 @@ Update this table as milestones close.
 
 | Milestone | Tasks | Status |
 | --- | --- | --- |
-| M0 Foundation | 7 | Done except M0-07, which waits on AgentPulse access (O1) |
+| M0 Foundation | 7 | Done except M0-07, which runs against a real AgentPulse when its slices 40a to 40d ship (O1) |
 | M1 Domain and schema | 7 | Done. Migrations verified up, down, up on PostgreSQL 16 |
 | M2 Outbox and workers | 10 | Done. All exit criteria have tests, passing with `-race` on memory and PostgreSQL |
 | M3 REST API and bridges | 10 | Done. Unit, API, and end-to-end tests pass with `-race` on PostgreSQL |
