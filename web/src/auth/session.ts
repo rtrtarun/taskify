@@ -7,7 +7,7 @@ import { api, ApiError, unwrap } from "../api/client";
  * session storage, not in a cookie. A page reload therefore signs the user
  * out. (The task asks for an HttpOnly refresh cookie to survive reloads; that
  * needs a refresh endpoint the API does not have, which is a product
- * decision. See docs/implementation/r3-clients.md, M14-03.)
+ * decision. See docs/archive/r3-completed.md, M14-03.)
  */
 
 export type Role = "admin" | "member";

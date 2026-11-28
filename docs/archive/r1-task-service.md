@@ -1,8 +1,8 @@
 # R1 Tasks: Attention-Aware Task Service (M0 to M4)
 
-> **Archived.** R1 is complete and was released as v0.1.0 to v0.3.0. The one open task, **M0-07** (checking the AgentPulse contract), waits on owner action O1 and is tracked in [implementation/README.md](../implementation/README.md), section 2. The decisions taken during R1 are in section 8 of that file.
+> **Archived.** R1 is complete and was released as v0.1.0 to v0.3.0. The one open task, **M0-07** (checking the AgentPulse contract), waits on owner action O1 and is tracked in [implementation/README.md](../implementation/README.md), section 2. The departures recorded during R1 are in [implementation-record.md](implementation-record.md).
 
-Read [README.md](../implementation/README.md) first: it explains the levels (Routine, Careful, Owner), the defaults G1 to G22, and the rules every task follows. Section numbers below refer to [architecture.md](../architecture.md). Exit criteria for each milestone are in [milestones.md](../milestones.md).
+Read [README.md](../implementation/README.md) first: it explains the levels (Routine, Careful, Owner), the defaults G1 to G22, and the rules every task follows. Section numbers below refer to [architecture.md](../architecture.md). Exit criteria for each milestone are in [milestones-completed.md](milestones-completed.md).
 
 Sizes: S is up to half a day, M is about a day, L is two days or more.
 
@@ -20,7 +20,7 @@ Goal: the project builds, tests, and runs locally, and the AgentPulse contract i
 | M0-04 | **Runnable skeleton.** `main` starts an HTTP server with `GET /healthz`, connects a `pgx` pool, and shuts down on signal through an `errgroup`. `docker-compose.yml` runs PostgreSQL, Taskify, and the mock AgentPulse from M0-06. Real AgentPulse and its Redis sit behind a compose profile, enabled once an image is available. | `cmd/taskify/main.go`, `docker-compose.yml`, `Dockerfile` | `docker compose up` starts the services and `GET /healthz` returns `200` | Routine, M | M0-02, M0-06 |
 | M0-05 | **Continuous integration.** A workflow running `go vet`, lint, and `go test -race ./...` with a PostgreSQL service container. | `.github/workflows/ci.yml` | The workflow is green on a pull request | Routine, S | M0-03 |
 | M0-06 | **Mock AgentPulse.** A standalone HTTP server implementing the calls in section 5.5: `/notify` (deduplicates on `idempotencyKey`), `/feedback`, `/rules`, `/learning/suggestions` (list and create), the decision endpoint, and the in-app feed. It records every request for assertions and can be scripted to fail (for example, 503 three times, then 200). It must not import server packages, because the conformance suite in M12 reuses it. | `tests/mockagentpulse/`, `cmd/mock-agentpulse/main.go` | Its own tests cover dedup, recording, and scripted failures | Routine, M | M0-01 |
-| M0-07 | **AgentPulse contract check.** Read the real request and response shapes from the AgentPulse repository or SDK and write them down. Work through the checklist under M0 in [milestones.md](../milestones.md), plus G7 (signature layout, action names) and G16 (feedback analytics endpoint). Correct section 5.5 and the mock where they differ. | `docs/agentpulse-contract.md`, corrections to `architecture.md` and `tests/mockagentpulse/` | Every field in section 5.5 is marked confirmed or corrected | **Owner** (access, O1), then Careful, M | none |
+| M0-07 | **AgentPulse contract check.** Read the real request and response shapes from the AgentPulse repository or SDK and write them down. Work through the checklist under M0 in [milestones-completed.md](milestones-completed.md), plus G7 (signature layout, action names) and G16 (feedback analytics endpoint). Correct section 5.5 and the mock where they differ. | `docs/agentpulse-contract.md`, corrections to `architecture.md` and `tests/mockagentpulse/` | Every field in section 5.5 is marked confirmed or corrected | **Owner** (access, O1), then Careful, M | none |
 
 ---
 
@@ -93,4 +93,4 @@ Goal: the service can be operated and is documented.
 | M4-05 | **README.** Replace the starter README: what Taskify is, a diagram, local setup, environment variables, the API reference, benchmark instructions. Fix the `taskify` and `Taskify` naming mix. | `README.md` | A new reader can run the service from a clean clone using only the README | Routine, S | M4-04 |
 | M4-06 | **Coverage gate.** CI fails when coverage of `domain`, `service`, `worker`, or `api` is below 90%. | `.github/workflows/ci.yml` | The gate is active and green | Routine, S | M4-01 |
 
-R1 is released when every exit criterion for M0 to M4 in [milestones.md](../milestones.md) passes.
+R1 is released when every exit criterion for M0 to M4 in [milestones-completed.md](milestones-completed.md) passes.
