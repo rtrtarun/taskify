@@ -36,3 +36,9 @@ bin/
 
 # GoReleaser output
 dist/
+
+# Web frontend (M14)
+web/node_modules/
+web/dist/
+web/playwright-report/
+web/test-results/

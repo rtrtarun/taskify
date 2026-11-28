@@ -101,7 +101,7 @@ func (h *handlers) listAgentJobs(w http.ResponseWriter, r *http.Request) {
 	for _, j := range page.Jobs {
 		out.AgentJobs = append(out.AgentJobs, toAgentJobJSON(j))
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeConditionalJSON(w, r, out)
 }
 
 type subtaskJSON struct {
@@ -233,7 +233,7 @@ func (h *handlers) listOutbox(w http.ResponseWriter, r *http.Request) {
 	for _, e := range page.Entries {
 		out.Entries = append(out.Entries, toOutboxEntryJSON(e))
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeConditionalJSON(w, r, out)
 }
 
 // replayOutbox serves POST /admin/outbox/{id}/replay: a dead-letter row goes

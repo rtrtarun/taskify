@@ -25,15 +25,19 @@ type Deps struct {
 	// AgentJobs serves /agent-jobs. Nil leaves those routes out.
 	AgentJobs *service.AgentJobService
 	// Outbox serves /admin/outbox. Nil leaves those routes out.
-	Outbox   *service.OutboxService
-	Learning LearningClient
+	Outbox *service.OutboxService
+	// Notifications serves /notifications. Nil leaves those routes out.
+	Notifications *service.NotificationService
+	Learning      LearningClient
 
-	Auth          AuthConfig
-	WebhookSecret string
-	RateLimit     RateLimitConfig
-	Version       string
-	Logger        *slog.Logger
-	Now           func() time.Time
+	// CORSAllowedOrigins lets a frontend on another origin call the API.
+	CORSAllowedOrigins []string
+	Auth               AuthConfig
+	WebhookSecret      string
+	RateLimit          RateLimitConfig
+	Version            string
+	Logger             *slog.Logger
+	Now                func() time.Time
 	// Metrics may be nil; /metrics is then not served.
 	Metrics *observability.Metrics
 	// Ready reports whether the service can do its work (the database
@@ -49,6 +53,7 @@ type handlers struct {
 	agentJobs     *service.AgentJobService
 	outbox        *service.OutboxService
 	contacts      *service.ContactService
+	notifications *service.NotificationService
 	learning      LearningClient
 	webhookSecret string
 	version       string
@@ -93,11 +98,11 @@ func newMux(d Deps) (*chi.Mux, error) {
 	limiter := newRateLimiter(d.RateLimit)
 	h := &handlers{
 		tasks: d.Tasks, workspaces: d.Workspaces, feedback: d.Feedback, webhooks: d.Webhooks, agentJobs: d.AgentJobs, outbox: d.Outbox,
-		contacts: d.Contacts, learning: d.Learning, webhookSecret: d.WebhookSecret, version: d.Version, logger: d.Logger, now: d.Now,
+		contacts: d.Contacts, notifications: d.Notifications, learning: d.Learning, webhookSecret: d.WebhookSecret, version: d.Version, logger: d.Logger, now: d.Now,
 	}
 
 	r := chi.NewRouter()
-	r.Use(requestContext(d.Logger, d.Metrics), recoverer(d.Logger))
+	r.Use(requestContext(d.Logger, d.Metrics), recoverer(d.Logger), corsMiddleware(d.CORSAllowedOrigins))
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, newError(http.StatusNotFound, CodeNotFound, "no such route"))
 	})
@@ -128,6 +133,9 @@ func newMux(d Deps) (*chi.Mux, error) {
 			if h.agentJobs != nil {
 				r.Route("/agent-jobs", h.agentJobRoutes)
 				r.Get("/me/brief", h.getMyBrief)
+			}
+			if h.notifications != nil {
+				r.Route("/notifications", h.notificationRoutes)
 			}
 			if h.contacts != nil {
 				r.Get("/me/contact", h.getMyContact)

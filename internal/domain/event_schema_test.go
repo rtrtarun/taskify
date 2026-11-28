@@ -12,13 +12,13 @@ import (
 )
 
 // outboxEventTypes is every event_type an outbox row can have: the 16
-// notifications and the two other calls the relay makes.
+// notifications and the three other calls the relay makes.
 var outboxEventTypes = []string{
 	domain.EventTaskCreated, domain.EventTaskAssigned, domain.EventTaskUpdated, domain.EventTaskPriorityEscalated,
 	domain.EventTaskBlocked, domain.EventTaskDueSoon, domain.EventTaskOverdue, domain.EventTaskCompleted,
 	domain.EventTaskCommentAdded, domain.EventTaskUnblocked, domain.EventTaskDependencyResolved,
 	domain.EventTaskDependencyAdded, domain.EventTaskDependencyReopened, domain.EventAgentApprovalRequested,
-	domain.EventTaskEscalated, domain.EventDigestMorningBrief, domain.EventContactUpdate, domain.EventLearningSuggestion,
+	domain.EventTaskEscalated, domain.EventDigestMorningBrief, domain.EventContactUpdate, domain.EventLearningSuggestion, domain.EventFeedbackForward,
 }
 
 // TestContractDefinesEveryOutboxEvent: contract/events has one schema per
@@ -60,5 +60,26 @@ func TestContactAndLearningPayloadsMatchTheContract(t *testing.T) {
 		if err := contract.ValidateEvent(e.EventType, e.Payload); err != nil {
 			t.Errorf("%s: %v", e.Payload, err)
 		}
+	}
+}
+
+// TestFeedbackForwardPayloadMatchesTheContract: the row M14-06 writes for an
+// ack validates against its schema, with and without a snooze.
+func TestFeedbackForwardPayloadMatchesTheContract(t *testing.T) {
+	now := time.Date(2026, 11, 22, 9, 0, 0, 0, time.UTC)
+	for _, a := range []domain.NotificationAck{
+		{TenantID: "tenant_acme", UserID: "usr_bob", NotificationID: "ntf-1", Signal: domain.AckDismissed, AckedAt: now},
+		{TenantID: "tenant_acme", UserID: "usr_bob", NotificationID: "ntf-1", Signal: domain.AckSnoozed, SnoozeDuration: "2h", AckedAt: now},
+	} {
+		e, err := domain.NewFeedbackEntry(a, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := contract.ValidateEvent(e.EventType, e.Payload); err != nil {
+			t.Errorf("%s: %v (%s)", a.Signal, err, e.Payload)
+		}
+	}
+	if _, err := domain.NewFeedbackEntry(domain.NotificationAck{TenantID: "tenant_acme", UserID: "u", NotificationID: "a b", Signal: "acted"}, 10); err == nil {
+		t.Error("an ID with a space was accepted")
 	}
 }

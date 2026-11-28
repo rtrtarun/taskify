@@ -23,6 +23,13 @@ const (
 	IdentityHeadersScopes = "identityHeaders.Scopes"
 )
 
+// Defines values for AckSignal.
+const (
+	AckSignalActed     AckSignal = "acted"
+	AckSignalDismissed AckSignal = "dismissed"
+	AckSignalSnoozed   AckSignal = "snoozed"
+)
+
 // Defines values for AgentJobStatus.
 const (
 	AgentJobStatusAwaitingApproval AgentJobStatus = "awaiting_approval"
@@ -49,10 +56,10 @@ const (
 
 // Defines values for FeedbackSignal.
 const (
-	FeedbackSignalActed     FeedbackSignal = "acted"
-	FeedbackSignalDismissed FeedbackSignal = "dismissed"
-	FeedbackSignalMuted     FeedbackSignal = "muted"
-	FeedbackSignalSnoozed   FeedbackSignal = "snoozed"
+	Acted     FeedbackSignal = "acted"
+	Dismissed FeedbackSignal = "dismissed"
+	Muted     FeedbackSignal = "muted"
+	Snoozed   FeedbackSignal = "snoozed"
 )
 
 // Defines values for HealthStatus.
@@ -120,6 +127,9 @@ const (
 	False DeleteTaskParamsPermanent = "false"
 	True  DeleteTaskParamsPermanent = "true"
 )
+
+// AckSignal defines model for AckSignal.
+type AckSignal string
 
 // AgentJob defines model for AgentJob.
 type AgentJob struct {
@@ -339,6 +349,38 @@ type Health struct {
 // HealthStatus defines model for Health.Status.
 type HealthStatus string
 
+// InAppNotification One notification. `title` and `body` are text written by Taskify or
+// by an agent, never HTML; clients render them as text.
+type InAppNotification struct {
+	Body string `json:"body"`
+
+	// CreatedAt RFC 3339 in UTC.
+	CreatedAt Timestamp `json:"created_at"`
+	EventType string    `json:"event_type"`
+
+	// Id AgentPulse's notification ID. Send it to `ackNotification`.
+	Id string `json:"id"`
+
+	// JobId The agent job it is about, when it names one.
+	JobId *openapi_types.UUID `json:"job_id"`
+
+	// Read True once the caller has reacted to it.
+	Read bool `json:"read"`
+
+	// Signal The caller's reaction, or null if there is none.
+	Signal *AckSignal `json:"signal"`
+
+	// SnoozedUntil RFC 3339 in UTC, or null.
+	SnoozedUntil *NullableTimestamp `json:"snoozed_until"`
+
+	// Task The task, when it exists in the caller's tenant. Null otherwise.
+	Task *NotificationTask `json:"task"`
+
+	// TaskId The task the notification is about, when it names one.
+	TaskId *openapi_types.UUID `json:"task_id"`
+	Title  string              `json:"title"`
+}
+
 // LearningDecision defines model for LearningDecision.
 type LearningDecision struct {
 	Decision LearningDecisionDecision `json:"decision"`
@@ -408,6 +450,41 @@ type MorningBrief struct {
 
 	// WrittenAt RFC 3339 in UTC.
 	WrittenAt Timestamp `json:"written_at"`
+}
+
+// NotificationAck defines model for NotificationAck.
+type NotificationAck struct {
+	// AckedAt RFC 3339 in UTC.
+	AckedAt        Timestamp `json:"acked_at"`
+	NotificationId string    `json:"notification_id"`
+	Signal         AckSignal `json:"signal"`
+
+	// SnoozedUntil RFC 3339 in UTC, or null.
+	SnoozedUntil *NullableTimestamp `json:"snoozed_until"`
+}
+
+// NotificationAckRequest defines model for NotificationAckRequest.
+type NotificationAckRequest struct {
+	// Duration Required for `snoozed` (such as `2h`, at most `168h`), refused otherwise.
+	Duration *string   `json:"duration,omitempty"`
+	Signal   AckSignal `json:"signal"`
+}
+
+// NotificationFeed defines model for NotificationFeed.
+type NotificationFeed struct {
+	// NextCursor Pass as `cursor` for the next page; null on the last page.
+	NextCursor    *string             `json:"next_cursor"`
+	Notifications []InAppNotification `json:"notifications"`
+}
+
+// NotificationTask defines model for NotificationTask.
+type NotificationTask struct {
+	AssigneeId *string    `json:"assignee_id"`
+	Id         Uuid       `json:"id"`
+	Labels     []string   `json:"labels"`
+	Priority   Priority   `json:"priority"`
+	Status     TaskStatus `json:"status"`
+	Title      string     `json:"title"`
 }
 
 // NullableTimestamp RFC 3339 in UTC, or null.
@@ -592,6 +669,9 @@ type TaskDetailBlockedReason string
 
 // TaskList defines model for TaskList.
 type TaskList struct {
+	// ArchivedIds Only with `updated_since`, the tasks archived after that time.
+	ArchivedIds *[]Uuid `json:"archived_ids,omitempty"`
+
 	// NextCursor Pass as `cursor` for the next page; null on the last page.
 	NextCursor *string `json:"next_cursor"`
 	Tasks      []Task  `json:"tasks"`
@@ -673,6 +753,9 @@ type Cursor = string
 // IfMatch defines model for IfMatch.
 type IfMatch = string
 
+// IfNoneMatch defines model for IfNoneMatch.
+type IfNoneMatch = string
+
 // JobID defines model for JobID.
 type JobID = Uuid
 
@@ -699,6 +782,9 @@ type Conflict = Error
 
 // ContactResponse defines model for ContactResponse.
 type ContactResponse = Contact
+
+// FeedUnavailable defines model for FeedUnavailable.
+type FeedUnavailable = Error
 
 // Forbidden defines model for Forbidden.
 type Forbidden = Error
@@ -742,6 +828,9 @@ type ListOutboxParams struct {
 
 	// Cursor The `next_cursor` of the previous page. Opaque.
 	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// IfNoneMatch The `ETag` of the last response to this same request. Answers `304` when it still matches.
+	IfNoneMatch *IfNoneMatch `json:"If-None-Match,omitempty"`
 }
 
 // ListAgentJobsParams defines parameters for ListAgentJobs.
@@ -755,6 +844,18 @@ type ListAgentJobsParams struct {
 
 	// Cursor The `next_cursor` of the previous page. Opaque.
 	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// IfNoneMatch The `ETag` of the last response to this same request. Answers `304` when it still matches.
+	IfNoneMatch *IfNoneMatch `json:"If-None-Match,omitempty"`
+}
+
+// ListInAppNotificationsParams defines parameters for ListInAppNotifications.
+type ListInAppNotificationsParams struct {
+	// Limit Page size, 1 to 100. Default 20.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor The `next_cursor` of the previous page. Opaque.
+	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
 // ListTasksParams defines parameters for ListTasks.
@@ -769,11 +870,17 @@ type ListTasksParams struct {
 	// Lets a client accept a short ID.
 	IdPrefix *string `form:"id_prefix,omitempty" json:"id_prefix,omitempty"`
 
+	// UpdatedSince RFC 3339. Only tasks updated after this time; adds `archived_ids` to the response.
+	UpdatedSince *Timestamp `form:"updated_since,omitempty" json:"updated_since,omitempty"`
+
 	// Limit Page size, 1 to 200. Default 50.
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 
 	// Cursor The `next_cursor` of the previous page. Opaque.
 	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// IfNoneMatch The `ETag` of the last response to this same request. Answers `304` when it still matches.
+	IfNoneMatch *IfNoneMatch `json:"If-None-Match,omitempty"`
 }
 
 // DeleteTaskParams defines parameters for DeleteTask.
@@ -823,6 +930,9 @@ type DecideLearningSuggestionJSONRequestBody = LearningDecision
 
 // PutMyContactJSONRequestBody defines body for PutMyContact for application/json ContentType.
 type PutMyContactJSONRequestBody = ContactUpdate
+
+// AckNotificationJSONRequestBody defines body for AckNotification for application/json ContentType.
+type AckNotificationJSONRequestBody = NotificationAckRequest
 
 // CreateTaskJSONRequestBody defines body for CreateTask for application/json ContentType.
 type CreateTaskJSONRequestBody = TaskCreate
@@ -960,6 +1070,14 @@ type ClientInterface interface {
 	PutMyContactWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	PutMyContact(ctx context.Context, body PutMyContactJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListInAppNotifications request
+	ListInAppNotifications(ctx context.Context, params *ListInAppNotificationsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AckNotificationWithBody request with any body
+	AckNotificationWithBody(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	AckNotification(ctx context.Context, id string, body AckNotificationJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListTasks request
 	ListTasks(ctx context.Context, params *ListTasksParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1193,6 +1311,42 @@ func (c *Client) PutMyContactWithBody(ctx context.Context, contentType string, b
 
 func (c *Client) PutMyContact(ctx context.Context, body PutMyContactJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewPutMyContactRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListInAppNotifications(ctx context.Context, params *ListInAppNotificationsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListInAppNotificationsRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) AckNotificationWithBody(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAckNotificationRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) AckNotification(ctx context.Context, id string, body AckNotificationJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAckNotificationRequest(c.Server, id, body)
 	if err != nil {
 		return nil, err
 	}
@@ -1679,6 +1833,21 @@ func NewListOutboxRequest(server string, params *ListOutboxParams) (*http.Reques
 		return nil, err
 	}
 
+	if params != nil {
+
+		if params.IfNoneMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "If-None-Match", runtime.ParamLocationHeader, *params.IfNoneMatch)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-None-Match", headerParam0)
+		}
+
+	}
+
 	return req, nil
 }
 
@@ -1824,6 +1993,21 @@ func NewListAgentJobsRequest(server string, params *ListAgentJobsParams) (*http.
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+
+		if params.IfNoneMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "If-None-Match", runtime.ParamLocationHeader, *params.IfNoneMatch)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-None-Match", headerParam0)
+		}
+
 	}
 
 	return req, nil
@@ -2052,6 +2236,118 @@ func NewPutMyContactRequestWithBody(server string, contentType string, body io.R
 	return req, nil
 }
 
+// NewListInAppNotificationsRequest generates requests for ListInAppNotifications
+func NewListInAppNotificationsRequest(server string, params *ListInAppNotificationsParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/notifications/in-app")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "limit", runtime.ParamLocationQuery, *params.Limit); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "cursor", runtime.ParamLocationQuery, *params.Cursor); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewAckNotificationRequest calls the generic AckNotification builder with application/json body
+func NewAckNotificationRequest(server string, id string, body AckNotificationJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewAckNotificationRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewAckNotificationRequestWithBody generates requests for AckNotification with any type of body
+func NewAckNotificationRequestWithBody(server string, id string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/notifications/%s/ack", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewListTasksRequest generates requests for ListTasks
 func NewListTasksRequest(server string, params *ListTasksParams) (*http.Request, error) {
 	var err error
@@ -2138,6 +2434,22 @@ func NewListTasksRequest(server string, params *ListTasksParams) (*http.Request,
 
 		}
 
+		if params.UpdatedSince != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "updated_since", runtime.ParamLocationQuery, *params.UpdatedSince); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
 		if params.Limit != nil {
 
 			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "limit", runtime.ParamLocationQuery, *params.Limit); err != nil {
@@ -2176,6 +2488,21 @@ func NewListTasksRequest(server string, params *ListTasksParams) (*http.Request,
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+
+		if params.IfNoneMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "If-None-Match", runtime.ParamLocationHeader, *params.IfNoneMatch)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-None-Match", headerParam0)
+		}
+
 	}
 
 	return req, nil
@@ -3103,6 +3430,14 @@ type ClientWithResponsesInterface interface {
 
 	PutMyContactWithResponse(ctx context.Context, body PutMyContactJSONRequestBody, reqEditors ...RequestEditorFn) (*PutMyContactResponse, error)
 
+	// ListInAppNotificationsWithResponse request
+	ListInAppNotificationsWithResponse(ctx context.Context, params *ListInAppNotificationsParams, reqEditors ...RequestEditorFn) (*ListInAppNotificationsResponse, error)
+
+	// AckNotificationWithBodyWithResponse request with any body
+	AckNotificationWithBodyWithResponse(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AckNotificationResponse, error)
+
+	AckNotificationWithResponse(ctx context.Context, id string, body AckNotificationJSONRequestBody, reqEditors ...RequestEditorFn) (*AckNotificationResponse, error)
+
 	// ListTasksWithResponse request
 	ListTasksWithResponse(ctx context.Context, params *ListTasksParams, reqEditors ...RequestEditorFn) (*ListTasksResponse, error)
 
@@ -3505,6 +3840,62 @@ func (r PutMyContactResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r PutMyContactResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListInAppNotificationsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *NotificationFeed
+	JSON400      *BadRequest
+	JSON401      *Unauthorized
+	JSON429      *TooManyRequests
+	JSON500      *InternalError
+	JSON502      *BadGateway
+	JSON503      *FeedUnavailable
+}
+
+// Status returns HTTPResponse.Status
+func (r ListInAppNotificationsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListInAppNotificationsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type AckNotificationResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *NotificationAck
+	JSON400      *BadRequest
+	JSON401      *Unauthorized
+	JSON413      *PayloadTooLarge
+	JSON422      *Unprocessable
+	JSON429      *TooManyRequests
+	JSON500      *InternalError
+}
+
+// Status returns HTTPResponse.Status
+func (r AckNotificationResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r AckNotificationResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -4169,6 +4560,32 @@ func (c *ClientWithResponses) PutMyContactWithResponse(ctx context.Context, body
 		return nil, err
 	}
 	return ParsePutMyContactResponse(rsp)
+}
+
+// ListInAppNotificationsWithResponse request returning *ListInAppNotificationsResponse
+func (c *ClientWithResponses) ListInAppNotificationsWithResponse(ctx context.Context, params *ListInAppNotificationsParams, reqEditors ...RequestEditorFn) (*ListInAppNotificationsResponse, error) {
+	rsp, err := c.ListInAppNotifications(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListInAppNotificationsResponse(rsp)
+}
+
+// AckNotificationWithBodyWithResponse request with arbitrary body returning *AckNotificationResponse
+func (c *ClientWithResponses) AckNotificationWithBodyWithResponse(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AckNotificationResponse, error) {
+	rsp, err := c.AckNotificationWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAckNotificationResponse(rsp)
+}
+
+func (c *ClientWithResponses) AckNotificationWithResponse(ctx context.Context, id string, body AckNotificationJSONRequestBody, reqEditors ...RequestEditorFn) (*AckNotificationResponse, error) {
+	rsp, err := c.AckNotification(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAckNotificationResponse(rsp)
 }
 
 // ListTasksWithResponse request returning *ListTasksResponse
@@ -5156,6 +5573,142 @@ func ParsePutMyContactResponse(rsp *http.Response) (*PutMyContactResponse, error
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
 		var dest ContactResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
+		var dest PayloadTooLarge
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON413 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest Unprocessable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListInAppNotificationsResponse parses an HTTP response from a ListInAppNotificationsWithResponse call
+func ParseListInAppNotificationsResponse(rsp *http.Response) (*ListInAppNotificationsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListInAppNotificationsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest NotificationFeed
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 502:
+		var dest BadGateway
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON502 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest FeedUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseAckNotificationResponse parses an HTTP response from a AckNotificationWithResponse call
+func ParseAckNotificationResponse(rsp *http.Response) (*AckNotificationResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &AckNotificationResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest NotificationAck
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}

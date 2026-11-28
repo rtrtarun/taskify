@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -92,6 +93,25 @@ func (h *handlers) listTasks(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
+	if v := q.Get("updated_since"); v != "" {
+		since, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			h.fail(w, r, badRequest("updated_since must be an RFC 3339 timestamp"))
+			return
+		}
+		since = since.UTC()
+		f.UpdatedSince = &since
+	}
+	// The tag is read before the page, so a change between the two leaves
+	// the client with a tag older than its data and the next poll refetches.
+	state, err := h.tasks.TaskListState(r.Context(), f)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	if notModified(w, r, listETag(f.TenantID, q.Encode(), state)) {
+		return
+	}
 	page, err := h.tasks.ListTasks(r.Context(), f)
 	if err != nil {
 		h.fail(w, r, err)
@@ -100,6 +120,12 @@ func (h *handlers) listTasks(w http.ResponseWriter, r *http.Request) {
 	out := taskListJSON{Tasks: make([]taskJSON, 0, len(page.Tasks)), NextCursor: encodeCursor(page.Next)}
 	for _, t := range page.Tasks {
 		out.Tasks = append(out.Tasks, toTaskJSON(t))
+	}
+	if f.UpdatedSince != nil {
+		if out.ArchivedIDs, err = h.tasks.ArchivedSince(r.Context(), f); err != nil {
+			h.fail(w, r, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }

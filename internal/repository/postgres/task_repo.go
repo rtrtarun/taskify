@@ -118,38 +118,14 @@ func (r *TaskRepo) List(ctx context.Context, f repository.TaskFilter) (repositor
 	if f.Limit <= 0 {
 		return repository.TaskPage{}, fmt.Errorf("%w: limit must be positive", domain.ErrValidation)
 	}
-	args := []any{f.TenantID}
-	where := []string{"tenant_id = $1"}
-	arg := func(v any) string {
-		args = append(args, v)
-		return fmt.Sprintf("$%d", len(args))
+	q, err := newTaskQuery(f, true, false)
+	if err != nil {
+		return repository.TaskPage{}, err
 	}
-	if f.Status != "" {
-		where = append(where, "status = "+arg(string(f.Status))+"::text::task_status")
-	} else {
-		where = append(where, "status <> 'archived'")
-	}
-	if f.AssigneeID != "" {
-		where = append(where, "assignee_id = "+arg(f.AssigneeID))
-	}
-	if f.Priority != "" {
-		where = append(where, "priority = "+arg(string(f.Priority))+"::text::task_priority")
-	}
-	if f.IDPrefix != "" {
-		// A range on the primary key: UUIDs order as their canonical text.
-		lo, hi, err := domain.IDPrefixRange(f.IDPrefix)
-		if err != nil {
-			return repository.TaskPage{}, err
-		}
-		where = append(where, "id BETWEEN "+arg(lo)+"::uuid AND "+arg(hi)+"::uuid")
-	}
-	if f.After != nil {
-		where = append(where, fmt.Sprintf("(updated_at, id) < (%s::timestamptz, %s::uuid)", arg(f.After.UpdatedAt), arg(f.After.ID)))
-	}
-	sql := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + strings.Join(where, " AND ") +
-		` ORDER BY updated_at DESC, id DESC LIMIT ` + arg(f.Limit+1)
+	sql := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + q.where() +
+		` ORDER BY updated_at DESC, id DESC LIMIT ` + q.arg(f.Limit+1)
 
-	tasks, err := r.query(ctx, sql, args...)
+	tasks, err := r.query(ctx, sql, q.args...)
 	if err != nil {
 		return repository.TaskPage{}, err
 	}
@@ -504,4 +480,103 @@ func (r *TaskRepo) SimilarOpen(ctx context.Context, tenantID, workspaceID string
 		tasks = []*domain.Task{}
 	}
 	return tasks, err
+}
+
+// taskQuery builds the WHERE clause of a task list.
+type taskQuery struct {
+	args  []any
+	conds []string
+}
+
+func (q *taskQuery) arg(v any) string {
+	q.args = append(q.args, v)
+	return fmt.Sprintf("$%d", len(q.args))
+}
+
+func (q *taskQuery) where() string { return strings.Join(q.conds, " AND ") }
+
+// newTaskQuery turns a filter into conditions. withCursor adds the page
+// cursor; archivedOnly replaces the status condition with "archived since
+// UpdatedSince", ignoring f.Status.
+func newTaskQuery(f repository.TaskFilter, withCursor, archivedOnly bool) (*taskQuery, error) {
+	q := &taskQuery{args: []any{f.TenantID}, conds: []string{"tenant_id = $1"}}
+	switch {
+	case archivedOnly:
+		q.conds = append(q.conds, "status = 'archived'", "archived_at > "+q.arg(f.UpdatedSince)+"::timestamptz")
+	case f.Status != "":
+		q.conds = append(q.conds, "status = "+q.arg(string(f.Status))+"::text::task_status")
+	default:
+		q.conds = append(q.conds, "status <> 'archived'")
+	}
+	if f.AssigneeID != "" {
+		q.conds = append(q.conds, "assignee_id = "+q.arg(f.AssigneeID))
+	}
+	if f.Priority != "" {
+		q.conds = append(q.conds, "priority = "+q.arg(string(f.Priority))+"::text::task_priority")
+	}
+	if f.IDPrefix != "" {
+		// A range on the primary key: UUIDs order as their canonical text.
+		lo, hi, err := domain.IDPrefixRange(f.IDPrefix)
+		if err != nil {
+			return nil, err
+		}
+		q.conds = append(q.conds, "id BETWEEN "+q.arg(lo)+"::uuid AND "+q.arg(hi)+"::uuid")
+	}
+	if f.UpdatedSince != nil && !archivedOnly {
+		q.conds = append(q.conds, "updated_at > "+q.arg(*f.UpdatedSince)+"::timestamptz")
+	}
+	if withCursor && f.After != nil {
+		q.conds = append(q.conds, fmt.Sprintf("(updated_at, id) < (%s::timestamptz, %s::uuid)", q.arg(f.After.UpdatedAt), q.arg(f.After.ID)))
+	}
+	return q, nil
+}
+
+func (r *TaskRepo) ListState(ctx context.Context, f repository.TaskFilter) (repository.ListState, error) {
+	q, err := newTaskQuery(f, false, false)
+	if err != nil {
+		return repository.ListState{}, err
+	}
+	var st repository.ListState
+	var latest *time.Time
+	if err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT count(*), max(updated_at) FROM tasks WHERE `+q.where(), q.args...).Scan(&st.Count, &latest); err != nil {
+		return repository.ListState{}, mapErr(err)
+	}
+	if latest != nil {
+		st.Latest = latest.UTC()
+	}
+	if f.UpdatedSince != nil {
+		aq, err := newTaskQuery(f, false, true)
+		if err != nil {
+			return repository.ListState{}, err
+		}
+		if err := r.db.q(ctx).QueryRow(ctx,
+			`SELECT count(*) FROM tasks WHERE `+aq.where(), aq.args...).Scan(&st.ArchivedSince); err != nil {
+			return repository.ListState{}, mapErr(err)
+		}
+	}
+	return st, nil
+}
+
+func (r *TaskRepo) ArchivedSince(ctx context.Context, f repository.TaskFilter) ([]uuid.UUID, error) {
+	if f.UpdatedSince == nil {
+		return []uuid.UUID{}, nil
+	}
+	q, err := newTaskQuery(f, false, true)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.db.q(ctx).Query(ctx,
+		`SELECT id FROM tasks WHERE `+q.where()+` ORDER BY archived_at, id LIMIT `+q.arg(repository.MaxArchivedIDs), q.args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	if ids == nil {
+		ids = []uuid.UUID{}
+	}
+	return ids, nil
 }

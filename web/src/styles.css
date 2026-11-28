@@ -1,0 +1,36 @@
+body { font-family: system-ui, sans-serif; margin: 0; color: #1a1a1a; background: #fafafa; }
+main { padding: 1rem; max-width: 72rem; margin: 0 auto; }
+.topbar { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; padding: 0.5rem 1rem; background: #fff; border-bottom: 1px solid #ddd; }
+.topbar nav { display: flex; gap: 0.75rem; }
+.topbar .who { margin-left: auto; color: #555; font-size: 0.9rem; }
+.topbar a.active { font-weight: 600; }
+.signin { max-width: 32rem; }
+.signin textarea { width: 100%; box-sizing: border-box; font-family: monospace; }
+.hint { color: #555; font-size: 0.9rem; }
+[role="alert"] { color: #a40000; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.quick-add, .filters { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end; margin: 0.75rem 0; }
+.quick-add label, .filters label { display: flex; flex-direction: column; font-size: 0.85rem; gap: 0.2rem; }
+table.tasks { width: 100%; border-collapse: collapse; }
+table.tasks th, table.tasks td { text-align: left; padding: 0.4rem; border-bottom: 1px solid #ddd; }
+.board { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 0.75rem; }
+.column { background: #f0f0f0; padding: 0.5rem; border-radius: 0.4rem; min-height: 6rem; }
+.column.over { outline: 2px dashed #36c; }
+.column ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+.column li { background: #fff; padding: 0.5rem; border-radius: 0.3rem; border: 1px solid #ddd; }
+.meta { color: #555; font-size: 0.8rem; margin: 0.2rem 0; }
+.error { color: #a40000; }
+button.link { background: none; border: none; color: #36c; text-decoration: underline; cursor: pointer; margin-top: 1rem; }
+@media (max-width: 40rem) { table.tasks thead { display: none; } table.tasks tr { display: block; border-bottom: 1px solid #ddd; padding: 0.4rem 0; } table.tasks td { display: inline-block; border: none; } }
+.detail .edit { display: grid; gap: 0.6rem; max-width: 40rem; margin: 1rem 0; }
+.detail .edit label, .detail .actions label { display: flex; flex-direction: column; font-size: 0.85rem; gap: 0.2rem; }
+.actions { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end; }
+.conflict { border: 2px solid #b36b00; background: #fff6e5; padding: 0.5rem 1rem; }
+.comments { list-style: none; padding: 0; }
+.comments li { border-bottom: 1px solid #ddd; padding: 0.5rem 0; }
+.comments .body { white-space: pre-wrap; margin: 0.25rem 0 0; }
+.notifications { list-style: none; padding: 0; }
+.notifications li { border-bottom: 1px solid #ddd; padding: 0.5rem 0; }
+.notifications li.handled { opacity: 0.6; }
+.notifications h2 { font-size: 1rem; margin: 0; }
+.notifications .body { white-space: pre-wrap; margin: 0.25rem 0; }

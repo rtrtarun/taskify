@@ -1099,15 +1099,15 @@ All routes are under `/api/v1`, except the operations routes. Legacy unprefixed 
 | `GET /tasks/{id}/agent-runs` | Agent activity for a task, oldest first, from `agent_jobs` and `agent_run_history` | none | R3 (M12) |
 | `GET /admin/outbox` | List the tenant's outbox rows, newest first (admin); filter `status` (such as `dead_letter`), `limit`, `cursor`. Dispatched rows are kept 7 days. | none | R3 (M12) |
 | `POST /admin/outbox/{id}/replay` | Return a dead-letter row to `pending` (admin) | Row is retried | R3 (M12) |
-| `GET /notifications/in-app` | Current user's in-app feed, proxied from AgentPulse and enriched with task data. Not built. | none | R3 (M14-06) |
-| `POST /notifications/{id}/ack` | Mark a notification read or dismissed. Not built. | Local ack plus AgentPulse feedback | R3 (M14-06) |
+| `GET /notifications/in-app` | Current user's in-app feed, proxied from AgentPulse and enriched with task data and read state; `503` with `Retry-After` when AgentPulse cannot answer | none | R3 (M14-06) |
+| `POST /notifications/{id}/ack` | Act on, snooze, or dismiss a notification | Local ack plus a `feedback.forward` outbox row for AgentPulse `/feedback` | R3 (M14-06) |
 | `GET /me` | Current user, tenant, and role | none | R3 (M12) |
 | `GET /me/brief` | The caller's newest morning brief; `404` when there is none | none | R2 (M10) |
 | `GET /me/contact`, `PUT /me/contact` | The caller's own contact for AgentPulse: `email`, `slack_user_id`, `phone` (section 5.5) | `contact.update` outbox row | R2 (AP-05) |
 | `GET /events` | Server-Sent Events stream | none | Later (live updates Phase 2) |
 | `GET /healthz`, `GET /readyz`, `GET /metrics` | Operations (not under `/api/v1`) | none | R1 |
 
-Single-task reads and writes return an `ETag`. `updated_since` and `If-None-Match` on list endpoints are planned for the frontend's polling (M14) and are not built.
+Single-task reads and writes return an `ETag`. The task list returns a weak `ETag` derived from a count and the latest `updated_at` (and, for a delta, the number of tasks archived since), answers `304` to a matching `If-None-Match`, and takes `updated_since`, which also lists the IDs archived since that time (M14-02). The agent job and outbox lists tag by a hash of the body.
 
 The R3 rows exist because the CLI and frontend need to list things that R1 and R2 only expose one at a time. M12 built the list endpoints and `GET /me`; the notification feed is M14-06.
 
@@ -1322,7 +1322,7 @@ Read once at start-up by `internal/config`, which refuses to start on a missing 
 | `TRUSTED_GATEWAY_CIDRS` | empty | IP ranges allowed to send `X-Tenant-ID` and `X-User-ID` |
 | `RATE_LIMIT_RPS` | `20` | Requests per second per tenant and user, in memory per replica |
 | `RATE_LIMIT_BURST` | `40` | Token bucket size |
-| `CORS_ALLOWED_ORIGINS` | empty | Not built. Frontend origins, when the frontend is deployed separately (M14) |
+| `CORS_ALLOWED_ORIGINS` | empty | Frontend origins, when the frontend is deployed separately (M14-02). Comma-separated `scheme://host[:port]`, no `*` |
 | `SERVE_EMBEDDED_SPA` | `false` | Not built. Serve the embedded frontend at `/` (M14) |
 | `AGENTS_ENABLED` | `false` | Process-level switch for the agent runtime. Per-workspace control is in `agent_settings`. |
 | `AGENT_WORKERS` | `4` | Agent job concurrency |

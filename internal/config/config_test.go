@@ -257,3 +257,23 @@ func TestAppBaseURL(t *testing.T) {
 		t.Fatalf("set: %q, %v", c.AppBaseURL, err)
 	}
 }
+
+// TestCORSAllowedOrigins: a list of exact origins, or nothing.
+func TestCORSAllowedOrigins(t *testing.T) {
+	c, err := FromLookup(lookupFrom(valid()))
+	if err != nil || len(c.CORSAllowedOrigins) != 0 {
+		t.Fatalf("unset: %v, %v", c.CORSAllowedOrigins, err)
+	}
+	env := valid()
+	env["CORS_ALLOWED_ORIGINS"] = " https://app.example.com, http://localhost:5173 ,"
+	c, err = FromLookup(lookupFrom(env))
+	if err != nil || len(c.CORSAllowedOrigins) != 2 || c.CORSAllowedOrigins[1] != "http://localhost:5173" {
+		t.Fatalf("set: %v, %v", c.CORSAllowedOrigins, err)
+	}
+	for _, bad := range []string{"*", "app.example.com", "https://app.example.com/", "https://app.example.com/x", "ftp://a.example", "https://u@a.example"} {
+		env["CORS_ALLOWED_ORIGINS"] = bad
+		if _, err := FromLookup(lookupFrom(env)); err == nil || !strings.Contains(err.Error(), "CORS_ALLOWED_ORIGINS") {
+			t.Errorf("%q accepted: %v", bad, err)
+		}
+	}
+}

@@ -92,6 +92,8 @@ type taskDetailJSON struct {
 type taskListJSON struct {
 	Tasks      []taskJSON `json:"tasks"`
 	NextCursor *string    `json:"next_cursor"`
+	// ArchivedIDs is sent only with updated_since.
+	ArchivedIDs []uuid.UUID `json:"archived_ids,omitzero"`
 }
 
 type createTaskRequest struct {

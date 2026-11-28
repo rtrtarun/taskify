@@ -39,6 +39,7 @@ type Backend struct {
 	AgentJobs  repository.AgentJobRepository
 	Contacts   repository.ContactRepository
 	Learning   repository.LearningSuggestionRepository
+	Acks       repository.NotificationAckRepository
 	// DB is set for the PostgreSQL backend only.
 	DB *postgres.DB
 }
@@ -69,7 +70,7 @@ func Memory() Backend {
 		Name: "memory", Tx: st,
 		Tasks: st.Tasks(), Workspaces: st.Workspaces(), Comments: st.Comments(), Outbox: st.Outbox(),
 		Rules: st.Rules(), Deliveries: st.Deliveries(), Deps: st.Dependencies(), AgentJobs: st.AgentJobs(), Contacts: st.Contacts(),
-		Learning: st.Learning(),
+		Learning: st.Learning(), Acks: st.NotificationAcks(),
 	}
 }
 
@@ -85,6 +86,7 @@ func Postgres(t testing.TB) Backend {
 		Rules: postgres.NewRuleRepo(db), Deliveries: postgres.NewDeliveryRepo(db),
 		Deps: postgres.NewDependencyRepo(db), AgentJobs: postgres.NewAgentJobRepo(db),
 		Contacts: postgres.NewContactRepo(db), Learning: postgres.NewLearningRepo(db),
+		Acks: postgres.NewNotificationAckRepo(db),
 	}
 }
 

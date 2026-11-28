@@ -294,6 +294,73 @@ func (r *TaskRepo) Update(ctx context.Context, t *domain.Task, expectedVersion i
 	})
 }
 
+// matches reports whether t belongs to the list f describes, ignoring its
+// page cursor.
+func matchesFilter(t *domain.Task, f repository.TaskFilter) bool {
+	switch {
+	case t.TenantID != f.TenantID,
+		f.Status == "" && t.Status == domain.StatusArchived,
+		f.Status != "" && t.Status != f.Status,
+		f.AssigneeID != "" && t.AssigneeID != f.AssigneeID,
+		f.Priority != "" && t.Priority != f.Priority,
+		f.IDPrefix != "" && !strings.HasPrefix(t.ID.String(), strings.ToLower(f.IDPrefix)),
+		f.UpdatedSince != nil && !t.UpdatedAt.After(*f.UpdatedSince):
+		return false
+	}
+	return true
+}
+
+// archivedSince reports whether t was archived after f.UpdatedSince and fits
+// the rest of f, except its status.
+func archivedSince(t *domain.Task, f repository.TaskFilter) bool {
+	return f.UpdatedSince != nil && t.TenantID == f.TenantID && t.Status == domain.StatusArchived &&
+		t.ArchivedAt != nil && t.ArchivedAt.After(*f.UpdatedSince) &&
+		(f.AssigneeID == "" || t.AssigneeID == f.AssigneeID) &&
+		(f.Priority == "" || t.Priority == f.Priority) &&
+		(f.IDPrefix == "" || strings.HasPrefix(t.ID.String(), strings.ToLower(f.IDPrefix)))
+}
+
+func (r *TaskRepo) ListState(ctx context.Context, f repository.TaskFilter) (st repository.ListState, err error) {
+	err = r.st.do(ctx, func(s *state) error {
+		for _, t := range s.tasks {
+			if matchesFilter(t, f) {
+				st.Count++
+				if t.UpdatedAt.After(st.Latest) {
+					st.Latest = t.UpdatedAt
+				}
+			}
+			if archivedSince(t, f) {
+				st.ArchivedSince++
+			}
+		}
+		return nil
+	})
+	return st, err
+}
+
+func (r *TaskRepo) ArchivedSince(ctx context.Context, f repository.TaskFilter) (ids []uuid.UUID, err error) {
+	ids = []uuid.UUID{}
+	err = r.st.do(ctx, func(s *state) error {
+		var found []*domain.Task
+		for _, t := range s.tasks {
+			if archivedSince(t, f) {
+				found = append(found, t)
+			}
+		}
+		slices.SortFunc(found, func(a, b *domain.Task) int {
+			if c := a.ArchivedAt.Compare(*b.ArchivedAt); c != 0 {
+				return c
+			}
+			return strings.Compare(a.ID.String(), b.ID.String())
+		})
+		for _, t := range found[:min(len(found), repository.MaxArchivedIDs)] {
+			ids = append(ids, t.ID)
+		}
+		return nil
+	})
+	return ids, err
+}
+
 func (r *TaskRepo) List(ctx context.Context, f repository.TaskFilter) (page repository.TaskPage, err error) {
 	if f.Limit <= 0 {
 		return page, fmt.Errorf("%w: limit must be positive", domain.ErrValidation)
@@ -301,14 +368,7 @@ func (r *TaskRepo) List(ctx context.Context, f repository.TaskFilter) (page repo
 	err = r.st.do(ctx, func(s *state) error {
 		var matched []*domain.Task
 		for _, t := range s.tasks {
-			switch {
-			case t.TenantID != f.TenantID,
-				f.Status == "" && t.Status == domain.StatusArchived,
-				f.Status != "" && t.Status != f.Status,
-				f.AssigneeID != "" && t.AssigneeID != f.AssigneeID,
-				f.Priority != "" && t.Priority != f.Priority,
-				f.IDPrefix != "" && !strings.HasPrefix(t.ID.String(), strings.ToLower(f.IDPrefix)),
-				f.After != nil && !before(t, *f.After):
+			if !matchesFilter(t, f) || f.After != nil && !before(t, *f.After) {
 				continue
 			}
 			matched = append(matched, t)

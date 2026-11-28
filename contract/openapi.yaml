@@ -48,6 +48,7 @@ tags:
   - name: tasks
   - name: agent-jobs
   - name: me
+  - name: notifications
   - name: workspaces
   - name: admin
   - name: webhooks
@@ -153,6 +154,17 @@ paths:
       description: |
         The caller's tenant's tasks, most recently updated first, a page at a
         time. Archived tasks are listed only with `status=archived`.
+
+        Polling (the web client reads this every 15 to 30 seconds). The
+        response carries an `ETag` derived from the number of matching tasks
+        and the latest `updated_at` among them, for this tenant and these
+        query parameters, read with one small query. A request whose
+        `If-None-Match` equals it answers `304` with no body.
+
+        `updated_since` returns only the tasks updated after that time (a
+        delta, still newest first), and adds `archived_ids`: the IDs of tasks
+        archived after that time, which a delta cannot otherwise show. A task
+        archived and then restored is a task, not an archived ID.
       parameters:
         - name: assignee_id
           in: query
@@ -177,15 +189,26 @@ paths:
             type: string
             minLength: 1
             maxLength: 36
+        - name: updated_since
+          in: query
+          description: RFC 3339. Only tasks updated after this time; adds `archived_ids` to the response.
+          schema:
+            $ref: "#/components/schemas/Timestamp"
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/IfNoneMatch"
       responses:
         "200":
           description: One page.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ListETag"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/TaskList"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -619,13 +642,19 @@ paths:
             $ref: "#/components/schemas/AgentType"
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/IfNoneMatch"
       responses:
         "200":
-          description: One page.
+          description: One page. Its `ETag` is a hash of the body, so a repeated poll can answer `304`.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ListETag"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/AgentJobList"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1043,13 +1072,19 @@ paths:
             $ref: "#/components/schemas/OutboxStatus"
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/IfNoneMatch"
       responses:
         "200":
-          description: One page.
+          description: One page. Its `ETag` is a hash of the body, so a repeated poll can answer `304`.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ListETag"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/OutboxList"
+        "304":
+          $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1093,6 +1128,107 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/notifications/in-app:
+    get:
+      tags: [notifications]
+      operationId: listInAppNotifications
+      summary: The caller's in-app notification feed
+      description: |
+        The caller's own in-app notifications, newest first, proxied from
+        AgentPulse with Taskify's service credentials. The tenant and user
+        come only from the caller's credentials: the request has no way to
+        name another person, and anything it sends to try is ignored. Each
+        item is enriched with the task it is about (when that task is in the
+        caller's tenant) and the caller's own read state. The browser never
+        talks to AgentPulse.
+
+        When AgentPulse does not answer in time, its circuit breaker is open,
+        or it answers with a server error, this is `503` with a `Retry-After`
+        header; nothing else in the API is affected. Any other failure from
+        AgentPulse is `502`.
+      parameters:
+        - name: limit
+          in: query
+          description: Page size, 1 to 100. Default 20.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+        - name: cursor
+          in: query
+          description: The `next_cursor` of the previous page. Opaque.
+          schema:
+            type: string
+            maxLength: 512
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationFeed"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/FeedUnavailable"
+
+  /api/v1/notifications/{id}/ack:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: AgentPulse's notification ID, from the feed.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 128
+    post:
+      tags: [notifications]
+      operationId: ackNotification
+      summary: Act on, snooze, or dismiss a notification
+      description: |
+        Records the caller's reaction to one of their notifications. The ack
+        is saved in Taskify's database first, in the same transaction as an
+        outbox row that forwards the matching feedback signal to AgentPulse;
+        the relay sends it and retries it if AgentPulse is down, so the click
+        never fails because of AgentPulse, and a signal is sent once per
+        change however many attempts it takes. Repeating the same reaction
+        changes nothing and forwards nothing; a different reaction replaces
+        the first and forwards its own signal.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotificationAckRequest"
+      responses:
+        "200":
+          description: The caller's reaction as saved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationAck"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         "500":
@@ -1204,6 +1340,12 @@ components:
       description: The `next_cursor` of the previous page. Opaque.
       schema:
         type: string
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      description: The `ETag` of the last response to this same request. Answers `304` when it still matches.
+      schema:
+        type: string
     IfMatch:
       name: If-Match
       in: header
@@ -1214,6 +1356,12 @@ components:
   headers:
     ETag:
       description: The task's version, as a strong validator, such as `"3"`.
+      schema:
+        type: string
+    ListETag:
+      description: |
+        A weak validator of the list as requested (`W/"..."`). Send it back
+        as `If-None-Match`.
       schema:
         type: string
     Location:
@@ -1322,6 +1470,20 @@ components:
             $ref: "#/components/schemas/Error"
     InternalError:
       description: "An unexpected error. Code `internal_error`; the message says nothing more."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotModified:
+      description: The list is unchanged since the `ETag` in `If-None-Match`. No body.
+      headers:
+        ETag:
+          $ref: "#/components/headers/ListETag"
+    FeedUnavailable:
+      description: "AgentPulse did not answer the feed in time, its circuit breaker is open, or it answered with a server error. Code `upstream_unavailable`; `Retry-After` says how many seconds to wait."
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
       content:
         application/json:
           schema:
@@ -1544,6 +1706,11 @@ components:
           type: string
           nullable: true
           description: Pass as `cursor` for the next page; null on the last page.
+        archived_ids:
+          type: array
+          description: "Only with `updated_since`, the tasks archived after that time."
+          items:
+            $ref: "#/components/schemas/Uuid"
     TaskCreate:
       type: object
       required: [workspace_id, title]
@@ -2193,3 +2360,103 @@ components:
         next_cursor:
           type: string
           nullable: true
+
+    NotificationFeed:
+      type: object
+      required: [notifications, next_cursor]
+      properties:
+        notifications:
+          type: array
+          items:
+            $ref: "#/components/schemas/InAppNotification"
+        next_cursor:
+          type: string
+          nullable: true
+          description: Pass as `cursor` for the next page; null on the last page.
+    InAppNotification:
+      type: object
+      description: |
+        One notification. `title` and `body` are text written by Taskify or
+        by an agent, never HTML; clients render them as text.
+      required: [id, event_type, title, body, created_at, task_id, job_id, task, read, signal, snoozed_until]
+      properties:
+        id:
+          type: string
+          description: AgentPulse's notification ID. Send it to `ackNotification`.
+        event_type:
+          type: string
+        title:
+          type: string
+        body:
+          type: string
+        created_at:
+          $ref: "#/components/schemas/Timestamp"
+        task_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The task the notification is about, when it names one.
+        job_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The agent job it is about, when it names one.
+        task:
+          nullable: true
+          description: The task, when it exists in the caller's tenant. Null otherwise.
+          allOf:
+            - $ref: "#/components/schemas/NotificationTask"
+        read:
+          type: boolean
+          description: True once the caller has reacted to it.
+        signal:
+          nullable: true
+          description: The caller's reaction, or null if there is none.
+          allOf:
+            - $ref: "#/components/schemas/AckSignal"
+        snoozed_until:
+          $ref: "#/components/schemas/NullableTimestamp"
+    NotificationTask:
+      type: object
+      required: [id, title, status, priority, assignee_id, labels]
+      properties:
+        id:
+          $ref: "#/components/schemas/Uuid"
+        title:
+          type: string
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        priority:
+          $ref: "#/components/schemas/Priority"
+        assignee_id:
+          type: string
+          nullable: true
+        labels:
+          type: array
+          items:
+            type: string
+    AckSignal:
+      type: string
+      enum: [acted, dismissed, snoozed]
+    NotificationAckRequest:
+      type: object
+      required: [signal]
+      additionalProperties: false
+      properties:
+        signal:
+          $ref: "#/components/schemas/AckSignal"
+        duration:
+          type: string
+          description: Required for `snoozed` (such as `2h`, at most `168h`), refused otherwise.
+    NotificationAck:
+      type: object
+      required: [notification_id, signal, snoozed_until, acked_at]
+      properties:
+        notification_id:
+          type: string
+        signal:
+          $ref: "#/components/schemas/AckSignal"
+        snoozed_until:
+          $ref: "#/components/schemas/NullableTimestamp"
+        acked_at:
+          $ref: "#/components/schemas/Timestamp"

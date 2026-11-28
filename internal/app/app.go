@@ -129,8 +129,10 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 		Webhooks:   service.NewWebhookService(db, deliveries, taskSvc, feedback, logger, nil).WithAgentJobs(agentJobs),
 		AgentJobs:  agentJobs,
 		Outbox:     service.NewOutboxService(outbox, nil, relay.Wake),
-		Contacts:   service.NewContactService(db, postgres.NewContactRepo(db), outbox, cfg.OutboxMaxAttempts, nil, relay.Wake),
-		Learning:   client,
+		Notifications: service.NewNotificationService(db, client, tasks, postgres.NewNotificationAckRepo(db), outbox,
+			cfg.OutboxMaxAttempts, nil, relay.Wake, metrics),
+		Contacts: service.NewContactService(db, postgres.NewContactRepo(db), outbox, cfg.OutboxMaxAttempts, nil, relay.Wake),
+		Learning: client,
 		Auth: api.AuthConfig{
 			Development:         cfg.IsDevelopment(),
 			Algorithm:           cfg.JWTAlgorithm,
@@ -138,12 +140,13 @@ func assemble(db *postgres.DB, cfg config.Config, logger *slog.Logger, version s
 			PublicKey:           cfg.JWTPublicKey,
 			TrustedGatewayCIDRs: cfg.TrustedGatewayCIDRs,
 		},
-		WebhookSecret: cfg.AgentPulseWebhookSecret,
-		RateLimit:     api.RateLimitConfig{RPS: cfg.RateLimitRPS, Burst: cfg.RateLimitBurst},
-		Version:       version,
-		Logger:        logger,
-		Metrics:       metrics,
-		Ready:         db.Ping,
+		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
+		WebhookSecret:      cfg.AgentPulseWebhookSecret,
+		RateLimit:          api.RateLimitConfig{RPS: cfg.RateLimitRPS, Burst: cfg.RateLimitBurst},
+		Version:            version,
+		Logger:             logger,
+		Metrics:            metrics,
+		Ready:              db.Ping,
 	})
 	if err != nil {
 		return nil, err

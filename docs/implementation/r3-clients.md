@@ -51,7 +51,9 @@ Goal: someone who has never seen the API can manage tasks and supervise agents i
 
 The stack is React, TypeScript, Vite, TanStack Query, and React Router. Task and comment text is always rendered as text, never as HTML, including text written by agents.
 
-### M14a. Core task screens (needs M12)
+### M14a. Core task screens (needs M12) (done)
+
+Done. Sign-in is the development path (a pasted token, held in memory); the `HttpOnly` refresh cookie and the real provider redirect wait on owner decisions (see D72 and O2). Departures D70 to D76 are in [README.md](README.md).
 
 | ID | Task | Files | Done when | Level, size | After |
 | --- | --- | --- | --- | --- | --- |

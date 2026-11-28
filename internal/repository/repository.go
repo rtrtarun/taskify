@@ -45,9 +45,27 @@ type TaskFilter struct {
 	// IDPrefix, when set, keeps tasks whose ID starts with it; it must pass
 	// domain.IDPrefixRange.
 	IDPrefix string
-	Limit    int // must be positive
-	After    *Cursor
+	// UpdatedSince, when set, keeps tasks updated after it.
+	UpdatedSince *time.Time
+	Limit        int // must be positive
+	After        *Cursor
 }
+
+// ListState summarises the tasks a filter matches, for the list's ETag. The
+// filter's Limit and After are ignored.
+type ListState struct {
+	// Count and Latest are the number of matching tasks and the latest
+	// updated_at among them (zero when there are none).
+	Count  int
+	Latest time.Time
+	// ArchivedSince counts tasks archived after UpdatedSince, which leave
+	// the list without changing Count or Latest of what is left. Zero when
+	// UpdatedSince is unset.
+	ArchivedSince int
+}
+
+// MaxArchivedIDs caps the archived IDs a delta list reports.
+const MaxArchivedIDs = 1000
 
 // ListCursor marks a position in a list ordered by (created_at, id)
 // descending: agent jobs and outbox rows.
@@ -74,6 +92,13 @@ type TaskRepository interface {
 	// ErrVersionConflict otherwise. Watchers are replaced.
 	Update(ctx context.Context, t *domain.Task, expectedVersion int) error
 	List(ctx context.Context, f TaskFilter) (TaskPage, error)
+	// ListState returns the count and latest update of the tasks f matches,
+	// without loading them.
+	ListState(ctx context.Context, f TaskFilter) (ListState, error)
+	// ArchivedSince returns the IDs of tasks archived after f.UpdatedSince
+	// that match f's assignee, priority, and ID prefix (not its status),
+	// oldest first, at most MaxArchivedIDs.
+	ArchivedSince(ctx context.Context, f TaskFilter) ([]uuid.UUID, error)
 	// ListChildren returns the tasks whose parent is parentID, in the tenant,
 	// oldest first, archived ones included.
 	ListChildren(ctx context.Context, tenantID string, parentID uuid.UUID) ([]*domain.Task, error)
@@ -373,4 +398,18 @@ type OutboxRepository interface {
 	// tenant, or none, is ErrNotFound; a row in another status is
 	// domain.ErrNotDeadLetter and is left alone.
 	Replay(ctx context.Context, tenantID string, id uuid.UUID, now time.Time) (domain.OutboxEntry, error)
+}
+
+// NotificationAckRepository stores each person's reaction to in-app
+// notifications (M14-06), one row per tenant, user, and notification.
+type NotificationAckRepository interface {
+	// Save records the reaction and reports whether it changed anything: a
+	// first reaction, or one that differs from the stored signal or snooze
+	// duration, replaces the row and returns true; the same reaction again
+	// leaves the row (and its time) alone and returns false. Concurrent saves
+	// of one reaction report true to exactly one of them.
+	Save(ctx context.Context, a domain.NotificationAck) (changed bool, err error)
+	// ListFor returns the person's reactions to the named notifications,
+	// keyed by notification ID. Other people's reactions are never returned.
+	ListFor(ctx context.Context, tenantID, userID string, notificationIDs []string) (map[string]domain.NotificationAck, error)
 }
