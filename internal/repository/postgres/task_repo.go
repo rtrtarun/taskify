@@ -135,6 +135,14 @@ func (r *TaskRepo) List(ctx context.Context, f repository.TaskFilter) (repositor
 	if f.Priority != "" {
 		where = append(where, "priority = "+arg(string(f.Priority))+"::text::task_priority")
 	}
+	if f.IDPrefix != "" {
+		// A range on the primary key: UUIDs order as their canonical text.
+		lo, hi, err := domain.IDPrefixRange(f.IDPrefix)
+		if err != nil {
+			return repository.TaskPage{}, err
+		}
+		where = append(where, "id BETWEEN "+arg(lo)+"::uuid AND "+arg(hi)+"::uuid")
+	}
 	if f.After != nil {
 		where = append(where, fmt.Sprintf("(updated_at, id) < (%s::timestamptz, %s::uuid)", arg(f.After.UpdatedAt), arg(f.After.ID)))
 	}

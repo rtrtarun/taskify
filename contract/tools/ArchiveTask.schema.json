@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The task to archive."
+    },
+    "reasoning": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000,
+      "description": "Why the task is no longer needed, in one or two sentences."
+    }
+  },
+  "required": [
+    "task_id",
+    "reasoning"
+  ],
+  "additionalProperties": false
+}

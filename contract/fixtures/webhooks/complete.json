@@ -1,0 +1,22 @@
+{
+  "description": "A signed complete callback completes the task as the person who clicked and forwards acted once; a retry with the same callbackId and a byte-identical replay are duplicates.",
+  "rules": ["R1.3", "R8.1", "R8.3", "R8.4"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Click me", "assignee_id": "usr_carol"}},
+      "expect": {"status": 201}, "capture": {"task": "id"},
+      "agentpulse": {"notifications": [{"eventType": "task.created", "userId": "usr_carol"}]}},
+    {"name": "click", "webhook": {"body": {"action": "complete", "tenantId": "{{tenant}}", "userId": "usr_carol", "taskId": "{{task}}",
+      "callbackId": "cb-0123456789abcdef0123456789abcdef", "extra": "ignored"}},
+      "expect": {"status": 200, "body": {"status": "applied"}},
+      "agentpulse": {"feedback": [{"tenantId": "{{tenant}}", "userId": "usr_carol", "signal": "acted", "taskId": "{{task}}"}]}},
+    {"name": "completed", "request": {"method": "GET", "path": "/api/v1/tasks/{{task}}"},
+      "expect": {"status": 200, "body": {"status": "completed", "version": 2}}},
+    {"name": "AgentPulse retries the click", "webhook": {"body": {"action": "complete", "tenantId": "{{tenant}}", "userId": "usr_carol", "taskId": "{{task}}",
+      "callbackId": "cb-0123456789abcdef0123456789abcdef"}, "timestamp_offset_seconds": 5},
+      "expect": {"status": 200, "body": {"status": "duplicate"}}, "agentpulse": {"feedback": []}},
+    {"name": "a byte-identical replay", "webhook": {"replay_previous": true},
+      "expect": {"status": 200, "body": {"status": "duplicate"}}, "agentpulse": {"feedback": []}},
+    {"name": "a malformed callbackId", "webhook": {"body": {"action": "complete", "tenantId": "{{tenant}}", "userId": "usr_carol", "taskId": "{{task}}", "callbackId": "nope"}},
+      "expect": {"status": 422, "error_code": "validation_failed"}}
+  ]
+}

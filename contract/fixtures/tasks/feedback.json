@@ -1,0 +1,17 @@
+{
+  "description": "A reaction to a notification is forwarded to AgentPulse, from the query string as in a notification's link or from a body.",
+  "rules": ["R5.4"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Noisy", "assignee_id": "usr_carol"}},
+      "expect": {"status": 201}, "capture": {"task": "id"},
+      "agentpulse": {"notifications": [{"eventType": "task.created", "userId": "usr_carol"}]}},
+    {"name": "snooze from a link", "as": {"user": "usr_carol"}, "request": {"method": "POST", "path": "/api/v1/tasks/{{task}}/feedback?signal=snoozed&duration=2h"},
+      "expect": {"status": 202, "body": {"status": "forwarded"}},
+      "agentpulse": {"feedback": [{"tenantId": "{{tenant}}", "userId": "usr_carol", "signal": "snoozed", "snoozeDuration": "2h", "taskId": "{{task}}"}]}},
+    {"name": "dismiss from a body", "as": {"user": "usr_carol"}, "request": {"method": "POST", "path": "/api/v1/tasks/{{task}}/feedback", "body": {"signal": "dismissed"}},
+      "expect": {"status": 202},
+      "agentpulse": {"feedback": [{"userId": "usr_carol", "signal": "dismissed", "taskId": "{{task}}"}]}},
+    {"name": "an unknown signal", "request": {"method": "POST", "path": "/api/v1/tasks/{{task}}/feedback", "body": {"signal": "loved"}},
+      "expect": {"status": 422, "error_code": "validation_failed"}}
+  ]
+}

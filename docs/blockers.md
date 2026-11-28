@@ -154,7 +154,8 @@ Changes to the specification above:
 
   - `payload.actionLabels` overrides the button text.
   - From 40b, an unknown key or a missing ID is refused with a 400, so Taskify replaces `acknowledge` with `complete` first (AP-02).
-  - A notification that is not about a task, such as `digest.morning_brief`, carries only `view`.
+  - A notification that is not about a task, such as `digest.morning_brief`, carries at most `view`.
+  - Taskify sends `view` only when its `APP_BASE_URL` is set, to a page of its web app. Without it, no notification carries `view`, since every Taskify API URL needs a bearer token that a click cannot carry: a morning brief then has no `actionUrls`, and an escalation about a task that is not blocked has none either (D50).
 - **Callbacks** go through AgentPulse's delivery queue, which retries them.
   - The body carries `callbackId`: `cb-` plus 32 hex characters, the same on every retry of one click, while the timestamp and signature are new each time.
   - Taskify deduplicates on `(tenantId, callbackId)` (AP-06).

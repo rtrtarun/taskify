@@ -189,7 +189,7 @@ All settings are environment variables. In development, a `.env` file is also re
 | --- | --- | --- |
 | `DATABASE_URL` | required | PostgreSQL connection string |
 | `PUBLIC_BASE_URL` | required | Taskify's external address, used in notification action links |
-| `APP_BASE_URL` | none | The web app's address. When set, every notification about a task carries a "View" link to `{APP_BASE_URL}/tasks/{id}`, and the morning brief one to `{APP_BASE_URL}/brief`; unset, task notifications carry no view link |
+| `APP_BASE_URL` | none | The web app's address. When set, every notification about a task carries a "View" link to `{APP_BASE_URL}/tasks/{id}`, and the morning brief one to `{APP_BASE_URL}/brief`; unset, no notification carries a view link |
 | `AGENTPULSE_BASE_URL` | required | AgentPulse API |
 | `AGENTPULSE_API_KEY` | required | Sent to AgentPulse as a bearer token |
 | `AGENTPULSE_WEBHOOK_SECRET` | required | HMAC key for AgentPulse callbacks |
@@ -203,6 +203,7 @@ All settings are environment variables. In development, a `.env` file is also re
 | `OUTBOX_POLL_INTERVAL` | `200ms` | Relay poll period |
 | `OUTBOX_MAX_ATTEMPTS` | `10` | Attempts before a dead letter |
 | `OUTBOX_LEASE` | `60s` | A claimed row not settled in this time is retried |
+| `OUTBOX_RETRY_MAX_DELAY` | `60s` | Ceiling of the random backoff between attempts to send a row. The conformance target lowers it |
 | `SCHEDULER_INTERVAL` | `1m` | Deadline scan period |
 | `RATE_LIMIT_RPS`, `RATE_LIMIT_BURST` | `20`, `40` | Per-user request rate, per replica |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | Export traces over OTLP/HTTP; other `OTEL_*` variables apply |

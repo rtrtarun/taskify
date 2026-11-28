@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The task to reassign."
+    },
+    "assignee_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "The user ID of the new assignee."
+    },
+    "reasoning": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000,
+      "description": "Why this person, in one or two sentences."
+    }
+  },
+  "required": [
+    "task_id",
+    "assignee_id",
+    "reasoning"
+  ],
+  "additionalProperties": false
+}

@@ -739,3 +739,20 @@ func TestSchedulerRemindersViewTheApp(t *testing.T) {
 		t.Error("no overdue reminder was written")
 	}
 }
+
+// TestFullJitterUpTo: OUTBOX_RETRY_MAX_DELAY lowers the ceiling, and a
+// ceiling of zero falls back to a minute.
+func TestFullJitterUpTo(t *testing.T) {
+	short := FullJitterUpTo(100 * time.Millisecond)
+	for attempts := 0; attempts < 40; attempts++ {
+		if d := short(attempts); d < 0 || d > 100*time.Millisecond {
+			t.Fatalf("FullJitterUpTo(100ms)(%d) = %v", attempts, d)
+		}
+	}
+	fallback := FullJitterUpTo(0)
+	for i := 0; i < 200; i++ {
+		if d := fallback(20); d < 0 || d > time.Minute {
+			t.Fatalf("FullJitterUpTo(0)(20) = %v", d)
+		}
+	}
+}

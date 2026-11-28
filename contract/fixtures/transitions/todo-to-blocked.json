@@ -1,0 +1,8 @@
+{
+  "description": "todo to blocked is allowed (contract/RULES.md R4.1): the status changes and the version goes up by one.",
+  "rules": ["R3.1", "R4.1", "R4.2"],
+  "steps": [
+    {"name": "create", "request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Matrix", "assignee_id": "usr_carol"}}, "expect": {"status": 201, "body": {"status": "todo", "version": 1}}, "capture": {"task": "id"}},
+    {"name": "todo to blocked", "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "headers": {"If-Match": "\"1\""}, "body": {"status": "blocked"}}, "expect": {"status": 200, "headers": {"ETag": "\"2\""}, "body": {"status": "blocked", "version": 2, "blocked_reason": "manual", "completed_at": null, "archived_at": null}}, "outbox": {"rows": [{"event_type": "task.blocked", "recipient": "usr_carol", "idempotency_key": "taskify:{{tenant}}:{{task}}:task.blocked:v2"}]}}
+  ]
+}

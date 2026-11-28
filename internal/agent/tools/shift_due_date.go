@@ -34,21 +34,6 @@ func (ShiftDueDate) Description() string {
 	return "Propose a new due date for a task, with your reasoning. A person approves it first."
 }
 
-func (ShiftDueDate) Parameters() json.RawMessage {
-	return json.RawMessage(`{
-		"type": "object",
-		"properties": {
-			"task_id": {"type": "string", "format": "uuid", "description": "The task to reschedule."},
-			"due_at": {"type": "string", "format": "date-time",
-				"description": "The new due date and time, in RFC 3339 with a time zone."},
-			"reasoning": {"type": "string", "minLength": 1, "maxLength": 1000,
-				"description": "Why this date, in one or two sentences."}
-		},
-		"required": ["task_id", "due_at", "reasoning"],
-		"additionalProperties": false
-	}`)
-}
-
 func (ShiftDueDate) Tier(json.RawMessage) domain.SafetyTier { return domain.Tier2 }
 
 // Execute applies an approved due date.

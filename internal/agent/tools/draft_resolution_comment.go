@@ -50,21 +50,6 @@ func (DraftResolutionComment) Description() string {
 		"who can clear it, and the next concrete step. Call it once per task."
 }
 
-func (DraftResolutionComment) Parameters() json.RawMessage {
-	return json.RawMessage(`{
-		"type": "object",
-		"properties": {
-			"task_id": {"type": "string", "format": "uuid", "description": "The task to comment on."},
-			"body": {"type": "string", "minLength": 1, "maxLength": 4000,
-				"description": "The comment, in plain text or Markdown, written for the people on the task."},
-			"reasoning": {"type": "string", "minLength": 1, "maxLength": 1000,
-				"description": "Why this brief, in one or two sentences."}
-		},
-		"required": ["task_id", "body", "reasoning"],
-		"additionalProperties": false
-	}`)
-}
-
 func (DraftResolutionComment) Tier(json.RawMessage) domain.SafetyTier { return domain.Tier1 }
 
 // Execute adds the comment as the agent.

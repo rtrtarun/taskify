@@ -1,0 +1,27 @@
+{
+  "type": "object",
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The task to reschedule."
+    },
+    "due_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "The new due date and time, in RFC 3339 with a time zone."
+    },
+    "reasoning": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000,
+      "description": "Why this date, in one or two sentences."
+    }
+  },
+  "required": [
+    "task_id",
+    "due_at",
+    "reasoning"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,15 @@
+{
+  "description": "A person's block notifies at once: bypassDigest, a priorityHint of at least high, and blockedReason manual.",
+  "rules": ["R4.5", "R5.3"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Stuck", "priority": "p4_low", "assignee_id": "usr_carol", "watcher_ids": ["usr_dave"]}},
+      "expect": {"status": 201}, "capture": {"task": "id"}},
+    {"request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "body": {"version": 1, "status": "blocked"}},
+      "expect": {"status": 200, "body": {"blocked_reason": "manual"}},
+      "agentpulse": {"notifications": [
+        {"eventType": "task.blocked", "userId": "usr_carol", "priorityHint": "high", "channels": ["slack", "email", "in_app"],
+          "idempotencyKey": "taskify:{{tenant}}:{{task}}:task.blocked:v2:usr_carol",
+          "payload": {"blockedReason": "manual", "bypassDigest": true, "previousStatus": "todo", "status": "blocked"}},
+        {"eventType": "task.blocked", "userId": "usr_dave", "priorityHint": "high", "payload": {"blockedReason": "manual"}}]}}
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "description": "A stale version is 409 version_conflict with the current version, and changes nothing.",
+  "rules": ["R3.4"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Contended", "assignee_id": "usr_carol"}},
+      "expect": {"status": 201}, "capture": {"task": "id"}},
+    {"name": "first edit", "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "headers": {"If-Match": "\"1\""}, "body": {"title": "First"}},
+      "expect": {"status": 200, "body": {"version": 2}}},
+    {"name": "second edit from the same version", "as": {"user": "usr_carol"},
+      "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "headers": {"If-Match": "\"1\""}, "body": {"title": "Second"}},
+      "expect": {"status": 409, "body": {"error": {"code": "version_conflict", "message": "$nonempty", "details": {"current_version": 2}}}},
+      "outbox": {"rows": []}},
+    {"name": "a stale complete", "request": {"method": "POST", "path": "/api/v1/tasks/{{task}}/complete", "headers": {"If-Match": "\"1\""}},
+      "expect": {"status": 409, "error_code": "version_conflict"}},
+    {"name": "unchanged", "request": {"method": "GET", "path": "/api/v1/tasks/{{task}}"},
+      "expect": {"status": 200, "body": {"title": "First", "status": "todo", "version": 2}}}
+  ]
+}

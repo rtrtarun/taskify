@@ -1,0 +1,19 @@
+{
+  "description": "A patch changes only the fields it names; null clears a nullable field and is refused for a required one; times come back in UTC.",
+  "rules": ["R1.1", "R3.5"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Clear me",
+      "assignee_id": "usr_carol", "watcher_ids": ["usr_dave"], "labels": ["a"], "due_at": "{{in_48h}}"}},
+      "expect": {"status": 201}, "capture": {"task": "id"}},
+    {"name": "clear", "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "headers": {"If-Match": "1"},
+      "body": {"assignee_id": null, "due_at": null, "labels": null, "watcher_ids": null}},
+      "expect": {"status": 200, "body": {"title": "Clear me", "assignee_id": null, "due_at": null, "labels": [], "watcher_ids": [], "version": 2}}},
+    {"name": "null title", "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "headers": {"If-Match": "2"}, "body": {"title": null}},
+      "expect": {"status": 422, "error_code": "validation_failed"}},
+    {"name": "an offset is stored as UTC", "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "headers": {"If-Match": "2"},
+      "body": {"remind_at": "2030-01-02T12:00:00+02:00"}},
+      "expect": {"status": 200, "body": {"remind_at": "2030-01-02T10:00:00Z", "version": 3}}},
+    {"name": "a change that changes nothing", "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "headers": {"If-Match": "3"}, "body": {"title": "Clear me"}},
+      "expect": {"status": 200, "headers": {"ETag": "\"3\""}, "body": {"version": 3}}, "outbox": {"rows": []}}
+  ]
+}

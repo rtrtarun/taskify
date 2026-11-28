@@ -1,0 +1,33 @@
+{
+  "description": "A person asks for a decomposition: the scripted plan is applied at once (Tier 1), the dependent subtask waits blocked by its sibling, and completing the sibling unblocks it with task.unblocked.",
+  "rules": ["R4.5", "R5.6", "R7.1", "R7.6"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Launch the store", "assignee_id": "usr_carol"}},
+      "expect": {"status": 201}, "capture": {"task": "id"}},
+    {"as": "admin", "request": {"method": "PATCH", "path": "/api/v1/workspaces/{{workspace}}/settings", "body": {
+      "agent_settings": {"agents_enabled": true, "require_hitl_for_all": false, "disabled_agents": ["triage", "blocker_investigator", "digest", "learning"]}}},
+      "expect": {"status": 200}},
+    {"name": "ask", "mock": {"llm": [{"match": "{{task}}", "answers": [
+        {"tool_calls": [{"name": "CreateSubtaskDAG", "arguments": {"parent_task_id": "{{task}}", "reasoning": "Two steps.", "subtasks": [
+          {"title": "Build the catalogue"}, {"title": "Open the doors", "depends_on": ["Build the catalogue"]}]}}]},
+        {"content": "Split into two subtasks."}]}]},
+      "request": {"method": "POST", "path": "/api/v1/tasks/{{task}}/decompose"},
+      "expect": {"status": 202, "body": {"id": "$uuid", "task_id": "{{task}}", "agent_type": "decomposer", "status": {"$one_of": ["pending", "running"]}}},
+      "capture": {"job": "id"}},
+    {"name": "asking again returns the open job", "request": {"method": "POST", "path": "/api/v1/tasks/{{task}}/decompose"},
+      "expect": {"status": 202, "body": {"id": {"$one_of": ["{{job}}", "$uuid"]}}}},
+    {"name": "the subtasks", "eventually": {"timeout_seconds": 30}, "request": {"method": "GET", "path": "/api/v1/tasks/{{task}}/subtasks"},
+      "expect": {"status": 200, "body": {"subtasks": [
+        {"task": {"title": "Build the catalogue", "status": "todo", "assignee_id": "usr_carol", "creator_id": "usr_bob"}, "depends_on": []},
+        {"task": {"title": "Open the doors", "status": "blocked", "blocked_reason": "dependency"}, "depends_on": {"$length": 1}}]}},
+      "capture": {"first": "subtasks.0.task.id", "second": "subtasks.1.task.id"}},
+    {"name": "the job completed", "eventually": {"timeout_seconds": 15}, "request": {"method": "GET", "path": "/api/v1/agent-jobs/{{job}}"},
+      "expect": {"status": 200, "body": {"status": "completed"}}},
+    {"name": "finish the first", "request": {"method": "POST", "path": "/api/v1/tasks/{{first}}/complete"},
+      "expect": {"status": 200, "body": {"status": "completed", "version": 2}},
+      "outbox": {"rows": [{"event_type": "task.unblocked", "recipient": "usr_carol",
+        "idempotency_key": "taskify:{{tenant}}:{{second}}:task.unblocked:v2"}]}},
+    {"name": "the second is ready", "request": {"method": "GET", "path": "/api/v1/tasks/{{second}}"},
+      "expect": {"status": 200, "body": {"status": "todo", "blocked_reason": null}}}
+  ]
+}

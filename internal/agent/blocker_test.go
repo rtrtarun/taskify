@@ -299,9 +299,9 @@ func TestStaleTaskWithOpenBlockerIsEscalatedWithoutUnblock(t *testing.T) {
 	if len(got) != 1 || !ok {
 		t.Fatalf("escalations = %v", got)
 	}
-	urls, _ := carol.Payload["actionUrls"].(map[string]any)
-	if urls[domain.ActionUnblock] != nil || carol.Payload["actionLabels"] != nil || urls["view"] == nil {
-		t.Errorf("an in-progress task offered unblock: %+v", carol.Payload)
+	// Without APP_BASE_URL it offers nothing at all, not even view (D50).
+	if _, ok := carol.Payload["actionUrls"]; ok || carol.Payload["actionLabels"] != nil {
+		t.Errorf("an in-progress task without the app offered actions: %+v", carol.Payload)
 	}
 }
 

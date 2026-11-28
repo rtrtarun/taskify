@@ -28,8 +28,14 @@ func TestApprovalRequestedEvent(t *testing.T) {
 	}
 	urls := n.Payload["actionUrls"].(map[string]string)
 	base := "https://taskify.test/api/v1/agent-jobs/" + job.ID.String()
-	if urls["approve"] != base+"/apply" || urls["reject"] != base+"/dismiss" || urls["view"] != base || len(urls) != 3 {
+	// D50: without APP_BASE_URL there is no page to view, and the job's API
+	// URL needs a token a click cannot carry: approve and reject only.
+	if urls["approve"] != base+"/apply" || urls["reject"] != base+"/dismiss" || len(urls) != 2 {
 		t.Errorf("actionUrls = %v", urls)
+	}
+	app := e.Notifications(Links{API: "https://taskify.test", App: "https://app.test"})[0].Payload["actionUrls"].(map[string]string)
+	if app["view"] != "https://app.test/tasks/"+task.ID.String() || app["approve"] != base+"/apply" || len(app) != 3 {
+		t.Errorf("actionUrls with the app = %v", app)
 	}
 	if n.Payload["jobId"] != job.ID.String() || n.Payload["agentType"] != "triage" {
 		t.Errorf("payload = %v", n.Payload)

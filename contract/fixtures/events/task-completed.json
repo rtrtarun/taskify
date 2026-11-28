@@ -1,0 +1,12 @@
+{
+  "description": "Completion notifies the creator and watchers, with no actions: the task is done.",
+  "rules": ["R5.1", "R5.2", "R5.4"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Deliver", "assignee_id": "usr_carol"}},
+      "expect": {"status": 201}, "capture": {"task": "id"}},
+    {"as": {"user": "usr_carol"}, "request": {"method": "POST", "path": "/api/v1/tasks/{{task}}/complete"},
+      "expect": {"status": 200, "body": {"status": "completed"}},
+      "outbox": {"rows": [{"event_type": "task.completed", "recipient": "usr_bob", "idempotency_key": "taskify:{{tenant}}:{{task}}:task.completed:v2"}]},
+      "agentpulse": {"notifications": [{"eventType": "task.completed", "userId": "usr_bob", "payload": {"actionUrls": "$absent", "previousStatus": "todo"}}]}}
+  ]
+}

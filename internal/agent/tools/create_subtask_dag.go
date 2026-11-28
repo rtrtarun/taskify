@@ -62,29 +62,6 @@ func (CreateSubtaskDAG) Description() string {
 		"All subtasks are created together, or none are."
 }
 
-func (CreateSubtaskDAG) Parameters() json.RawMessage {
-	return json.RawMessage(`{
-		"type": "object",
-		"properties": {
-			"parent_task_id": {"type": "string", "format": "uuid", "description": "The task being split."},
-			"subtasks": {"type": "array", "minItems": 1, "items": {
-				"type": "object",
-				"properties": {
-					"title": {"type": "string", "minLength": 1, "maxLength": 255},
-					"description": {"type": "string", "maxLength": 4000},
-					"depends_on": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 255},
-						"uniqueItems": true, "description": "Titles of sibling subtasks that must be finished first."}
-				},
-				"required": ["title"],
-				"additionalProperties": false
-			}},
-			"reasoning": {"type": "string", "maxLength": 1000}
-		},
-		"required": ["parent_task_id", "subtasks"],
-		"additionalProperties": false
-	}`)
-}
-
 func (CreateSubtaskDAG) Tier(json.RawMessage) domain.SafetyTier { return domain.Tier1 }
 
 func parseDAG(args json.RawMessage) (CreateSubtaskDAGArgs, error) {

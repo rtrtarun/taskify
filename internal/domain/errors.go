@@ -21,6 +21,9 @@ var (
 	ErrAlreadyExists = errors.New("already exists")
 	// ErrForbidden means the caller is known but may not take this action.
 	ErrForbidden = errors.New("forbidden")
+	// ErrNotDeadLetter means an outbox row was asked to be replayed while it
+	// is not in dead letter: only dead_letter -> pending is a manual move.
+	ErrNotDeadLetter = errors.New("only a dead-letter row can be replayed")
 )
 
 func invalid(format string, args ...any) error {

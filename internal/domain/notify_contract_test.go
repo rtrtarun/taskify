@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/rtrtarun/taskify/contract"
 	"github.com/rtrtarun/taskify/internal/domain"
 	"github.com/rtrtarun/taskify/tests/mockagentpulse"
 )
@@ -142,7 +143,10 @@ func checkEveryNotification(t *testing.T, links domain.Links) {
 	addEvents(domain.NewEscalationEvents(stuck, &investigation, []*domain.Task{owner}, t0)...)
 	addEvents(domain.NewEscalationEvents(stale, &investigation, []*domain.Task{owner}, t0)...)
 	brief := domain.MorningBrief{TenantID: tenant, JobID: uuid.New(), Date: "2026-11-22", UserID: bob, Text: "Two things today.",
-		TopItems: []domain.BriefTask{{ID: created.ID, Title: "Created", WorkspaceID: "ws_core", Status: domain.StatusTodo}}}
+		TopItems: []domain.BriefTask{{ID: created.ID, Title: "Created", WorkspaceID: "ws_core", Status: domain.StatusTodo,
+			Priority: domain.PriorityMedium, DueAt: &due}},
+		PendingApprovals: []domain.BriefApproval{{JobID: job.ID, AgentType: domain.AgentTriage, TaskID: proposed.ID,
+			TaskTitle: "Proposed", Tools: []string{"UpdateTaskAttributes"}, AskedAt: t0}}, PendingApprovalsTotal: 1}
 	notes = append(notes, brief.Notification(links))
 
 	mock := mockagentpulse.New()
@@ -155,6 +159,10 @@ func checkEveryNotification(t *testing.T, links domain.Links) {
 		raw, err := json.Marshal(n)
 		if err != nil {
 			t.Fatal(err)
+		}
+		// M12-02: the payload matches contract/events/{eventType}.schema.json.
+		if err := contract.ValidateEvent(n.EventType, raw); err != nil {
+			t.Errorf("%s to %s: %v", n.EventType, n.UserID, err)
 		}
 		resp, err := http.Post(srv.URL+"/v1/notify", "application/json", bytes.NewReader(raw))
 		if err != nil {
@@ -177,29 +185,23 @@ func checkEveryNotification(t *testing.T, links domain.Links) {
 			t.Errorf("task.created actionUrls = %v", urls)
 		}
 		// AP-10: with the app, every notification about a task views it
-		// there, and the brief views the brief page. Without it, only
-		// approvals, escalations, and the brief carry view, to the API.
+		// there, and the brief views the brief page. Without it, no
+		// notification carries view (D50).
 		taskID, _ := n.Payload["taskId"].(string)
 		view, hasView := urls[domain.ActionView]
 		switch {
+		case links.App == "":
+			if hasView {
+				t.Errorf("%s carries view %q without APP_BASE_URL", n.EventType, view)
+			}
 		case n.EventType == domain.EventDigestMorningBrief:
-			if view != links.BriefView() || len(urls) != 1 {
+			if view != links.App+"/brief" || len(urls) != 1 {
 				t.Errorf("brief actionUrls = %v", urls)
 			}
-		case links.App != "":
+		default:
 			if view != links.App+"/tasks/"+taskID {
 				t.Errorf("%s to %s: view = %q, want the task's page", n.EventType, n.UserID, view)
 			}
-		case n.EventType == domain.EventAgentApprovalRequested:
-			if view != baseURL+"/api/v1/agent-jobs/"+n.Payload["jobId"].(string) {
-				t.Errorf("approval view = %q", view)
-			}
-		case n.EventType == domain.EventTaskEscalated:
-			if view != baseURL+"/api/v1/tasks/"+taskID {
-				t.Errorf("escalation view = %q", view)
-			}
-		case hasView:
-			t.Errorf("%s carries view %q without APP_BASE_URL", n.EventType, view)
 		}
 	}
 	for _, typ := range []string{
@@ -282,7 +284,7 @@ func TestViewLinksOpenTheApp(t *testing.T) {
 	if got := (domain.Links{API: "https://api", App: "https://app"}).BriefView(); got != "https://app/brief" {
 		t.Errorf("BriefView = %q", got)
 	}
-	if got := (domain.Links{API: "https://api"}).BriefView(); got != "https://api/api/v1/me/brief" {
+	if got := (domain.Links{API: "https://api"}).BriefView(); got != "" {
 		t.Errorf("BriefView without the app = %q", got)
 	}
 	if got := (domain.Links{API: "https://api"}).TaskView(task.ID); got != "" {

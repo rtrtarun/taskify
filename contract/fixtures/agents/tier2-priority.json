@@ -1,0 +1,27 @@
+{
+  "description": "A scripted Tier 2 call (a priority) is stored as a proposal: the job waits for approval, the assignee is asked, and the task does not change.",
+  "rules": ["R7.1", "R5.6"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Payments are down", "assignee_id": "usr_carol"}},
+      "expect": {"status": 201}, "capture": {"task": "id"}},
+    {"name": "agents on, triage only, no blanket approval", "as": "admin", "request": {"method": "PATCH", "path": "/api/v1/workspaces/{{workspace}}/settings", "body": {
+      "agent_settings": {"agents_enabled": true, "require_hitl_for_all": false, "disabled_agents": ["decomposer", "blocker_investigator", "digest", "learning"]}}},
+      "expect": {"status": 200}},
+    {"name": "triage proposes a priority", "mock": {"llm": [{"match": "{{task}}", "answers": [
+        {"tool_calls": [{"name": "UpdateTaskAttributes", "arguments": {"task_id": "{{task}}", "priority": "p1_critical", "reasoning": "Payments are down."}}]},
+        {"content": "Proposed a priority."}]}]},
+      "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "body": {"version": 1, "description": "Since 09:00"}},
+      "expect": {"status": 200, "body": {"version": 2}}},
+    {"name": "the job waits", "eventually": {"timeout_seconds": 30}, "request": {"method": "GET", "path": "/api/v1/agent-jobs?task_id={{task}}&status=awaiting_approval"},
+      "expect": {"status": 200, "body": {"agent_jobs": [{"agent_type": "triage", "status": "awaiting_approval", "base_task_version": 2,
+        "proposed_actions": [{"tool": "UpdateTaskAttributes", "arguments": {"priority": "p1_critical"}}]}]}},
+      "capture": {"job": "agent_jobs.0.id"}},
+    {"name": "the assignee is asked", "eventually": {"timeout_seconds": 20}, "as": "admin", "request": {"method": "GET", "path": "/api/v1/admin/outbox?status=dispatched"},
+      "expect": {"status": 200, "body": {"entries": {"$contains": [{"event_type": "agent.approval_requested",
+        "idempotency_key": "taskify:{{tenant}}:{{task}}:agent.approval_requested:{{job}}",
+        "payload": {"userId": "usr_carol", "payload": {"jobId": "{{job}}", "agentType": "triage", "proposedTools": ["UpdateTaskAttributes"],
+          "actionUrls": {"approve": "$nonempty", "reject": "$nonempty", "view": "$absent"}}}}]}}}},
+    {"name": "nothing changed yet", "request": {"method": "GET", "path": "/api/v1/tasks/{{task}}"},
+      "expect": {"status": 200, "body": {"priority": "p3_medium", "version": 2}}}
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "description": "The scheduler reminds the assignee 24 hours before the due time, with the due time in the key, and once a day while overdue.",
+  "rules": ["R5.6"],
+  "steps": [
+    {"name": "due in two hours", "request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Soon", "assignee_id": "usr_carol", "due_at": "{{in_2h}}"}},
+      "expect": {"status": 201}, "capture": {"soon": "id"},
+      "outbox": {"timeout_seconds": 30, "rows": [
+        {"event_type": "task.created", "recipient": "usr_carol"},
+        {"event_type": "task.due_soon", "recipient": "usr_carol", "idempotency_key": "taskify:{{tenant}}:{{soon}}:due_soon_24h:{{in_2h_unix}}"}]}},
+    {"name": "due an hour ago", "request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Late", "assignee_id": "usr_carol", "due_at": "{{ago_1h}}"}},
+      "expect": {"status": 201}, "capture": {"late": "id"},
+      "outbox": {"timeout_seconds": 30, "includes": true, "rows": [
+        {"event_type": "task.overdue", "recipient": "usr_carol", "idempotency_key": "taskify:{{tenant}}:{{late}}:overdue:{{now_date}}"}]}}
+  ]
+}

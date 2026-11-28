@@ -1,0 +1,21 @@
+{
+  "description": "Snooze moves the reminder and forwards snoozed; unblock moves a blocked task to in_progress; bad callbacks are refused.",
+  "rules": ["R8.4"],
+  "steps": [
+    {"request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Later", "assignee_id": "usr_carol"}},
+      "expect": {"status": 201}, "capture": {"task": "id"}},
+    {"name": "snooze", "webhook": {"body": {"action": "snooze", "tenantId": "{{tenant}}", "userId": "usr_carol", "taskId": "{{task}}", "duration": "2h"}},
+      "expect": {"status": 200, "body": {"status": "applied"}},
+      "agentpulse": {"feedback": [{"signal": "snoozed", "snoozeDuration": "2h", "userId": "usr_carol"}]}},
+    {"request": {"method": "GET", "path": "/api/v1/tasks/{{task}}"}, "expect": {"status": 200, "body": {"remind_at": "$timestamp"}}},
+    {"request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "body": {"version": 2, "status": "blocked"}}, "expect": {"status": 200}},
+    {"name": "unblock", "webhook": {"body": {"action": "unblock", "tenantId": "{{tenant}}", "userId": "usr_dave", "taskId": "{{task}}"}},
+      "expect": {"status": 200, "body": {"status": "applied"}}},
+    {"request": {"method": "GET", "path": "/api/v1/tasks/{{task}}"}, "expect": {"status": 200, "body": {"status": "in_progress", "blocked_reason": null}}},
+    {"name": "an unknown action", "webhook": {"body": {"action": "explode", "tenantId": "{{tenant}}", "userId": "usr_carol", "taskId": "{{task}}"}},
+      "expect": {"status": 422, "error_code": "validation_failed"}},
+    {"name": "another tenant's task", "webhook": {"body": {"action": "complete", "tenantId": "{{other_tenant}}", "userId": "usr_carol", "taskId": "{{task}}"}},
+      "expect": {"status": 404, "error_code": "not_found"}},
+    {"name": "not JSON", "webhook": {"body": "{nope"}, "expect": {"status": 400, "error_code": "invalid_request"}}
+  ]
+}

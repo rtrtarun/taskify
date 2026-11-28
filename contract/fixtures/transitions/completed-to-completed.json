@@ -1,0 +1,8 @@
+{
+  "description": "Moving a completed task to completed is not a transition: the task comes back unchanged.",
+  "rules": ["R3.1", "R4.1", "R4.2"],
+  "steps": [
+    {"name": "create", "request": {"method": "POST", "path": "/api/v1/tasks", "body": {"workspace_id": "{{workspace}}", "title": "Matrix", "assignee_id": "usr_carol"}}, "expect": {"status": 201, "body": {"status": "todo", "version": 1}}, "capture": {"task": "id"}}, {"name": "move to completed", "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "body": {"version": 1, "status": "completed"}}, "expect": {"status": 200, "body": {"status": "completed", "version": 2}}},
+    {"name": "completed to completed", "request": {"method": "PATCH", "path": "/api/v1/tasks/{{task}}", "headers": {"If-Match": "\"2\""}, "body": {"status": "completed"}}, "expect": {"status": 200, "headers": {"ETag": "\"2\""}, "body": {"status": "completed", "version": 2}}, "outbox": {"rows": []}}
+  ]
+}
