@@ -295,7 +295,7 @@ func (s *session) check(resp any, err error, want ...int) error {
 		return transportFailure(err, s.server)
 	}
 	v := reflect.ValueOf(resp).Elem()
-	status := int(v.FieldByName("HTTPResponse").Interface().(*http.Response).StatusCode)
+	status := v.FieldByName("HTTPResponse").Interface().(*http.Response).StatusCode
 	for _, w := range want {
 		if status == w {
 			return nil

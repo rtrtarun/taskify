@@ -13,6 +13,7 @@ package conformance
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -503,7 +504,7 @@ func matchSet(patterns, items []any, exact bool) error {
 	used := make([]bool, len(items))
 	for i, p := range patterns {
 		found := false
-		var last error
+		last := errors.New("no unpaired item left")
 		for j, item := range items {
 			if used[j] {
 				continue
@@ -516,7 +517,7 @@ func matchSet(patterns, items []any, exact bool) error {
 			}
 		}
 		if !found {
-			return fmt.Errorf("nothing matches pattern %d %v (closest mismatch: %v); have %v", i, show(p), last, show(items))
+			return fmt.Errorf("nothing matches pattern %d %v (closest mismatch: %w); have %v", i, show(p), last, show(items))
 		}
 	}
 	if exact && len(items) != len(patterns) {
