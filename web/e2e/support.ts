@@ -1,6 +1,6 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { expect, type Page } from "@playwright/test";
-import { API_URL, JWT_SECRET, MOCK_URL } from "./ports";
+import { API_URL, JWT_SECRET, LLM_URL, MOCK_URL } from "./ports";
 
 const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
 
@@ -82,3 +82,51 @@ export const mock = {
     await fetch(`${MOCK_URL}/_mock/reset`, { method: "POST" });
   },
 };
+
+/** Scripts the mock model: it answers requests that mention `match` (a task ID) with these answers, in order. */
+export async function scriptLLM(match: string, answers: object[]): Promise<void> {
+  const res = await fetch(`${LLM_URL}/_mock/scripts`, { method: "POST", body: JSON.stringify([{ match, answers }]) });
+  if (!res.ok) throw new Error(`script the model: ${res.status}`);
+}
+
+/**
+ * Makes the tenant's workspace use agents with approval for every change, and
+ * only the agent named, so nothing else calls the model. Call it after
+ * creating the task a test is about, which would otherwise wake the agent.
+ */
+export async function enableAgent(t: TestTenant, agent: string): Promise<void> {
+  const all = ["triage", "decomposer", "blocker_investigator", "digest", "learning"];
+  await call(t.admin, "PATCH", `/api/v1/workspaces/${t.workspace}/settings`, {
+    agent_settings: { agents_enabled: true, require_hitl_for_all: true, disabled_agents: all.filter((a) => a !== agent) },
+  });
+}
+
+export interface ApiJob {
+  id: string;
+  status: string;
+  agent_type: string;
+  base_task_version: number | null;
+}
+
+/**
+ * Has the triage agent propose a priority for a task: the model is scripted
+ * to call UpdateTaskAttributes, the task is edited to wake the agent, and the
+ * job waits for approval. Returns the job and the task's version at that time.
+ */
+export async function proposePriority(t: TestTenant, title: string, priority: string, reasoning: string): Promise<{ task: ApiTask; job: ApiJob }> {
+  const task = await createTask(t, title); // before agents are on, so creating it wakes none
+  await enableAgent(t, "triage");
+  await scriptLLM(task.id, [
+    { tool_calls: [{ name: "UpdateTaskAttributes", arguments: { task_id: task.id, priority, reasoning } }] },
+    { content: "Proposed a priority." },
+  ]);
+  await call(t.member, "PATCH", `/api/v1/tasks/${task.id}`, { description: "Please look at this" }, { "If-Match": `"${task.version}"` });
+  let job: ApiJob | undefined;
+  for (let i = 0; i < 100 && !job; i++) {
+    const list = await call<{ agent_jobs: ApiJob[] }>(t.member, "GET", `/api/v1/agent-jobs?task_id=${task.id}&status=awaiting_approval`);
+    job = list.agent_jobs[0];
+    if (!job) await new Promise((r) => setTimeout(r, 100));
+  }
+  if (!job) throw new Error("the agent never proposed anything");
+  return { task, job };
+}

@@ -27,6 +27,13 @@ info:
       `error.details.current_version`.
     - Every response carries `X-Request-ID`, echoing a well-formed incoming
       one or a new UUID.
+    - Every response carries `X-Taskify-API-Version`, the `info.version` of
+      this document: three numbers, `major.minor.patch`. A change that only
+      adds (an endpoint, a field, an optional parameter) raises the minor
+      number; a fix to this document raises the patch; a change that breaks a
+      client raises the major. A client generated from an older version still
+      works against a newer server of the same major version, and may tell
+      its user that a newer one exists.
     - A path or method not listed here answers `404 not_found` or
       `405 invalid_request`, with the `Error` body.
     - The task routes are also served without the `/api/v1` prefix (`/tasks`,
@@ -227,17 +234,33 @@ paths:
       tags: [tasks]
       operationId: getTask
       summary: Get a task with its recent comments
-      description: An archived task is still returned, so it can be restored. Another tenant's task is `404`.
+      description: |
+        An archived task is still returned, so it can be restored. Another
+        tenant's task is `404`.
+
+        The `ETag` names the whole detail, not only the version: it is the
+        version, a dot, and a hash of the body (`"3.9f2c4a1b7d03"`), so a new
+        comment or a moved reminder changes it. Send it back as
+        `If-None-Match` to poll cheaply: an unchanged task answers `304`
+        with no body. It also works as `If-Match`, which reads the version
+        before the dot.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
       responses:
         "200":
           description: The task.
           headers:
             ETag:
-              $ref: "#/components/headers/ETag"
+              $ref: "#/components/headers/DetailETag"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/TaskDetail"
+        "304":
+          description: The task is unchanged since the `ETag` in `If-None-Match`. No body.
+          headers:
+            ETag:
+              $ref: "#/components/headers/DetailETag"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -844,6 +867,38 @@ paths:
           $ref: "#/components/responses/InternalError"
 
   /api/v1/workspaces:
+    get:
+      tags: [workspaces]
+      operationId: listWorkspaces
+      summary: The caller's tenant's workspaces
+      description: |
+        Any member may list the workspaces of their own tenant, in ID order,
+        a page at a time; another tenant's workspaces are never listed. The
+        quick-add form reads this to offer a workspace picker.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: One page. Its `ETag` is a hash of the body, so a repeated poll can answer `304`.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ListETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceList"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
     post:
       tags: [workspaces, admin]
       operationId: createWorkspace
@@ -1356,6 +1411,13 @@ components:
   headers:
     ETag:
       description: The task's version, as a strong validator, such as `"3"`.
+      schema:
+        type: string
+    DetailETag:
+      description: |
+        The validator of a task detail: the task's version, a dot, and a hash
+        of the body, such as `"3.9f2c4a1b7d03"`. Send it back as
+        `If-None-Match`.
       schema:
         type: string
     ListETag:
@@ -2055,6 +2117,17 @@ components:
           $ref: "#/components/schemas/Timestamp"
         updated_at:
           $ref: "#/components/schemas/Timestamp"
+    WorkspaceList:
+      type: object
+      required: [workspaces, next_cursor]
+      properties:
+        workspaces:
+          type: array
+          items:
+            $ref: "#/components/schemas/Workspace"
+        next_cursor:
+          type: string
+          nullable: true
     WorkspaceCreate:
       type: object
       required: [id, name]

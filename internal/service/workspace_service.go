@@ -56,6 +56,28 @@ func (s *WorkspaceService) Get(ctx context.Context, tenantID, id string) (domain
 	return s.workspaces.Get(ctx, tenantID, id)
 }
 
+// WorkspacePage is one page of a tenant's workspaces, ordered by ID. Next is
+// the ID to pass as after for the next page, or empty on the last page.
+type WorkspacePage struct {
+	Workspaces []domain.Workspace
+	Next       string
+}
+
+// List returns a page of the tenant's workspaces.
+func (s *WorkspaceService) List(ctx context.Context, tenantID, after string, limit int) (WorkspacePage, error) {
+	limit = pageLimit(limit)
+	rows, err := s.workspaces.List(ctx, tenantID, after, limit+1)
+	if err != nil {
+		return WorkspacePage{}, err
+	}
+	page := WorkspacePage{Workspaces: rows}
+	if len(rows) > limit {
+		page.Workspaces = rows[:limit]
+		page.Next = rows[limit-1].ID
+	}
+	return page, nil
+}
+
 // Rename changes a workspace's name.
 func (s *WorkspaceService) Rename(ctx context.Context, tenantID, id, name string) (domain.Workspace, error) {
 	return s.UpdateSettings(ctx, tenantID, id, WorkspaceSettingsPatch{Name: &name})

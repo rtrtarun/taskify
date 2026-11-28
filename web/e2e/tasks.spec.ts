@@ -6,7 +6,7 @@ test("create a task, edit it, comment, and complete it", async ({ page }) => {
   await signIn(page, t.member);
 
   await page.getByLabel("Title").fill("Ship the release");
-  await page.getByLabel("Workspace").fill(t.workspace);
+  await page.getByLabel("Workspace").selectOption(t.workspace);
   await page.getByRole("button", { name: "Add task" }).click();
   await page.getByRole("link", { name: "Ship the release" }).click();
   await expect(page.getByRole("heading", { name: "Ship the release" })).toBeVisible();

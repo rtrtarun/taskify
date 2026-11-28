@@ -112,7 +112,15 @@ export interface paths {
         };
         /**
          * Get a task with its recent comments
-         * @description An archived task is still returned, so it can be restored. Another tenant's task is `404`.
+         * @description An archived task is still returned, so it can be restored. Another
+         *     tenant's task is `404`.
+         *
+         *     The `ETag` names the whole detail, not only the version: it is the
+         *     version, a dot, and a hash of the body (`"3.9f2c4a1b7d03"`), so a new
+         *     comment or a moved reminder changes it. Send it back as
+         *     `If-None-Match` to poll cheaply: an unchanged task answers `304`
+         *     with no body. It also works as `If-Match`, which reads the version
+         *     before the dot.
          */
         get: operations["getTask"];
         /**
@@ -497,7 +505,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * The caller's tenant's workspaces
+         * @description Any member may list the workspaces of their own tenant, in ID order,
+         *     a page at a time; another tenant's workspaces are never listed. The
+         *     quick-add form reads this to offer a workspace picker.
+         */
+        get: operations["listWorkspaces"];
         put?: never;
         /**
          * Create a workspace (admin)
@@ -1020,6 +1034,10 @@ export interface components {
             created_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
         };
+        WorkspaceList: {
+            workspaces: components["schemas"]["Workspace"][];
+            next_cursor: string | null;
+        };
         WorkspaceCreate: {
             id: string;
             name: string;
@@ -1418,6 +1436,12 @@ export interface components {
         /** @description The task's version, as a strong validator, such as `"3"`. */
         ETag: string;
         /**
+         * @description The validator of a task detail: the task's version, a dot, and a hash
+         *     of the body, such as `"3.9f2c4a1b7d03"`. Send it back as
+         *     `If-None-Match`.
+         */
+        DetailETag: string;
+        /**
          * @description A weak validator of the list as requested (`W/"..."`). Send it back
          *     as `If-None-Match`.
          */
@@ -1585,7 +1609,10 @@ export interface operations {
     getTask: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description The `ETag` of the last response to this same request. Answers `304` when it still matches. */
+                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+            };
             path: {
                 /** @description The task's ID. A malformed ID answers `404`, as for an unknown task. */
                 id: components["parameters"]["TaskID"];
@@ -1597,12 +1624,20 @@ export interface operations {
             /** @description The task. */
             200: {
                 headers: {
-                    ETag: components["headers"]["ETag"];
+                    ETag: components["headers"]["DetailETag"];
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["TaskDetail"];
                 };
+            };
+            /** @description The task is unchanged since the `ETag` in `If-None-Match`. No body. */
+            304: {
+                headers: {
+                    ETag: components["headers"]["DetailETag"];
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
@@ -2110,6 +2145,40 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             413: components["responses"]["PayloadTooLarge"];
             422: components["responses"]["Unprocessable"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    listWorkspaces: {
+        parameters: {
+            query?: {
+                /** @description Page size, 1 to 200. Default 50. */
+                limit?: components["parameters"]["Limit"];
+                /** @description The `next_cursor` of the previous page. Opaque. */
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: {
+                /** @description The `ETag` of the last response to this same request. Answers `304` when it still matches. */
+                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page. Its `ETag` is a hash of the body, so a repeated poll can answer `304`. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ListETag"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceList"];
+                };
+            };
+            304: components["responses"]["NotModified"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
             429: components["responses"]["TooManyRequests"];
             500: components["responses"]["InternalError"];
         };

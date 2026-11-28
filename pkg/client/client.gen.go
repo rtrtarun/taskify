@@ -741,6 +741,12 @@ type WorkspaceCreated struct {
 	UpdatedAt Timestamp `json:"updated_at"`
 }
 
+// WorkspaceList defines model for WorkspaceList.
+type WorkspaceList struct {
+	NextCursor *string     `json:"next_cursor"`
+	Workspaces []Workspace `json:"workspaces"`
+}
+
 // WorkspaceUpdate defines model for WorkspaceUpdate.
 type WorkspaceUpdate struct {
 	AgentSettings *AgentSettingsPatch `json:"agent_settings,omitempty"`
@@ -894,6 +900,12 @@ type DeleteTaskParams struct {
 // DeleteTaskParamsPermanent defines parameters for DeleteTask.
 type DeleteTaskParamsPermanent string
 
+// GetTaskParams defines parameters for GetTask.
+type GetTaskParams struct {
+	// IfNoneMatch The `ETag` of the last response to this same request. Answers `304` when it still matches.
+	IfNoneMatch *IfNoneMatch `json:"If-None-Match,omitempty"`
+}
+
 // UpdateTaskParams defines parameters for UpdateTask.
 type UpdateTaskParams struct {
 	// IfMatch The task's expected version, as `"3"`, `W/"3"`, or `3`.
@@ -923,6 +935,18 @@ type RecordFeedbackParams struct {
 type RestoreTaskParams struct {
 	// IfMatch The task's expected version, as `"3"`, `W/"3"`, or `3`.
 	IfMatch *IfMatch `json:"If-Match,omitempty"`
+}
+
+// ListWorkspacesParams defines parameters for ListWorkspaces.
+type ListWorkspacesParams struct {
+	// Limit Page size, 1 to 200. Default 50.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor The `next_cursor` of the previous page. Opaque.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// IfNoneMatch The `ETag` of the last response to this same request. Answers `304` when it still matches.
+	IfNoneMatch *IfNoneMatch `json:"If-None-Match,omitempty"`
 }
 
 // DecideLearningSuggestionJSONRequestBody defines body for DecideLearningSuggestion for application/json ContentType.
@@ -1091,7 +1115,7 @@ type ClientInterface interface {
 	DeleteTask(ctx context.Context, id TaskID, params *DeleteTaskParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetTask request
-	GetTask(ctx context.Context, id TaskID, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetTask(ctx context.Context, id TaskID, params *GetTaskParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// UpdateTaskWithBody request with any body
 	UpdateTaskWithBody(ctx context.Context, id TaskID, params *UpdateTaskParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1129,6 +1153,9 @@ type ClientInterface interface {
 
 	// ListSubtasks request
 	ListSubtasks(ctx context.Context, id TaskID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListWorkspaces request
+	ListWorkspaces(ctx context.Context, params *ListWorkspacesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// CreateWorkspaceWithBody request with any body
 	CreateWorkspaceWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1405,8 +1432,8 @@ func (c *Client) DeleteTask(ctx context.Context, id TaskID, params *DeleteTaskPa
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetTask(ctx context.Context, id TaskID, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetTaskRequest(c.Server, id)
+func (c *Client) GetTask(ctx context.Context, id TaskID, params *GetTaskParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetTaskRequest(c.Server, id, params)
 	if err != nil {
 		return nil, err
 	}
@@ -1575,6 +1602,18 @@ func (c *Client) RestoreTask(ctx context.Context, id TaskID, params *RestoreTask
 
 func (c *Client) ListSubtasks(ctx context.Context, id TaskID, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListSubtasksRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListWorkspaces(ctx context.Context, params *ListWorkspacesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListWorkspacesRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -2620,7 +2659,7 @@ func NewDeleteTaskRequest(server string, id TaskID, params *DeleteTaskParams) (*
 }
 
 // NewGetTaskRequest generates requests for GetTask
-func NewGetTaskRequest(server string, id TaskID) (*http.Request, error) {
+func NewGetTaskRequest(server string, id TaskID, params *GetTaskParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -2648,6 +2687,21 @@ func NewGetTaskRequest(server string, id TaskID) (*http.Request, error) {
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+
+		if params.IfNoneMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "If-None-Match", runtime.ParamLocationHeader, *params.IfNoneMatch)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-None-Match", headerParam0)
+		}
+
 	}
 
 	return req, nil
@@ -3138,6 +3192,86 @@ func NewListSubtasksRequest(server string, id TaskID) (*http.Request, error) {
 	return req, nil
 }
 
+// NewListWorkspacesRequest generates requests for ListWorkspaces
+func NewListWorkspacesRequest(server string, params *ListWorkspacesParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/workspaces")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "limit", runtime.ParamLocationQuery, *params.Limit); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "cursor", runtime.ParamLocationQuery, *params.Cursor); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.IfNoneMatch != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "If-None-Match", runtime.ParamLocationHeader, *params.IfNoneMatch)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("If-None-Match", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewCreateWorkspaceRequest calls the generic CreateWorkspace builder with application/json body
 func NewCreateWorkspaceRequest(server string, body CreateWorkspaceJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -3450,7 +3584,7 @@ type ClientWithResponsesInterface interface {
 	DeleteTaskWithResponse(ctx context.Context, id TaskID, params *DeleteTaskParams, reqEditors ...RequestEditorFn) (*DeleteTaskResponse, error)
 
 	// GetTaskWithResponse request
-	GetTaskWithResponse(ctx context.Context, id TaskID, reqEditors ...RequestEditorFn) (*GetTaskResponse, error)
+	GetTaskWithResponse(ctx context.Context, id TaskID, params *GetTaskParams, reqEditors ...RequestEditorFn) (*GetTaskResponse, error)
 
 	// UpdateTaskWithBodyWithResponse request with any body
 	UpdateTaskWithBodyWithResponse(ctx context.Context, id TaskID, params *UpdateTaskParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateTaskResponse, error)
@@ -3488,6 +3622,9 @@ type ClientWithResponsesInterface interface {
 
 	// ListSubtasksWithResponse request
 	ListSubtasksWithResponse(ctx context.Context, id TaskID, reqEditors ...RequestEditorFn) (*ListSubtasksResponse, error)
+
+	// ListWorkspacesWithResponse request
+	ListWorkspacesWithResponse(ctx context.Context, params *ListWorkspacesParams, reqEditors ...RequestEditorFn) (*ListWorkspacesResponse, error)
 
 	// CreateWorkspaceWithBodyWithResponse request with any body
 	CreateWorkspaceWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateWorkspaceResponse, error)
@@ -4275,6 +4412,32 @@ func (r ListSubtasksResponse) StatusCode() int {
 	return 0
 }
 
+type ListWorkspacesResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *WorkspaceList
+	JSON400      *BadRequest
+	JSON401      *Unauthorized
+	JSON429      *TooManyRequests
+	JSON500      *InternalError
+}
+
+// Status returns HTTPResponse.Status
+func (r ListWorkspacesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListWorkspacesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type CreateWorkspaceResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -4624,8 +4787,8 @@ func (c *ClientWithResponses) DeleteTaskWithResponse(ctx context.Context, id Tas
 }
 
 // GetTaskWithResponse request returning *GetTaskResponse
-func (c *ClientWithResponses) GetTaskWithResponse(ctx context.Context, id TaskID, reqEditors ...RequestEditorFn) (*GetTaskResponse, error) {
-	rsp, err := c.GetTask(ctx, id, reqEditors...)
+func (c *ClientWithResponses) GetTaskWithResponse(ctx context.Context, id TaskID, params *GetTaskParams, reqEditors ...RequestEditorFn) (*GetTaskResponse, error) {
+	rsp, err := c.GetTask(ctx, id, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -4751,6 +4914,15 @@ func (c *ClientWithResponses) ListSubtasksWithResponse(ctx context.Context, id T
 		return nil, err
 	}
 	return ParseListSubtasksResponse(rsp)
+}
+
+// ListWorkspacesWithResponse request returning *ListWorkspacesResponse
+func (c *ClientWithResponses) ListWorkspacesWithResponse(ctx context.Context, params *ListWorkspacesParams, reqEditors ...RequestEditorFn) (*ListWorkspacesResponse, error) {
+	rsp, err := c.ListWorkspaces(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListWorkspacesResponse(rsp)
 }
 
 // CreateWorkspaceWithBodyWithResponse request with arbitrary body returning *CreateWorkspaceResponse
@@ -6688,6 +6860,60 @@ func ParseListSubtasksResponse(rsp *http.Response) (*ListSubtasksResponse, error
 			return nil, err
 		}
 		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest TooManyRequests
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListWorkspacesResponse parses an HTTP response from a ListWorkspacesWithResponse call
+func ParseListWorkspacesResponse(rsp *http.Response) (*ListWorkspacesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListWorkspacesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest WorkspaceList
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
 		var dest TooManyRequests

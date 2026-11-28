@@ -5,6 +5,7 @@ import { fetchTaskList, PRIORITIES, PRIORITY_LABEL, STATUSES, STATUS_LABEL, type
 import ErrorMessage, { describeError } from "../../components/ErrorMessage";
 import { useAuth } from "../../auth/AuthProvider";
 import { useCreateTask, useMoveTask, useTaskList } from "../../hooks/useTaskList";
+import { useWorkspaces } from "../../hooks/useWorkspaces";
 import TaskBoard from "./TaskBoard";
 import TaskList from "./TaskList";
 
@@ -59,11 +60,14 @@ export default function TasksPage({ pollMs }: { pollMs?: number }) {
     setParams(next, { replace: true });
   }
 
-  // Quick add needs a workspace; there is no workspace list, so it starts as
-  // the workspace of a task already on screen and can be typed.
+  // Quick add needs a workspace: a picker over the tenant's workspaces. If
+  // that list cannot be read, the field falls back to text, starting as the
+  // workspace of a task already on screen.
   const [title, setTitle] = useState("");
   const [workspace, setWorkspace] = useState("");
-  const defaultWorkspace = first?.tasks[0]?.workspace_id ?? "";
+  const workspaces = useWorkspaces();
+  const choices = workspaces.data ?? [];
+  const defaultWorkspace = choices[0]?.id ?? first?.tasks[0]?.workspace_id ?? "";
   useEffect(() => {
     setWorkspace((w) => w || defaultWorkspace);
   }, [defaultWorkspace]);
@@ -89,7 +93,17 @@ export default function TasksPage({ pollMs }: { pollMs?: number }) {
         </label>
         <label>
           Workspace
-          <input value={workspace} onChange={(e) => setWorkspace(e.target.value)} required />
+          {choices.length > 0 ? (
+            <select value={workspace} onChange={(e) => setWorkspace(e.target.value)} required>
+              {choices.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input value={workspace} onChange={(e) => setWorkspace(e.target.value)} required />
+          )}
         </label>
         <button type="submit" disabled={create.isPending || title.trim() === "" || workspace.trim() === ""}>
           {create.isPending ? "Adding..." : "Add task"}

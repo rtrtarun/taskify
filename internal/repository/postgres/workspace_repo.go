@@ -75,6 +75,30 @@ func (r *WorkspaceRepo) get(ctx context.Context, tenantID, id, lock string) (dom
 	return w, nil
 }
 
+func (r *WorkspaceRepo) List(ctx context.Context, tenantID, after string, limit int) ([]domain.Workspace, error) {
+	rows, err := r.db.q(ctx).Query(ctx, `
+		SELECT tenant_id, id, name, agent_settings, created_at, updated_at FROM workspaces
+		WHERE tenant_id = $1 AND ($2::text = '' OR id COLLATE "C" > $2::text COLLATE "C")
+		ORDER BY id COLLATE "C" LIMIT $3`, tenantID, after, limit)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (domain.Workspace, error) {
+		var w domain.Workspace
+		var settings []byte
+		if err := row.Scan(&w.TenantID, &w.ID, &w.Name, &settings, &w.CreatedAt, &w.UpdatedAt); err != nil {
+			return w, err
+		}
+		var perr error
+		if w.AgentSettings, perr = domain.ParseAgentSettings(settings); perr != nil {
+			return w, fmt.Errorf("workspace %s: stored %w", w.ID, perr)
+		}
+		w.CreatedAt, w.UpdatedAt = w.CreatedAt.UTC(), w.UpdatedAt.UTC()
+		return w, nil
+	})
+	return out, mapErr(err)
+}
+
 // CommentRepo implements repository.CommentRepository.
 type CommentRepo struct{ db *DB }
 

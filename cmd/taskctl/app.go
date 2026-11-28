@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -36,6 +37,8 @@ type app struct {
 
 	// pollEvery is how often --watch and --wait ask the server again.
 	pollEvery time.Duration
+	// versionNote makes the newer-server notice appear once per run.
+	versionNote sync.Once
 	// ctx is cancelled by Ctrl-C (set in main).
 	ctx context.Context
 }
@@ -101,7 +104,7 @@ func (a *app) newRoot() *cobra.Command {
 		}
 		return nil
 	}
-	root.AddCommand(a.newVersionCmd(), a.newLoginCmd(), a.newConfigCmd(), a.newTaskCmd(), a.newJobCmd(), a.newAdminCmd())
+	root.AddCommand(a.newVersionCmd(), a.newLoginCmd(), a.newConfigCmd(), a.newTaskCmd(), a.newJobCmd(), a.newWorkspaceCmd(), a.newAdminCmd())
 	return root
 }
 
@@ -181,6 +184,7 @@ func (a *app) clientFor(u *url.URL, tok string) (*client.ClientWithResponses, er
 	if a.verbose {
 		hc = &http.Client{Timeout: hc.Timeout, Transport: &traceTransport{next: hc.Transport, out: a.stderr}}
 	}
+	hc = &http.Client{Timeout: hc.Timeout, Transport: &versionTransport{next: hc.Transport, app: a}}
 	auth := func(_ context.Context, r *http.Request) error {
 		r.Header.Set("Authorization", "Bearer "+tok)
 		r.Header.Set("User-Agent", "taskctl/"+version)
@@ -195,6 +199,33 @@ func isLoopback(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// versionTransport watches X-Taskify-API-Version. When the server's API is
+// newer than the one this build of taskctl was generated from, it says so on
+// stderr, once per run. It is a notice, not an error: the command goes on,
+// and a client generated from an older version of the same major version
+// still works.
+type versionTransport struct {
+	next http.RoundTripper
+	app  *app
+}
+
+func (t *versionTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	next := t.next
+	if next == nil {
+		next = http.DefaultTransport
+	}
+	resp, err := next.RoundTrip(r)
+	if err == nil {
+		if v := resp.Header.Get(client.HeaderAPIVersion); client.ServerIsNewer(v) {
+			t.app.versionNote.Do(func() {
+				_, _ = fmt.Fprintf(t.app.stderr, "taskctl: note: the server's API version is %s, newer than the %s this taskctl was built for; "+
+					"some fields or commands may be missing (upgrade taskctl)\n", v, client.GeneratedAPIVersion())
+			})
+		}
+	}
+	return resp, err
 }
 
 // traceTransport is the --verbose trace. It writes the method, URL, and

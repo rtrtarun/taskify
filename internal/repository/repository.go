@@ -161,6 +161,10 @@ type WorkspaceRepository interface {
 	GetForUpdate(ctx context.Context, tenantID, id string) (domain.Workspace, error)
 	// Update writes the name, agent settings, and updated_at.
 	Update(ctx context.Context, w domain.Workspace) error
+	// List returns up to limit of the tenant's workspaces whose ID sorts
+	// after the ID after (all of them when after is empty), in byte order of
+	// the ID.
+	List(ctx context.Context, tenantID, after string, limit int) ([]domain.Workspace, error)
 	// ListLearningTenants returns up to limit tenants, across all of them,
 	// with a workspace whose settings allow the learning agent and no
 	// learning job for week (domain.LearningJobDedupKey), ordered by tenant.

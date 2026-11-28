@@ -14,7 +14,7 @@ Each milestone is broken into individual tasks, with a delegation level and acce
 | M11 (**R2 complete**) | Done. Every M5 to M11 exit criterion has a passing test. Final sign-off of M10, M11, and the other AgentPulse parts waits on M0-07 (owner action O1) |
 | M12 (**R3**) | Done: the OpenAPI contract, the conformance suite, and the list endpoints the clients need |
 | M13 (**R3**) | Done: `taskctl` with the generated Go client, profiles, keychain credentials, task, job, and admin commands, and release builds for Windows, macOS, and Linux |
-| M14 (**R3**) | M14a done: the web app scaffold, development sign-in, task list and board, task detail, the notification feed, and the notifications panel. M14b and M14c are not started |
+| M14 (**R3**) | M14a done: the web app scaffold, development sign-in, task list and board, task detail, the notification feed, and the notifications panel. M14b done: subtasks and the dependency graph, the agent activity timeline, the approvals inbox, and the morning brief page. M14c is not started |
 | M15 (**R3**) | Not started |
 
 Task-level progress and every departure from the plan are in [implementation/README.md](implementation/README.md). The work began from a `main.go` that printed a greeting and an uncompilable router stub.

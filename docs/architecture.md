@@ -1716,6 +1716,8 @@ taskctl
 │   ├── show <id> [--watch]
 │   ├── approve <id>
 │   └── reject <id>
+├── workspace
+│   └── list [--limit]
 ├── admin
 │   ├── suggestions list
 │   ├── suggestions decide <id> --approve | --reject
@@ -1737,7 +1739,7 @@ taskctl
 | Versions | `update` reads the task, applies the change, and sends `If-Match`. On `409` it reports the conflict and does not retry blindly. |
 | IDs | Accepts a full UUID or a unique prefix |
 | Async commands | `decompose` returns the job ID at once; `--wait` polls until the job leaves `pending` and `running` |
-| Compatibility | Sends its version in `User-Agent`; warns if the server's API version is newer than it understands |
+| Compatibility | Sends its version in `User-Agent`. Every response carries `X-Taskify-API-Version`, the contract's `info.version` (see below). When the server's version is newer than the one `pkg/client` was generated from, `taskctl` prints one note on stderr per run and carries on: it is not an error, and the exit code and standard output do not change. |
 
 **Exit codes.**
 
@@ -1774,7 +1776,11 @@ sequenceDiagram
     end
 ```
 
-ID-prefix lookup needs an `id_prefix` filter on the list endpoint; it is part of the M12 contract additions.
+ID-prefix lookup needs an `id_prefix` filter on the list endpoint; it is part of the M12 contract additions. `workspace list` reads `GET /api/v1/workspaces`, open to any member.
+
+**API version.** The contract's `info.version` in `contract/openapi.yaml` is the only place the version is written. It is `major.minor.patch`: a change that only adds (an endpoint, a field, an optional parameter) raises the minor number, a fix to the document raises the patch, and a change that breaks a client raises the major. The server reads it from the embedded contract (`contract.APIVersion()`) and sends it as `X-Taskify-API-Version` on every response, including errors, `304`, and CORS preflights; browsers may read it (it is in `Access-Control-Expose-Headers`).
+
+"Newer" is semantic-version precedence (semver.org, section 11), implemented once in `pkg/client` (`CompareVersions`, `ServerIsNewer`): the three numbers compare as numbers (`1.10.0` is newer than `1.9.0`); a pre-release (`1.2.0-rc.1`) is older than its release; build metadata and a leading `v` are ignored. A version that cannot be read, or a response without the header, is never "newer", so a proxy that strips the header produces no warning. `pkg/client` was generated from `contract.APIVersion()` as compiled in, since CI regenerates the client in the same change as any contract change. A client of the same major version works against a newer server, because a change that only adds is a minor one; a different major version may not, and the notice says only that the server is newer.
 
 ### 9.6 Web frontend
 
@@ -1829,7 +1835,7 @@ web/
 
 | Screen | Shows | Endpoints | Needs |
 | --- | --- | --- | --- |
-| Task list | Filterable, paginated list; quick add | `GET /tasks`, `POST /tasks` | R1 |
+| Task list | Filterable, paginated list; quick add with a workspace picker | `GET /tasks`, `POST /tasks`, `GET /workspaces` | R1 |
 | Board | Columns by status; drag to change status | `GET /tasks`, `PATCH /tasks/{id}` | R1 |
 | Task detail | Fields, comments, watchers, feedback actions | `GET /tasks/{id}`, `PATCH`, `POST .../comments`, `POST .../complete` | R1 |
 | Subtasks and dependencies | Children and a graph of dependency links; Decompose button | `GET /tasks/{id}/subtasks`, `POST .../decompose` | M8 |
@@ -1876,6 +1882,7 @@ sequenceDiagram
 | Agent changes | Always labelled with the agent name and reasoning from `agent_metadata`. A proposal shows current and proposed values side by side. |
 | Untrusted text | Task and comment text is rendered as text, never as HTML. Markdown, if added, goes through a sanitiser. Agent-written text is treated the same way. |
 | Errors | Each API error code in section 5.4 maps to a specific message; `409` gets the reload flow above. |
+| API version | The app is built from one contract version (`info.version`, read when it is built). When a response's `X-Taskify-API-Version` is newer by the rule in section 9.5, a small notice asks the user to reload for the latest app; it never blocks the screen, and an unreadable or missing header shows nothing. |
 | Accessibility | Keyboard reachable, visible focus, labelled controls. Board drag-and-drop has a non-drag alternative. |
 | Layout | Usable at phone width for list, detail, and approvals. Admin pages may assume a wider screen. |
 
@@ -1927,6 +1934,7 @@ sequenceDiagram
 | 2 | Server-Sent Events on `GET /api/v1/events` | Under a second | Later, when watching an agent work live matters |
 | not used | WebSockets | | Two-way framing and reconnection logic are not needed for one-way updates |
 
+- Task detail: `GET /tasks/{id}` carries an `ETag` of the version, a dot, and a hash of the body (`"3.9f2c4a1b7d03"`), because a comment or a snoozed reminder changes the detail without changing the version. The detail page polls with `If-None-Match` and keeps what it has on `304`; `If-Match` still reads the version before the dot.
 - Phase 1: the `ETag` for a list is derived from a cheap query (row count and latest `updated_at` for the filter), so an unchanged list returns `304` without loading or serialising rows. It still costs one small query.
 - Phase 2: the server fans out Postgres `LISTEN/NOTIFY` messages to connected clients, filtered by tenant and user. Taskify has no Redis of its own, so Postgres is the default source.
 - Phase 2 authentication (decision 20): the frontend reads the stream with streaming `fetch` and the normal `Authorization: Bearer` header, for example through `@microsoft/fetch-event-source`, which also handles reconnection and backoff. The browser's built-in `EventSource` is not used because it cannot send that header. A JWT is never put in the URL.

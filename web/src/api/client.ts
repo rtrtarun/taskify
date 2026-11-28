@@ -1,5 +1,6 @@
 import createClient, { type Middleware } from "openapi-fetch";
 import type { components, paths } from "./schema";
+import { API_VERSION_HEADER, observeServerVersion } from "./version";
 
 export type Schemas = components["schemas"];
 
@@ -47,6 +48,7 @@ const authMiddleware: Middleware = {
     return request;
   },
   onResponse({ request, response }) {
+    observeServerVersion(response.headers.get(API_VERSION_HEADER));
     if (response.status === 401 && request.headers.has("Authorization")) hooks.onUnauthorized();
     return response;
   },

@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/rtrtarun/taskify/contract"
 	"github.com/rtrtarun/taskify/internal/agentpulse"
 	"github.com/rtrtarun/taskify/internal/domain"
 	"github.com/rtrtarun/taskify/internal/worker"
@@ -399,5 +400,170 @@ func TestAgentJobVisibility(t *testing.T) {
 		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
 			t.Errorf("%s lists %v, want %v", tc.v.name, got, tc.want)
 		}
+	}
+}
+
+func TestListWorkspaces(t *testing.T) {
+	e := newEnv(t)
+	for _, id := range []string{"ws_b", "ws_a", "ws_c"} {
+		if r := e.do(req{method: "POST", path: "/api/v1/workspaces", as: "admin", body: map[string]any{"id": id, "name": id}}); r.status != 201 {
+			t.Fatalf("create %s: %d %s", id, r.status, r.raw)
+		}
+	}
+	// Another tenant has workspaces of its own, one with a colliding ID.
+	for _, id := range []string{"ws_core", "ws_secret"} {
+		if r := e.do(req{method: "POST", path: "/api/v1/workspaces", as: "other-tenant", body: map[string]any{"id": id, "name": "theirs"}}); r.status != 201 {
+			t.Fatalf("create other %s: %d %s", id, r.status, r.raw)
+		}
+	}
+
+	ids := func(r resp) []string {
+		var out []string
+		for _, w := range r.json["workspaces"].([]any) {
+			out = append(out, w.(map[string]any)["id"].(string))
+		}
+		return out
+	}
+	// A plain member lists their own tenant's workspaces, in ID order.
+	r := e.do(req{method: "GET", path: "/api/v1/workspaces"})
+	if r.status != 200 || strings.Join(ids(r), ",") != "ws_a,ws_b,ws_c,ws_core" || r.json["next_cursor"] != nil {
+		t.Fatalf("member list: %d %s", r.status, r.raw)
+	}
+	if got := ids(e.do(req{method: "GET", path: "/api/v1/workspaces", as: "other-tenant"})); strings.Join(got, ",") != "ws_core,ws_secret" {
+		t.Errorf("other tenant sees %v", got)
+	}
+
+	// Pages.
+	r = e.do(req{method: "GET", path: "/api/v1/workspaces?limit=3"})
+	if strings.Join(ids(r), ",") != "ws_a,ws_b,ws_c" || r.json["next_cursor"] == nil {
+		t.Fatalf("first page: %s", r.raw)
+	}
+	r = e.do(req{method: "GET", path: "/api/v1/workspaces?limit=3&cursor=" + r.json["next_cursor"].(string)})
+	if strings.Join(ids(r), ",") != "ws_core" || r.json["next_cursor"] != nil {
+		t.Fatalf("second page: %s", r.raw)
+	}
+	for _, bad := range []string{"limit=0", "limit=201", "limit=x", "cursor=***"} {
+		if r := e.do(req{method: "GET", path: "/api/v1/workspaces?" + bad}); r.status != 400 {
+			t.Errorf("%s: %d", bad, r.status)
+		}
+	}
+	if r := e.do(req{method: "GET", path: "/api/v1/workspaces", as: "none"}); r.status != 401 {
+		t.Errorf("no credentials: %d", r.status)
+	}
+
+	// Conditional polling: an unchanged list is 304; a new workspace changes
+	// it; another tenant's change does not leak through the tag.
+	first := e.do(req{method: "GET", path: "/api/v1/workspaces"})
+	tag := first.header.Get("ETag")
+	if tag == "" {
+		t.Fatal("no ETag")
+	}
+	if r := e.do(req{method: "GET", path: "/api/v1/workspaces", headers: map[string]string{"If-None-Match": tag}}); r.status != 304 || len(r.raw) != 0 {
+		t.Errorf("unchanged: %d %s", r.status, r.raw)
+	}
+	e.do(req{method: "POST", path: "/api/v1/workspaces", as: "other-tenant", body: map[string]any{"id": "ws_more", "name": "x"}})
+	if r := e.do(req{method: "GET", path: "/api/v1/workspaces", headers: map[string]string{"If-None-Match": tag}}); r.status != 304 {
+		t.Errorf("after another tenant's change: %d", r.status)
+	}
+	e.do(req{method: "POST", path: "/api/v1/workspaces", as: "admin", body: map[string]any{"id": "ws_d", "name": "d"}})
+	if r := e.do(req{method: "GET", path: "/api/v1/workspaces", headers: map[string]string{"If-None-Match": tag}}); r.status != 200 {
+		t.Errorf("after a change: %d", r.status)
+	}
+}
+
+// GET /tasks/{id} answers 304 to a matching If-None-Match, and its tag
+// changes with anything the detail holds, comments included.
+func TestGetTaskConditional(t *testing.T) {
+	e := newEnv(t)
+	task := e.createTask(nil)
+	id := task["id"].(string)
+	path := "/api/v1/tasks/" + id
+	get := func(tag string) resp {
+		h := map[string]string{}
+		if tag != "" {
+			h["If-None-Match"] = tag
+		}
+		return e.do(req{method: "GET", path: path, headers: h})
+	}
+
+	first := get("")
+	tag := first.header.Get("ETag")
+	if first.status != 200 || tag == "" {
+		t.Fatalf("first: %d %s", first.status, tag)
+	}
+	if r := get(tag); r.status != 304 || len(r.raw) != 0 || r.header.Get("ETag") != tag {
+		t.Errorf("unchanged: %d %q %s", r.status, r.header.Get("ETag"), r.raw)
+	}
+	if r := get("W/" + tag); r.status != 304 {
+		t.Errorf("weak form of the tag: %d", r.status)
+	}
+	if r := get(`"1.000000000000"`); r.status != 200 {
+		t.Errorf("a tag that is not the task's: %d", r.status)
+	}
+
+	// A comment does not change the version, but does change the tag.
+	e.do(req{method: "POST", path: path + "/comments", body: map[string]any{"body": "hello"}})
+	afterComment := get(tag)
+	if afterComment.status != 200 || afterComment.header.Get("ETag") == tag || len(afterComment.json["comments"].([]any)) != 1 {
+		t.Fatalf("after a comment: %d %s", afterComment.status, afterComment.raw)
+	}
+	tag = afterComment.header.Get("ETag")
+	if r := get(tag); r.status != 304 {
+		t.Errorf("unchanged after the comment: %d", r.status)
+	}
+
+	// An edit changes it too, and the tag still works as If-Match.
+	patched := e.do(req{method: "PATCH", path: path, headers: map[string]string{"If-Match": tag}, body: map[string]any{"title": "Renamed"}})
+	if patched.status != 200 {
+		t.Fatalf("If-Match with a detail tag: %d %s", patched.status, patched.raw)
+	}
+	if r := get(tag); r.status != 200 || r.json["title"] != "Renamed" {
+		t.Errorf("after an edit: %d", r.status)
+	}
+
+	// Another tenant never learns whether the tag matches.
+	if r := e.do(req{method: "GET", path: path, as: "other-tenant", headers: map[string]string{"If-None-Match": tag}}); r.status != 404 {
+		t.Errorf("other tenant: %d", r.status)
+	}
+	if r := e.do(req{method: "GET", path: "/api/v1/tasks/" + uuid.NewString(), headers: map[string]string{"If-None-Match": tag}}); r.status != 404 {
+		t.Errorf("unknown task: %d", r.status)
+	}
+}
+
+// Every response carries the contract's version, in one place: the embedded
+// openapi.yaml.
+func TestAPIVersionHeader(t *testing.T) {
+	e := newEnv(t, func(d *Deps) { d.CORSAllowedOrigins = []string{"https://app.example"} })
+	want := contract.APIVersion()
+	if want == "" {
+		t.Fatal("no contract version")
+	}
+	for name, rq := range map[string]req{
+		"ok":            {method: "GET", path: "/api/v1/me"},
+		"not found":     {method: "GET", path: "/api/v1/tasks/" + uuid.NewString()},
+		"unauthorized":  {method: "GET", path: "/api/v1/me", as: "none"},
+		"no such route": {method: "GET", path: "/api/v1/nope"},
+		"bad method":    {method: "DELETE", path: "/api/v1/me"},
+		"healthz":       {method: "GET", path: "/healthz", as: "none"},
+		"readyz":        {method: "GET", path: "/readyz", as: "none"},
+		"not modified":  {method: "GET", path: "/api/v1/workspaces", headers: map[string]string{"If-None-Match": "*"}},
+	} {
+		if r := e.do(rq); r.header.Get("X-Taskify-API-Version") != want {
+			t.Errorf("%s (%d): X-Taskify-API-Version = %q, want %q", name, r.status, r.header.Get("X-Taskify-API-Version"), want)
+		}
+	}
+	// A preflight is not in the contract, so it goes straight to the handler.
+	pre := httptest.NewRequest("OPTIONS", "/api/v1/tasks", nil)
+	pre.Header.Set("Origin", "https://app.example")
+	pre.Header.Set("Access-Control-Request-Method", "GET")
+	rec := httptest.NewRecorder()
+	e.handler.ServeHTTP(rec, pre)
+	if rec.Code != 204 || rec.Header().Get("X-Taskify-API-Version") != want {
+		t.Errorf("preflight: %d %q", rec.Code, rec.Header().Get("X-Taskify-API-Version"))
+	}
+	// A browser on another origin may read it.
+	r := e.do(req{method: "GET", path: "/api/v1/me", headers: map[string]string{"Origin": "https://app.example"}})
+	if !strings.Contains(r.header.Get("Access-Control-Expose-Headers"), "X-Taskify-API-Version") {
+		t.Errorf("not exposed to browsers: %q", r.header.Get("Access-Control-Expose-Headers"))
 	}
 }
