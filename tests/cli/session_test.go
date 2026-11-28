@@ -6,6 +6,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,7 +48,8 @@ func (s session) run(args ...string) (stdout string, exitCode int) {
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	err := cmd.Run()
 	code := 0
-	if ee, ok := err.(*exec.ExitError); ok {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
 		code = ee.ExitCode()
 	} else if err != nil {
 		s.t.Fatalf("run %v: %v", args, err)

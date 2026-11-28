@@ -3,8 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
-	"github.com/spf13/cobra"
 	"net/http"
+
+	"github.com/spf13/cobra"
 )
 
 // Exit codes (docs/architecture.md section 9.5).
