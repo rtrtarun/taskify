@@ -155,7 +155,7 @@ func (r *TaskRepo) ClaimDueSoon(ctx context.Context, now time.Time, limit int) (
 		return nil, err
 	}
 	// The 24h reminder fires once; the 1h reminder fires if nothing was sent
-	// since the 1h window opened. See docs/implementation/README.md, G2.
+	// since the 1h window opened. See docs/archive/implementation-record.md, G2.
 	return r.query(ctx, `
 		SELECT `+taskColumns+` FROM tasks
 		WHERE `+openTasks+` AND due_at IS NOT NULL

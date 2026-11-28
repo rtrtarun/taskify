@@ -5,7 +5,7 @@
 #        scripts/coverage-gate.sh test-output.txt [minimum, default 90]
 #
 # The gated packages hold the business rules and the delivery guarantees;
-# see docs/milestones.md, M4.
+# see docs/archive/milestones-completed.md, M4.
 set -euo pipefail
 
 file="${1:?usage: coverage-gate.sh <go test output> [minimum]}"

@@ -387,23 +387,23 @@ LLM_BASE_URL=http://localhost:11434/v1 LLM_MODEL=qwen2.5-coder:7b go test ./test
 | --- | --- |
 | [docs/features.md](docs/features.md) | What Taskify does and why |
 | [docs/architecture.md](docs/architecture.md) | How it is built: flows, data model, state machines, decisions |
-| [docs/milestones.md](docs/milestones.md) | Delivery order, exit criteria, and status per milestone |
-| [docs/implementation/](docs/implementation/README.md) | Task-level plans, rules for contributors, and every departure from the architecture |
+| [docs/milestones.md](docs/milestones.md) | The open milestones: status and exit criteria |
+| [docs/implementation/](docs/implementation/README.md) | Open tasks, open decisions, and rules for contributors |
 | [docs/releasing.md](docs/releasing.md) | Versioning and releases |
 | [docs/benchmarks.md](docs/benchmarks.md) | Measured latency |
-| [docs/archive/](docs/archive/README.md) | Finished plans and the original proposals |
+| [docs/archive/](docs/archive/README.md) | Finished milestones and tasks, departures from the architecture, and the original proposals |
 
 ---
 
 ## Roadmap and known issues
 
-**Done:** R1 (M0 to M4), R2 (M5 to M11 and the AgentPulse alignment), and M12 (an OpenAPI document, event and tool schemas, and a black-box conformance suite).
+**Done:** R1 (M0 to M4), R2 (M5 to M11 and the AgentPulse alignment), M12 (an OpenAPI document, event and tool schemas, and a black-box conformance suite), M13 (the `taskctl` CLI), and the web frontend's screens and embedded build (M14-01 to M14-12).
 
-**Next** (details in [milestones.md](docs/milestones.md)): the **clients**, all from the same contract.
+**Next** (details in [milestones.md](docs/milestones.md)):
 
-1. **CLI** (M13): `taskctl`.
-2. **Web frontend** (M14): task screens, the approvals inbox, the notification feed, and the morning brief.
-3. **Python SDK** (M15).
+1. **Web frontend** (M14-13): browser journeys, accessibility, and small screens.
+2. **Python SDK** (M15).
+3. **Real AgentPulse check** (M0-07), once AgentPulse ships its `/v1/` API.
 
 **Known issues**
 
